@@ -713,13 +713,16 @@ fn detect_hostname() -> String {
         .unwrap_or_default()
 }
 
+/// `$NOTES_CONFIG`, expanded, when set and not empty.
+fn env_config() -> Option<PathBuf> {
+    std::env::var("NOTES_CONFIG")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(|p| expand(&p))
+}
+
 fn config_paths() -> Vec<PathBuf> {
-    let mut v = Vec::new();
-    if let Ok(p) = std::env::var("NOTES_CONFIG") {
-        if !p.is_empty() {
-            v.push(expand(&p));
-        }
-    }
+    let mut v: Vec<PathBuf> = env_config().into_iter().collect();
     // A unit test reads $NOTES_CONFIG alone, as CI does: with this machine's config, a fixture
     // project named like a live one (`binks`) resolved across the live orgs, and the test ran
     // `migrate` on the live copy (ar-4202).
@@ -790,32 +793,44 @@ fn load_raw() -> Result<(RawConfig, String)> {
         if path.exists() {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading config {}", path.display()))?;
-            let mut raw: RawConfig = toml::from_str(&text)
+            let raw: RawConfig = toml::from_str(&text)
                 .with_context(|| format!("parsing config {}", path.display()))?;
+            let from_env = env_config().as_deref() == Some(path.as_path());
             let src = path.display().to_string();
-            let shared = path.with_file_name(SHARED_PROFILES);
-            let src = merge_shared(&mut raw, src, &shared)?;
-            return Ok((raw, src));
+            return with_shared(raw, src, from_env.then_some(path.as_path()));
         }
     }
-    let mut raw = builtin_default();
-    let src = "built-in default".to_string();
-    if cfg!(test) {
+    with_shared(builtin_default(), "built-in default".into(), None)
+}
+
+/// The profile tables every machine shares. notes-bootstrap links `~/.config/notes/profiles.toml`
+/// to the private overlay's `.config/notes/profiles.toml`, the one tracked copy of the org and job
+/// profiles, so a fleet worker resolves the same roots and flags as the workstation; `config.toml`
+/// keeps what is machine-local (ar-6354).
+const SHARED_PROFILES: &str = "profiles.toml";
+
+/// `raw` plus the shared profiles, read beside a `$NOTES_CONFIG` file (a sandbox brings its own),
+/// else from `~/.config/notes/`, where notes-bootstrap links them; a unit test without
+/// `$NOTES_CONFIG` reads none, as [`config_paths`] reads no machine config.
+fn with_shared(
+    mut raw: RawConfig,
+    src: String,
+    env_config: Option<&Path>,
+) -> Result<(RawConfig, String)> {
+    let Some(shared) = shared_profiles_path(env_config) else {
         return Ok((raw, src));
-    }
-    let src = merge_shared(
-        &mut raw,
-        src,
-        &home().join(".config/notes").join(SHARED_PROFILES),
-    )?;
+    };
+    let src = merge_shared(&mut raw, src, &shared)?;
     Ok((raw, src))
 }
 
-/// The profile tables every machine shares, beside the config file (`~/.config/notes/` with
-/// none). notes-bootstrap links it from the private overlay's `.config/notes/profiles.toml`, the
-/// one tracked copy of the org and job profiles, so a fleet worker resolves the same roots and
-/// flags as the workstation; `config.toml` keeps what is machine-local (ar-6354).
-const SHARED_PROFILES: &str = "profiles.toml";
+fn shared_profiles_path(env_config: Option<&Path>) -> Option<PathBuf> {
+    match env_config {
+        Some(c) => Some(c.with_file_name(SHARED_PROFILES)),
+        None if cfg!(test) => None,
+        None => Some(home().join(".config/notes").join(SHARED_PROFILES)),
+    }
+}
 
 /// Only `[profile.<name>]` tables: anything else belongs to the machine's own config.
 #[derive(Debug, Deserialize)]
@@ -841,7 +856,7 @@ fn merge_shared(raw: &mut RawConfig, src: String, path: &Path) -> Result<String>
     names.sort();
     if let Some(dup) = names.into_iter().find(|n| raw.profile.contains_key(*n)) {
         return Err(anyhow!(
-            "profile '{dup}' is defined in both {src} and {}: delete it from {src}",
+            "profile '{dup}' is defined in both {src} and {}: keep one of the two",
             path.display()
         ));
     }
@@ -1416,6 +1431,7 @@ mod tests {
         assert_eq!(config_paths().len(), usize::from(set));
     }
 
+    /// `profiles.toml` (written when `text` is given) in a fresh dir; the test removes the dir.
     fn shared_scratch(tag: &str, text: Option<&str>) -> PathBuf {
         let d = std::env::temp_dir().join(format!("notes-shared-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
@@ -1440,6 +1456,17 @@ mod tests {
         assert!(raw.profile.contains_key("personal"));
         assert!(!raw.profile["gig"].automation);
         assert_eq!(raw.profile["gig"].daily, "log");
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+
+    // Beside a $NOTES_CONFIG file, else the one place notes-bootstrap links; a unit test reads none.
+    #[test]
+    fn shared_profiles_sit_beside_an_env_config_and_nowhere_else_in_a_test() {
+        assert_eq!(
+            shared_profiles_path(Some(Path::new("/s/c/config.toml"))),
+            Some(PathBuf::from("/s/c/profiles.toml"))
+        );
+        assert_eq!(shared_profiles_path(None), None);
     }
 
     #[test]
@@ -1450,6 +1477,7 @@ mod tests {
         assert_eq!(raw.profile.len(), 1);
         std::os::unix::fs::symlink(p.with_file_name("gone.toml"), &p).unwrap();
         assert!(merge_shared(&mut raw, "cfg".into(), &p).is_err());
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -1461,8 +1489,10 @@ mod tests {
                 .contains("'personal' is defined in both cfg and"),
             "{err}"
         );
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
         let p = shared_scratch("key", Some("default_profile = \"gig\"\n"));
         assert!(merge_shared(&mut builtin_default(), "cfg".into(), &p).is_err());
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
 
     #[test]
