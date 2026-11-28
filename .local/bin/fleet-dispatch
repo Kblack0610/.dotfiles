@@ -3523,7 +3523,7 @@ trainee_diff_why() {
 # fleet-sessions:1751 names its file (ar-5747).
 row_paths() {
   local words cmds
-  words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:](\[`"'"'"'])#[A-Za-z0-9_/:.-]+//g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
+  words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:](\[`"'"'"'])#[A-Za-z0-9_/:.-]+/\1/g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
     sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s/(:[0-9]+(-[0-9]+)?)+$//; s#/+$##' | grep -vE '^[a-z]+://|[<>*{}$]|^[0-9/.:-]*$' | sort -u)
   cmds=$(git -C "$2" ls-files -- '.local/bin/*' 2>/dev/null | sed 's#.*/##')
   grep -E '/|\.[A-Za-z0-9]+$' <<<"$words"
