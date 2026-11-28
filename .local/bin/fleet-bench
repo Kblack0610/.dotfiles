@@ -1186,10 +1186,16 @@ publish_window() {
   prom_textfile fleet_bench.prom bench_prom "$1" "$pl" || say "could not write fleet_bench.prom"
 }
 
-# outcomes_newest -> the newest session-outcomes line per session_id (its own reader rule)
+# outcomes_newest [<rows file>] -> the newest session-outcomes line per session_id (its own reader rule); with a
+# file, only the sessions its rows' session_id names, picked as the lines stream past. canary_lanes joins a few
+# hundred canary runs, and slurping all 40k lines first peaked at 943 MB on every model-lane classify, so on
+# every dispatch start (ar-5068).
 outcomes_newest() {
   if compgen -G "$BENCH_OUTCOMES_DIR/*/*.jsonl" >/dev/null; then
-    cat "$BENCH_OUTCOMES_DIR"/*/*.jsonl
+    if [ -n "${1:-}" ]; then
+      cat "$BENCH_OUTCOMES_DIR"/*/*.jsonl | jq -cn --slurpfile k "$1" \
+        '([$k[].session_id | strings | {key: ., value: true}] | from_entries) as $ids | inputs | select((.session_id | type) == "string" and $ids[.session_id])'
+    else cat "$BENCH_OUTCOMES_DIR"/*/*.jsonl; fi
   fi | jq -c -s 'map(select(.session_id)) | group_by(.session_id) | map(last) | .[]'
 }
 
@@ -7918,7 +7924,7 @@ canary_list() {
 canary_lanes() {
   local tasks=""
   if [ "${2:-}" = pts ]; then tasks=$(canary_tasks) || return 2; fi
-  jq -nc --slurpfile k "$(kpi_canary)" --slurpfile o <(outcomes_newest) --rawfile ts <(printf '%s' "$tasks") \
+  jq -nc --slurpfile k "$(kpi_canary)" --slurpfile o <(outcomes_newest "$(kpi_canary)") --rawfile ts <(printf '%s' "$tasks") \
     --arg by "${2:-}" "$JQ_LIB"'
     def mean(f): map(f | numbers) | if length == 0 then null else add / length end;
     def passed: map(select(.pass == true)) | length;

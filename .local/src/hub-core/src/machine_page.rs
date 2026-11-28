@@ -16,7 +16,7 @@ use crate::host_history::{self, HostHistory};
 use crate::host_now::{self, HostNow};
 use crate::infra::{self, Infra};
 use crate::links::{Kind, Link};
-use crate::machines::Machine;
+use crate::machines::{Machine, DISK_LOW, MEM_HIGH};
 use crate::run_detail;
 use crate::session_page::Part;
 use crate::table::{Row, Val};
@@ -71,11 +71,6 @@ pub(crate) fn short(v: f64) -> String {
 pub(crate) fn whole(v: f64) -> String {
     format!("{:.0}", v.round())
 }
-
-/// The Space line's amber: free disk under this share (the Machines disk cell's amber line),
-/// memory at or past this share used.
-const DISK_LOW: f64 = 0.2;
-const MEM_HIGH: f64 = 0.9;
 
 /// `ws-unity-2` before `ws-unity-10`: a name's trailing number sorts as a number.
 fn natural(name: &str) -> (&str, u64) {

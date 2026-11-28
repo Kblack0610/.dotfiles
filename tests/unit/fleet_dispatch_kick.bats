@@ -162,6 +162,7 @@ bats_require_minimum_version 1.5.0
 @test "a kick whose wake file moved during its run reads the queue again, once for each move" {
   game_ready
   agent-queue add --project game --slug mine "mine"
+  export KICK_STARTS=0   # no cap, so the round after the start runs (the cap ends the rounds: the case below)
   rm -f "$FLEET_DISPATCH_DIR/.wake"   # the add is a wake of its own
   stub agent-hold "case \"\$*\" in 'check dispatch'*) echo \"\$*\" >> '$SANDBOX/hold.calls'; [ -e '$SANDBOX/hold.done' ] || { : > '$SANDBOX/hold.done'; echo mid-run > '$FLEET_DISPATCH_DIR/.wake'; };; esac; exit 0"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
@@ -184,4 +185,56 @@ bats_require_minimum_version 1.5.0
   refute_output --partial 'nothing queued'
   assert_equal "$(wc -l < "$SANDBOX/hold.calls")" 2
   [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "the kick's own start wrote a wake"
+}
+
+# ar-5068: one kick started 5 items in 2 min 37 s, each start about 15 s past the kick's 15 s of reads, and a
+# timed pass waits KICK_WAIT_S (120 s) for a kick's lock. KICK_STARTS caps a kick; the rest waits.
+five_items() {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  export DISPATCH_PER_PASS=0   # no pass cap: the room is the five units the pace target leaves
+  export DISPATCH_TARGET_AWAY=5
+  stub wt 'n=$(( $(cat "$NOTES_FIXTURE/wt.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$NOTES_FIXTURE/wt.n"; echo "wt $*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-$n"'
+  local i
+  for i in 1 2 3; do agent-queue add --project game --slug "g$i" "game $i" >/dev/null; done
+  for i in 1 2; do agent-queue add --project app --slug "a$i" "app $i" >/dev/null; done
+}
+queued_n() { find "$AGENT_QUEUE_DIR/queued" -name '*.md' 2>/dev/null | grep -c .; }
+running_n() { find "$AGENT_QUEUE_DIR/running" -name '*.md' 2>/dev/null | grep -c .; }
+
+@test "a kick starts at most KICK_STARTS items with room for more, leaves the rest queued, and names the cap (ar-5068)" {
+  five_items
+  KICK_STARTS=2 run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  assert_output --partial "kick: started 2, the kick's cap (KICK_STARTS=2); the rest of the room waits for the next wake or pass"
+  assert_output --partial 'kick steps: gates '
+  refute_output --partial 'under-used'
+  assert_equal "$(running_n)" 2
+  assert_equal "$(queued_n)" 3
+  # Negative control: with no cap the same kick starts all five.
+  KICK_STARTS=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  refute_output --partial "kick's cap"
+  assert_equal "$(running_n)" 5
+  assert_equal "$(queued_n)" 0
+}
+
+@test "a kick's cap counts the starts of all its rounds, so a moved wake file never starts past it (ar-5068)" {
+  five_items
+  export DISPATCH_PER_PASS=1   # one start a round, so the cap is reached only across rounds
+  rm -f "$FLEET_DISPATCH_DIR/.wake"   # the adds are wakes of their own
+  # Every hold read moves the wake file, so each round is followed by another, up to KICK_ROUNDS.
+  stub agent-hold "case \"\$*\" in 'check dispatch'*) date +%s%N > '$FLEET_DISPATCH_DIR/.wake';; esac; exit 0"
+  KICK_STARTS=2 KICK_ROUNDS=3 run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  assert_output --partial 'round 2: gates '
+  refute_output --partial 'round 3: '
+  assert_equal "$(running_n)" 2
+  assert_equal "$(queued_n)" 3
+  # Negative control: with no cap every one of the three rounds starts one.
+  KICK_STARTS=0 KICK_ROUNDS=3 run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_success
+  assert_output --partial 'round 3: gates '
+  assert_equal "$(running_n)" 5
+  assert_equal "$(queued_n)" 0
 }

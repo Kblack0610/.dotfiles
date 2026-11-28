@@ -21,7 +21,7 @@ use crate::host_history::alternation;
 use crate::prom::{self, Series};
 use crate::table::{Row, Val};
 
-/// A sensor this hot or hotter shows amber, on the Machines table and a machine's page (agent-web
+/// A sensor this hot or hotter shows amber on a machine's page (the Machines table's cell is `Machine::levels`; agent-web
 /// infra.js `HOT_C` mirrors it): past where a cooled CPU sits at load, short of the 95C to 105C
 /// where CPUs and NVMe drives throttle.
 pub const HOT_C: f64 = 85.0;

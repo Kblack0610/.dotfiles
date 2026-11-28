@@ -128,7 +128,7 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   doc.getElementById = page;
   Object.assign(ist, { open: {} });
   const instant = { cc: [] };
-  ist.data = { ok: true, at: Date.now() / 1e3, instant, down: [], ci: { ...ci }, tables: tables(ci) };
+  ist.data = { ok: true, at: Date.now() / 1e3, instant, kpis: [{ name: "WATCHES", value: "0 tripped", detail: "", sub: "", level: "ok", href: "#alerts/watches" }], down: [], ci: { ...ci }, tables: tables(ci) };
   run(`st.tab = "infra"; st.arg = "machines"; renderInfra()`);
   const main = els["infra-main"].innerHTML;
   const at = (s) => main.indexOf(s);
@@ -414,40 +414,29 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 const glance = { busy: 5, queued: 23, oldest: 1260, done: 759, pass: 0.91,
   units: { total: 64, taken: 4.38, free: 59.62, real: 9.6, brief: "taken 4.4/64 units (7%)", head: "CI POOL  64 units (1 unit = 1 CI core)",
     line: "taken 4.4 of 64 (7%), free 59.6, real use 9.6 (15%)", columns: ["TAKEN BY", "PODS", "EACH", "UNITS", "SHARE"],
-    rows: [["arc-org-light", "2", "1.69", "3.4", "5%"], ["other", "-", "-", "1.0", "2%"], ["free", "", "", "59.6", "93%"]] }, pending: [{ kind: "arc-org-light", n: 3, cpu: 1.69, mem: 1.3e9 }], alert: "ok", up: 12, expected: 12 };
+    rows: [["arc-org-light", "2", "1.69", "3.4", "5%"], ["other", "-", "-", "1.0", "2%"], ["free", "", "", "59.6", "93%"]] }, pending: [{ kind: "arc-org-light", n: 3, cpu: 1.69, mem: 1.3e9 }], alert: "ok", up: 12, expected: 12,
+  head: "5 running, 23 queued (oldest 21m), taken 4.4/64 units (7%), 12/12 runners up, 759 done 24h, 91% passed",
+  pending_line: "waiting for room: arc-org-light x3 (1.69 cpu 1.2G each)" };
 
-// ar-5013: each machinery tile takes its hue from the cc:domain_status the OVERALL rollup is the
-// max of, so 6 of 122 agentctl runners failed under a rollup that tolerates them is not a red
-// tile under an OK verdict, and a domain red from its watches row is a red tile; the count stays.
-test("NODES, HEARTBEATS and AGENT RUNNERS agree with the rollup's domains, not their own thresholds", () => {
-  const cc = (comp) => ({ "cc:runners_failed": { "": 6 }, "cc:runners_total": { "": 122 }, "cc:k3s_nodes_ready": { "": 13 },
-    "cc:k3s_nodes_total": { "": 14 }, "cc:machines_up": { "": 22 }, "cc:machines_total": { "": 22 }, "cc:domain_status": comp });
-  const hue = (comp, name) => run(`kpis(${JSON.stringify(cc(comp))})`).match(new RegExp(`--c:var\\((--[a-z0-9-]+)\\)"><span class="tl">${name}`))?.[1];
-  const ok = { agents: 0, k3s: 0, machines: 0 };
-  assert.equal(hue(ok, "AGENT RUNNERS"), "--b-done", "6 failed under an OK domain is not red");
-  assert.match(run(`kpis(${JSON.stringify(cc(ok))})`), /AGENT RUNNERS<\/span><span class="tv">6 failed<\/span><span class="ts1">of 122; agents rollup OK/);
-  assert.equal(hue(ok, "NODES"), "--b-done");
-  // negative control: the same counts under a red domain (a watches row at 2, as the rules emit
-  // for a NotReady node) are red, and a warn one amber
-  assert.equal(hue({ ...ok, k3s: 2 }, "NODES"), "--b-needs", "a k3s watch red is a red NODES tile");
-  assert.equal(hue({ ...ok, agents: 1 }, "AGENT RUNNERS"), "--b-stalled");
-  assert.equal(hue({ ...ok, machines: 2 }, "HEARTBEATS"), "--b-needs");
-  // a component series alone is not the verdict: the domain decides
-  assert.equal(run(`kpis(${JSON.stringify({ ...cc(ok), "cc:component_status": { "k3s/nodes": 0 }, "cc:domain_status": { ...ok, k3s: 2 } })})`)
-    .match(/--c:var\((--[a-z0-9-]+)\)"><span class="tl">NODES/)?.[1], "--b-needs");
-  assert.equal(hue({}, "AGENT RUNNERS"), "--c-other");
-});
-
-// ar-5013: WATCHES takes its hue from the rollup's watches rows, the worst of them, not from a
-// tripped count: 13 tripped that the rules weigh as warns is amber, a watches row at 2 red.
-test("WATCHES agrees with the rollup's watches rows, not its own tripped count", () => {
-  const cc = (rows) => ({ "cc:watches_tripped": { "": 13 }, "cc:watches_total": { "": 133 }, "cc:component_status": rows });
-  const hue = (rows) => run(`kpis(${JSON.stringify(cc(rows))})`).match(/--c:var\((--[a-z0-9-]+)\)"><span class="tl">WATCHES/)?.[1];
-  assert.equal(hue({ "ci/watches": 1, "k3s/watches": 0, "agents/runners": 2 }), "--b-stalled", "warn rows are amber; a non-watches row is not read");
-  assert.equal(hue({ "ci/watches": 1, "platform/watches": 2 }), "--b-needs", "the worst watches row decides");
-  assert.equal(hue({ "ci/watches": 0 }), "--b-done", "13 tripped under rows at 0 is not amber");
-  assert.equal(hue({}), "--c-other", "no watches row is no data, never green");
-  assert.match(run(`kpis(${JSON.stringify(cc({ "ci/watches": 1 }))})`), /WATCHES<\/span><span class="tv">13 tripped<\/span><span class="ts1">of 133, 0 stale; watches rollup WARN/);
+// hub_core::infra::Kpi as /api/infra sends it under kpis: the tile's value, lines and hue are
+// judged in Rust (Infra::kpis, tested there against the rollup's rows), so the page only draws.
+const kpi = (name, value, sub, level, href) => ({ name, value, detail: "", sub, level, ...(href ? { href } : {}) });
+const tiles = [kpi("NODES", "13/14", "k3s rollup OK", "ok"), kpi("HEARTBEATS", "22/22", "machines rollup WARN", "warn"),
+  kpi("CI RUNNING", "5", "23 queued, 12/12 runners up; ci rollup RED", "red"), kpi("AGENT RUNNERS", "6 failed", "of 122; agents rollup NO DATA", "nodata"),
+  kpi("WATCHES", "13 tripped", "of 133, 0 stale; watches rollup WARN", "warn", "#alerts/watches"), kpi("SESSIONS", "3/9", "working, 0 need you", null)];
+test("the Infra tiles draw hub_core's kpis: its value, its lines and its level's hue", () => {
+  const h = run(`kpis(${JSON.stringify(tiles)})`);
+  const hue = (name) => h.match(new RegExp(`--c:var\\((--[a-z0-9-]+)\\)"><span class="tl">${name}`))?.[1];
+  assert.equal(hue("NODES"), "--b-done");
+  assert.equal(hue("HEARTBEATS"), "--b-stalled");
+  assert.equal(hue("CI RUNNING"), "--b-needs");
+  assert.equal(hue("AGENT RUNNERS"), "--c-other", "no data is its own hue, never green");
+  assert.equal(hue("SESSIONS"), "--b-working", "a count with no verdict is not red or green");
+  assert.match(h, /AGENT RUNNERS<\/span><span class="tv">6 failed<\/span><span class="ts1">of 122; agents rollup NO DATA/);
+  assert.match(h, /CI RUNNING[\s\S]*?>5<[\s\S]*?23 queued, 12\/12 runners up; ci rollup RED/);
+  assert.match(h, /<a class="tile" href="#alerts\/watches"[^>]*><span class="tl">WATCHES/, "the tile links where the server says");
+  // SPEND (a link to Costs) is the page's own and sits before SESSIONS.
+  assert.ok(h.indexOf(">SPEND<") > h.indexOf(">WATCHES<") && h.indexOf(">SPEND<") < h.indexOf(">SESSIONS<"));
 });
 
 // ar-5013: the pill is the heart's word and colour; warn domains, which never colour it, follow
@@ -464,20 +453,7 @@ test("the OVERALL pill keeps the heart's verdict and counts the warn domains bes
   assert.match(pill({}), /OVERALL NO DATA/i);
 });
 
-test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runners up; the tile's hue is the rollup's", () => {
-  // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
-  const cc = { "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 } };
-  const h = run(`kpis(${JSON.stringify(cc)}, ${JSON.stringify(glance)})`);
-  assert.match(h, /CI RUNNING[\s\S]*?>5<[\s\S]*?23 queued, 12\/12 runners up;/);
-  assert.doesNotMatch(h, /CI RUNNING[\s\S]*?(6\.4\/16|3\/3)/);
-  assert.match(h, /AGENT RUNNERS/, "the agentctl runners tile says whose runners it counts");
-  const hue = (dom, name) => run(`kpis(${JSON.stringify({ "cc:domain_status": dom })}, ${JSON.stringify(glance)})`)
-    .match(new RegExp(`--c:var\\((--[a-z0-9-]+)\\)"><span class="tl">${name}`))?.[1];
-  assert.equal(hue({ ci: 0 }, "CI RUNNING"), "--b-done");
-  assert.equal(hue({ ci: 2 }, "CI RUNNING"), "--b-needs", "a ci watch red is a red tile");
-  assert.equal(hue({}, "CI RUNNING"), "--c-other", "no domain series is no data, never green");
-  assert.match(run(`kpis(${JSON.stringify({ "cc:domain_status": { ci: 1 } })}, ${JSON.stringify(glance)})`), /CI RUNNING[\s\S]*?runners up; ci rollup WARN/);
-  assert.match(run(`kpis({})`), /CI RUNNING[\s\S]*?\?/, "no glance is unknown, never 0");
+test("the Runners head and the waiting line are hub_core's glance words, drawn as sent", () => {
   Object.assign(ist, { open: {} });
   const s = section({ rows: [], queue: [], red: [], local: [], glance });
   assert.match(s, /<div class="cline">5 running, 23 queued \(oldest 21m\), taken 4\.4\/64 units \(7%\), 12\/12 runners up, 759 done 24h, 91% passed<\/div>/);
@@ -487,19 +463,13 @@ test("CI RUNNING and the Runners head read hub_core's glance: jobs running, runn
   assert.match(s, /<th data-role="lead" data-label="TAKEN BY">TAKEN BY<\/th><th class="n" data-label="PODS">PODS<\/th>[\s\S]*?<th class="n" data-role="glance" data-named data-label="SHARE">SHARE/);
   assert.match(s, /<tr><td>arc-org-light<\/td><td class="n">2<\/td><td class="n">1\.69<\/td><td class="n">3\.4<\/td><td class="n">5%<\/td><\/tr><tr><td>other<\/td>/);
   assert.match(s, /<td>free<\/td><td class="n"><\/td><td class="n"><\/td><td class="n">59\.6<\/td><td class="n">93%<\/td>/);
-  // ar-6260: the 1h and 5h counts sit before the 24h one once a kind reports them, 0 included.
-  const win = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, done_1h: 0, done_5h: 31 } });
-  assert.match(win, /12\/12 runners up, 0 done 1h, 31 done 5h, 759 done 24h, 91% passed/);
-  assert.equal(run(`glanceHead(${JSON.stringify({ ...glance, done_1h: null, done_5h: null })})`).includes("done 1h"), false, "no window read prints none");
-  // No runner read is -/-, never 0/0.
-  const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units: null, up: 0, expected: 0 } });
+  // No CI node read draws no pool.
+  const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units: null, head: "5 running, 23 queued (oldest 21m), -/- runners up, 759 done 24h" } });
   assert.match(bare, /5 running, 23 queued \(oldest 21m\), -\/- runners up, 759 done/);
-  assert.doesNotMatch(bare, /CI POOL/, "no CI node read draws no pool");
-  // A stale glance with held fields still says running and queued only.
-  assert.doesNotMatch(section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units_held: 2, held: 7 } }), /held|lent/);
-  // Pods no CI node has room for: one line under the machines, their kind and size.
+  assert.doesNotMatch(bare, /CI POOL/);
+  // Pods no CI node has room for: one line under the machines, as Rust says it; none when none wait.
   assert.equal(run(`pendingLine(${JSON.stringify(glance)})`), '<div class="cline warn">waiting for room: arc-org-light x3 (1.69 cpu 1.2G each)</div>');
-  assert.equal(run(`pendingLine(${JSON.stringify({ ...glance, pending: [] })})`), "");
+  assert.equal(run(`pendingLine(${JSON.stringify({ ...glance, pending_line: null })})`), "");
 });
 
 // hub_core::workload::Space as /api/infra sends it under space.
@@ -548,12 +518,12 @@ test("a class row on the slots table shows its memory in gigabytes", () => {
 
 test("a machine's BOOKED, RUNNING and NEXT read as hub_core's Machine cells, no CI node as a dash", () => {
   const booked = { cpu: 4.38, cpu_alloc: 32, mem: 2.7e9, mem_alloc: 98768805888 };
-  const m = { split: [], runner_cores: [], runner_mem: [], off: 0, booked, running: ["[arc-org-light] x2", "[unity] platform"], next: { job: "Checks", repo: "web", n: 1, wait: 300 } };
+  const m = { split: [], runner_cores: [], runner_mem: [], off: 0, level: { booked: "ok" }, booked, running: ["[arc-org-light] x2", "[unity] platform"], next: { job: "Checks", repo: "web", n: 1, wait: 300 } };
   const cell = run(`MACH_CELLS.booked(${JSON.stringify(m)})`);
   assert.match(cell, /class="meter"/);
   assert.match(cell, /4\.4\/32 2\.5G\/92G/);
   assert.doesNotMatch(cell, /warn/);
-  assert.match(run(`MACH_CELLS.booked(${JSON.stringify({ ...m, booked: { ...booked, mem: booked.mem_alloc } })})`), /class="n warn"/, "a node with a resource fully booked is amber");
+  assert.match(run(`MACH_CELLS.booked(${JSON.stringify({ ...m, level: { booked: "warn" } })})`), /class="n warn"/, "the hue is Rust's level for the cell");
   const lost = run(`MACH_CELLS.booked(${JSON.stringify({ ...m, booked: { cpu: 1.69, cpu_alloc: 0, mem: 1.3e9, mem_alloc: 0 } })})`).replace(/<[^>]*>/g, "");
   assert.match(lost, /1\.7 1\.2G/, "a node with no allocatable read books bare, as Booked::cell");
   assert.doesNotMatch(lost, /\/0/);
@@ -565,4 +535,24 @@ test("a machine's BOOKED, RUNNING and NEXT read as hub_core's Machine cells, no 
   assert.match(run(`MACH_CELLS.running(${JSON.stringify(bare)})`), />-</);
   assert.match(run(`MACH_CELLS.next(${JSON.stringify(bare)})`), />-</);
   assert.equal(run(`"busy" in MACH_COLS || "doing" in MACH_COLS`), false);
+});
+
+// hub_core::machines::Levels as a Machine row sends it under level, a pool's pass_level: the page
+// holds no threshold, it only turns a level into a class.
+test("a machine's cells and a pool's PASS take their hue from the served level", () => {
+  const m = { host: "w", core_busy: [], cpu: 0.5, mem: 0.5, load: 1, cores: 8, temp: 60, disk: 0.05, where: "cloud", split: [], runner_cores: [], runner_mem: [],
+    level: { cpu: "ok", mem: "warn", load: "warn", temp: "warn", disk: "bad", booked: "ok" } };
+  const cell = (k, row = m) => run(`MACH_CELLS.${k}(${JSON.stringify(row)})`);
+  assert.match(cell("mem"), /var\(--b-stalled\)/, "mem past its line is amber");
+  assert.match(cell("load"), /class="n warn"/);
+  assert.match(cell("temp"), /class="n warn"/);
+  assert.match(cell("disk"), /class="n bad"/);
+  // negative control: the same readings at ok level draw no hue, whatever the numbers say
+  const ok = { ...m, level: { cpu: "ok", mem: "ok", load: "ok", temp: "ok", disk: "ok", booked: "ok" } };
+  assert.doesNotMatch(cell("load", ok) + cell("temp", ok) + cell("disk", ok), /warn|bad/);
+  assert.match(cell("disk", { ...ok, disk: null, level: { ...ok.level, disk: "neutral" } }), /class="n muted"/);
+  const pool = (l) => run(`POOL_CELLS.pass(${JSON.stringify({ pass: 0.5, pass_level: l })})`);
+  assert.match(pool("bad"), /class="n bad"/);
+  assert.match(pool("warn"), /class="n warn"/);
+  assert.doesNotMatch(pool("ok"), /bad|warn/);
 });

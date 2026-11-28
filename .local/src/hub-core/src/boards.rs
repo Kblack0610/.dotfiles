@@ -265,9 +265,21 @@ pub struct Ask {
     /// The id of the live judge answer this ask audits (`--audit-of`); empty for any other ask.
     /// A review sample: hub-core's Needs you (`home::has_decision`) lists no ask that has one.
     pub audit_of: String,
+    /// The answer judge's level (`self`, `repo`, `fleet` or `critical`); empty for an ask it never
+    /// levelled (an approval, a gate sent past it, one judged before levels).
+    pub judge_level: String,
 }
 
 impl Ask {
+    /// Whether the daily Decisions batch lists it: a question or gate the judge levelled below
+    /// critical. An approval, an ask with no level and a critical one are not batched, since nothing
+    /// shows they can wait a day, and the needs pager pages them (`agent-ask batch`).
+    pub fn batchable(&self) -> bool {
+        self.kind != "approval"
+            && self.audit_of.is_empty()
+            && matches!(self.judge_level.as_str(), "self" | "repo" | "fleet")
+    }
+
     /// The judge's verdict as one line, in the words agent-ask's judge_line puts on the CLI card:
     /// what it did or would do, the rule that decided it, then its reason. A deferral shows too,
     /// so the card says why the judge left the ask to the human, and an armed ask says when its
@@ -316,7 +328,7 @@ impl Ask {
 /// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
 /// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
 /// judge_reason, answer_note, assume_at, resume, parked_until, delivery, delivery_note, answer,
-/// delivery_answer, previews, audit_of. A row short of the options column is skipped.
+/// delivery_answer, previews, audit_of, judge_level. A row short of the options column is skipped.
 pub fn parse_asks(tsv: &str) -> Vec<Ask> {
     let list = |v: &str| -> Vec<String> {
         v.split('|')
@@ -369,6 +381,7 @@ pub fn parse_asks(tsv: &str) -> Vec<Ask> {
                     .collect(),
                 judge_line: String::new(),
                 audit_of: col(32),
+                judge_level: col(33),
             };
             a.judge_line = a.judge_words();
             Some(a)
@@ -2110,6 +2123,18 @@ mod tests {
         );
         assert_eq!(parse_asks(&shown)[0].previews, ["shot.png", "b.jpg"]);
         assert!(parse_asks(&parked)[0].previews.is_empty());
+        // judge_level is the last column, after audit_of; only a level below critical batches.
+        let levelled = |lv: &str, kind: &str| {
+            let mut a = parse_asks(&format!("{}\t\t{lv}\n", shown.trim_end_matches('\n')));
+            a[0].kind = kind.into();
+            a.remove(0)
+        };
+        assert_eq!(levelled("fleet", "question").judge_level, "fleet");
+        assert!(levelled("fleet", "question").batchable());
+        assert!(levelled("self", "gate").batchable());
+        assert!(!levelled("critical", "question").batchable());
+        assert!(!levelled("", "question").batchable());
+        assert!(!levelled("fleet", "approval").batchable());
     }
 
     #[test]

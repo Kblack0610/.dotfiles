@@ -341,6 +341,27 @@ impl Need {
         }
     }
 
+    /// Whether the daily Decisions batch lists it, and Needs you and the needs pager leave it
+    /// out: an ask the judge levelled below critical (`Ask::batchable`), or a session waiting on
+    /// a plan approval. What is not a decision waits on the human today.
+    pub fn is_decision(&self) -> bool {
+        match self.kind {
+            Kind::Ask => self.ask.as_ref().is_some_and(boards::Ask::batchable),
+            Kind::Session => self.need == NeedKind::Plan,
+            _ => false,
+        }
+    }
+
+    /// Whether the needs pager may page it: an ask that is not a decision and holds a session,
+    /// a queue item or later work, or any other row that is not a decision (a session at a
+    /// dialog, a queue item). A decision waits for the briefing's daily batch.
+    pub fn pages(&self) -> bool {
+        match self.kind {
+            Kind::Ask => !self.is_decision() && !self.holds().is_empty(),
+            _ => !self.is_decision(),
+        }
+    }
+
     /// Why it sits where it does: what it holds, or a sheet row's `#priority`.
     pub fn holds(&self) -> String {
         match &self.score {
