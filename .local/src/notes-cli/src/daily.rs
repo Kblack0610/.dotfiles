@@ -592,7 +592,22 @@ fn briefing_line(p: &Profile, day: &str) -> Option<String> {
 /// earlier render left there. A note without a title is left alone.
 fn set_title_line(content: &str, line: Option<&str>) -> String {
     let mut lines: Vec<&str> = content.lines().collect();
-    let Some(title) = lines.iter().position(|l| l.starts_with("# ")) else {
+    // A `# ` line inside the front matter is a YAML comment, not the title.
+    let body = if lines.first() == Some(&"---") {
+        lines
+            .iter()
+            .skip(1)
+            .position(|l| *l == "---")
+            .map_or(0, |i| i + 2)
+    } else {
+        0
+    };
+    let Some(title) = lines
+        .iter()
+        .skip(body)
+        .position(|l| l.starts_with("# "))
+        .map(|i| i + body)
+    else {
         return content.to_string();
     };
     let at = title + 2;
@@ -663,7 +678,8 @@ fn link_refs_on(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
 
 /// Rebuild `day`'s refs index (`report::rebuild_index`) and make that day's note's `## Refs`
 /// the one link to it. The section carries the link once the day has a ref that `## Morning`
-/// does not already render (anything but the briefing and the day log). Lines the old per-file
+/// does not already render (anything but the briefing: Morning shows yesterday's day log, so
+/// today's partial one is reached through the index). Lines the old per-file
 /// linker wrote for that day are replaced by the link; anything else under `## Refs` is the
 /// human's and stays.
 pub(crate) fn link_day_refs(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
@@ -672,9 +688,7 @@ pub(crate) fn link_day_refs(p: &Profile, log: &Logger, day: NaiveDate) -> Result
     if !note.exists() {
         return Ok(());
     }
-    let wanted = entries
-        .iter()
-        .any(|e| e.stem != BRIEFING && e.stem != SHIPPED);
+    let wanted = entries.iter().any(|e| e.stem != BRIEFING);
     let content = fs::read_to_string(&note)?;
     let index = wanted.then(|| crate::report::index_target(p, day));
     let updated = refs_section(&content, &p.refs_rel, day, index.as_deref());
@@ -2663,8 +2677,8 @@ mod tests {
 
     /// `## Morning` sits below Notes and Focus: the briefing headline and its "Needs you" items as
     /// written, the day log's first sentence, then one line for the knowledge logs
-    /// the previous note did not list. Re-running it changes nothing, and `## Refs` lists neither
-    /// the briefing nor the day log.
+    /// the previous note did not list. Re-running it changes nothing, and `## Refs` is the one
+    /// index link that reaches today's partial day log (Morning links yesterday's).
     #[test]
     fn morning_shows_the_briefing_and_unlisted_knowledge_above_notes() {
         let dir = std::env::temp_dir().join(format!("notes-morning-{}", std::process::id()));
@@ -2736,9 +2750,8 @@ mod tests {
         link_refs_on(&p, &log, d("2026-09-30")).unwrap();
         let after = std::fs::read_to_string(&note).unwrap();
         assert!(
-            !after.contains("## Refs"),
-            "Morning already links both:
-{after}"
+            after.contains("## Refs") && after.contains("2026-09-30/_index"),
+            "today's partial log is reached through the refs index:\n{after}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2768,10 +2781,12 @@ mod tests {
         link_refs_on(&p, &log, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
         assert!(
-            out.contains("- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45"),
+            out.contains(
+                "\nBriefing: As of Tue 06:45, 0 page(s). [[journal/refs/2026-09-30/briefing]]\n"
+            ),
             "{out}"
         );
-        assert!(!out.contains("not written yet"), "{out}");
+        assert!(!out.contains("Briefing: not written yet"), "{out}");
         assert!(
             !out.contains("## Refs"),
             "the briefing is not listed twice:\n{out}"
@@ -2904,6 +2919,11 @@ mod tests {
         let b = set_title_line(&a, Some("Briefing: two [[b]]"));
         assert_eq!(b, a.replace("one", "two"));
         assert_eq!(set_title_line(&b, None), note);
+        let commented = "---\n# not a title\n---\n\n# 2026-09-30\n";
+        assert_eq!(
+            set_title_line(commented, Some("Briefing: x")),
+            "---\n# not a title\n---\n\n# 2026-09-30\n\nBriefing: x\n\n"
+        );
         assert_eq!(
             set_title_line("no title\n", Some("Briefing: x")),
             "no title\n"
