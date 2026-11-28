@@ -12,6 +12,7 @@ setup() {
   export HOME="$BATS_TEST_TMPDIR/home"
   mkdir -p "$HOME/.local/src/docs" "$HOME/.config/shared-hooks" "$HOME/.config/agentctl" "$HOME/docs"
   ln -s "$(cd "$ROOT" && pwd)/.local/src/docs/planning.md" "$HOME/.local/src/docs/planning.md"
+  ln -s "$(cd "$ROOT" && pwd)/.local/src/docs/fleet-states.md" "$HOME/.local/src/docs/fleet-states.md"
   ln -s "$(cd "$ROOT" && pwd)/.config/shared-hooks/project-name.sh" "$HOME/.config/shared-hooks/project-name.sh"
   : > "$HOME/docs/standards.md"
   cat > "$HOME/.config/shared-hooks/project-map.json" <<'JSON'
@@ -147,6 +148,7 @@ phases() { printf '\n## Phases\n\n- [x] P1 done (#1)\n'; for i in $(seq "$1"); d
   assert_output --partial 'additionalContext'
   assert_output --partial 'Chain: a plan with more than one'
   assert_output --partial 'Phases: a plan with more than one'
+  assert_output --partial 'Owners: a plan whose'
   refute_output --partial 'three rules'
   refute_output --partial 'Epic:'
   refute_output --partial '## Target'
@@ -253,6 +255,60 @@ epic_new() {
 case " \$* " in *" similar --epic --json "*) cat "$BATS_TEST_TMPDIR/sim.json" ;; esac
 SH
   chmod +x "$BATS_TEST_TMPDIR/bin/notes"
+}
+
+# owned <changes line> <owners line> -> a base plan whose Changes names a path and whose Reviewed has that Owners line.
+owned() {
+  base | sed "s|^Adds: .*|Adds: $1|" | { if [ -n "$2" ]; then sed "s|^- Overlap: .*|&\n- Owners: $2|"; else cat; fi; }
+}
+
+@test "a plan changing .local/bin needs an Owners: line (the Owners rule)" {
+  run gate untyped "$(owned '`.local/bin/foo` (20 lines).' '')"
+  assert_output --partial 'plan-standard: 1 gap'
+  assert_output --partial '## Changes names .local/bin/foo but ## Reviewed has no Owners: line'
+  run gate untyped "$(owned '`.local/lib/foo.sh`.' '')"
+  assert_output --partial 'names .local/lib/foo.sh'
+  run gate untyped "$(owned '`~/.dotfiles-private/.local/bin/foo`.' '')"
+  assert_output --partial 'names .local/bin/foo'
+  run gate untyped "$(owned 'a script in `.local/src/notes-cli/x.rs`.' '')"
+  assert_output --partial 'names .local/src/notes-cli/x.rs'
+}
+
+@test "an Owners: line with a real row key or writer file passes, and so does none: rg <query>" {
+  run gate untyped "$(owned '`.local/bin/foo`.' '`kinds`, .local/bin/agent-queue')"
+  assert_success
+  assert_output ''
+  run gate untyped "$(owned '`.local/bin/foo`.' 'none: rg -n "my_fact" .local/bin')"
+  assert_output ''
+}
+
+@test "an Owners: line naming a missing row, a free-text none: or nothing is denied with the fault named" {
+  run gate untyped "$(owned '`.local/bin/foo`.' 'kinds, no-such-row')"
+  assert_output --partial 'Owners: line names no-such-row, no row key or writer file'
+  refute_output --partial 'kinds,'
+  run gate untyped "$(owned '`.local/bin/foo`.' 'none: nobody owns it')"
+  assert_output --partial 'a none: names the search'
+  run gate untyped "$(owned '`.local/bin/foo`.' 'none:')"
+  assert_output --partial 'a none: names the search'
+  run gate untyped "$(owned '`.local/bin/foo`.' ' ')"
+  assert_output --partial 'Owners: line is empty'
+  run gate untyped "$(owned 'one doc row.' 'no-such-row')"
+  assert_output --partial 'Owners: line names no-such-row'
+}
+
+@test "a docs-only plan needs no Owners: line, and an Owners: line in a code fence does not count" {
+  run gate untyped "$(base)"
+  assert_output ''
+  run gate untyped "$(owned '`.local/src/docs/planning.md` (4 lines).' '')"
+  assert_output ''
+  run gate untyped "$(owned '`.local/bin/foo`.' '' ; printf '\n```\nOwners: kinds\n```\n')"
+  assert_output --partial 'has no Owners: line'
+}
+
+@test "a missing Owners table or fact-owners leaves the Owners check off" {
+  rm "$HOME/.local/src/docs/fleet-states.md"
+  run gate untyped "$(owned '`.local/bin/foo`.' '')"
+  assert_output ''
 }
 
 # proposal <title> <overlap> -> a base plan proposing <title>, with <overlap> on its Overlap: line.
