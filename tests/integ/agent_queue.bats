@@ -261,33 +261,35 @@ load 'agent_queue/common'
 
 @test "one live item per plan phase: a twin under another slug is refused by add and by set, another phase and plan pass" {
   story_notes
-  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/own.md"
-  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/else.md"
-  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/own.md" --project level --slug own
+  # a plan path with no space: the task text names it unquoted, and the sandbox path has one
+  PD="$BATS_TEST_TMPDIR"
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$PD/own.md"
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$PD/else.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$PD/own.md" --project level --slug own
   assert_success
   assert_equal "$(field "$(item queued own-p1)" phases)" 1
-  run "$AQ" add --project level --slug twin "P1 of $SANDBOX/own.md: again"
+  run "$AQ" add --project level --slug twin "P1 of $PD/own.md: again"
   assert_failure
-  assert_output --partial "phase 1 of $SANDBOX/own.md is already held by own-p1"
+  assert_output --partial "phase 1 of $PD/own.md is already held by own-p1"
   ! compgen -G "$AGENT_QUEUE_DIR/*/*-twin.md"
-  run "$AQ" add --project level --slug twin2 "Plan: $SANDBOX/own.md phase 1 under a new name"
+  run "$AQ" add --project level --slug twin2 "Plan: $PD/own.md phase 1 under a new name"
   assert_failure
   assert_output --partial "already held by own-p1"
   "$AQ" add --project level --slug claimer "a session taking on plan work" >/dev/null
-  run "$AQ" set claimer plan="$SANDBOX/own.md" phases=1
+  run "$AQ" set claimer plan="$PD/own.md" phases=1
   assert_failure
-  assert_output --partial "phase 1 of $SANDBOX/own.md is already held by own-p1"
+  assert_output --partial "phase 1 of $PD/own.md is already held by own-p1"
   # negative control: another phase of the plan, and the same phase of another plan, are other work
-  run "$AQ" set claimer plan="$SANDBOX/else.md" phases=1
+  run "$AQ" set claimer plan="$PD/else.md" phases=1
   assert_success
-  run "$AQ" add --project level --slug p3 "P3 of $SANDBOX/own.md: three"
+  run "$AQ" add --project level --slug p3 "P3 of $PD/own.md: three"
   assert_success
   # the holder's own claim, and a closed holder, free nothing wrongly and nothing falsely
   run "$AQ" set own-p1 phases=1
   assert_success
   run "$AQ" move own-p1 done --status cancelled
   assert_success
-  run "$AQ" add --project level --slug twin "P1 of $SANDBOX/own.md: again"
+  run "$AQ" add --project level --slug twin "P1 of $PD/own.md: again"
   assert_success
 }
 
