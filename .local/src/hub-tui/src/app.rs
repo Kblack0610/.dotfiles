@@ -6046,6 +6046,74 @@ mod tests {
         assert_eq!(a.scroll, 0);
     }
 
+    /// A waybar chip's popup (`hub --popup --tab <req>`) on a screen shorter than its page:
+    /// Ctrl-d moves the view half a page down and Ctrl-u brings it back, as nvim's do.
+    fn assert_popup_scrolls_half_a_page(req: &str, mut a: App) {
+        let (t, q) = crate::tabreq::parse(req).unwrap();
+        a.handle(Msg::Tab(t, q));
+        let top = screen(&mut a, 100, 14);
+        // A section request (`infra machines`) opens scrolled to that section.
+        let (page, start) = (a.page, a.scroll);
+        let half = page / 2;
+        assert!(half > 0, "{req}: the page is {page} lines");
+        a.handle(ctrl('d'));
+        let down = screen(&mut a, 100, 14);
+        assert_eq!(
+            a.scroll,
+            start + half,
+            "{req}: Ctrl-d is half a page ({page})\n{down}"
+        );
+        assert_ne!(down, top, "{req}: the view moved");
+        a.handle(ctrl('u'));
+        let back = screen(&mut a, 100, 14);
+        assert_eq!(a.scroll, start, "{req}");
+        assert_eq!(back, top, "{req}: Ctrl-u comes back");
+        // NEGATIVE CONTROL: a plain d is no scroll.
+        a.handle(key('d'));
+        assert_eq!(a.scroll, start, "{req}");
+    }
+
+    #[test]
+    fn the_home_popup_scrolls_half_a_page_on_ctrl_d_and_ctrl_u() {
+        let mut a = infra_app();
+        a.handle(Msg::Boards(Box::new(boards())));
+        assert_popup_scrolls_half_a_page("home", a);
+    }
+
+    #[test]
+    fn the_projects_popup_scrolls_half_a_page_on_ctrl_d_and_ctrl_u() {
+        let mut a = app(Tab::Home);
+        a.handle(Msg::Projects(Box::new(loaded_n(40))));
+        assert_popup_scrolls_half_a_page("projects", a);
+    }
+
+    #[test]
+    fn the_queue_popup_moves_half_a_page_on_ctrl_d_and_ctrl_u() {
+        let mut a = app(Tab::Home);
+        let (t, q) = crate::tabreq::parse("queue").unwrap();
+        a.handle(Msg::Tab(t, q));
+        a.handle(Msg::Queue(Box::new(long_queue(60))));
+        screen(&mut a, 100, 14);
+        let half = a.page / 2;
+        assert!(half > 0);
+        a.handle(ctrl('d'));
+        assert_eq!(a.qv.table.sel, half);
+        let s = screen(&mut a, 100, 14);
+        assert!(s.contains(&format!("Task {half}")), "{s}");
+        a.handle(ctrl('u'));
+        assert_eq!(a.qv.table.sel, 0);
+    }
+
+    #[test]
+    fn the_infra_machines_popup_scrolls_half_a_page_on_ctrl_d_and_ctrl_u() {
+        assert_popup_scrolls_half_a_page("infra machines", infra_app());
+    }
+
+    #[test]
+    fn the_infra_ci_popup_scrolls_half_a_page_on_ctrl_d_and_ctrl_u() {
+        assert_popup_scrolls_half_a_page("infra ci", ci_app());
+    }
+
     #[test]
     fn a_record_named_like_a_sessions_inner_tab_still_opens() {
         // `hub tab 'fleet shepherd'` is the runner named shepherd (as `#fleet/shepherd` is on
@@ -7008,6 +7076,11 @@ mod tests {
 
     /// The cards for tasktab's fixture feed: bnb/demo and personal/garden.
     fn loaded() -> projtab::Loaded {
+        loaded_n(0)
+    }
+
+    /// `loaded()` plus `extra` more projects, so the Projects table is taller than a screen.
+    fn loaded_n(extra: usize) -> projtab::Loaded {
         let stat = |profile: &str, name: &str, done: u32, open: u32| hub_core::projects::Stats {
             profile: profile.into(),
             name: name.into(),
@@ -7030,12 +7103,9 @@ mod tests {
             }),
             ..Default::default()
         };
-        projtab::Loaded {
-            stats: Ok(vec![
-                stat("personal", "garden", 1, 1),
-                stat("bnb", "demo", 1, 3),
-            ]),
-        }
+        let mut stats = vec![stat("personal", "garden", 1, 1), stat("bnb", "demo", 1, 3)];
+        stats.extend((0..extra).map(|i| stat("bnb", &format!("extra-{i:02}"), 1, 2)));
+        projtab::Loaded { stats: Ok(stats) }
     }
 
     /// Answer the reads entering the tab started (the fake prints nothing): wait for both.
