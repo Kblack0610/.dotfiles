@@ -21,7 +21,7 @@ const WATCH_PRE = "w", HIST_PRE = "h", FIX_PRE = "f";
 // One read draws all three: Firing's tblTab reads and paints the page, the other two draw after
 // Fixes inside it.
 const alst = tblTab({
-  tab: "alerts", id: "al", el: "alerts", api: "/api/alerts", hint: "search, or project:dotfiles source:sentinel state:no owner",
+  tab: "alerts", id: "al", el: "alerts", api: "/api/alerts", hint: "search, or project:dotfiles system:fleet source:sentinel state:no owner",
   open: () => alertsOpen,
   lead: () => innerStrip("alerts"),
   params: (p) => { for (const pre of [WATCH_PRE, HIST_PRE, FIX_PRE]) for (const [k, v] of tblParams(st.views.alerts, pre)) p.set(k, v); },
@@ -30,7 +30,7 @@ const alst = tblTab({
   draw: (html) => paint($("alerts"), html + watT.html() + hisT.html(), alertsOpen),
 });
 const watT = tblTab({
-  tab: "alerts", id: "al-w", el: "alerts", pre: WATCH_PRE, hint: "search, or project:dotfiles severity:high", open: () => alertsOpen,
+  tab: "alerts", id: "al-w", el: "alerts", pre: WATCH_PRE, hint: "search, or project:dotfiles system:fleet severity:high", open: () => alertsOpen,
   refresh: () => alst.refresh(), render: () => alst.render(), table: () => alst.data?.watches_table,
   wrap: (html) => alertsWatches(alst.data, html), body: () => watchesBody(alst.data),
 });
