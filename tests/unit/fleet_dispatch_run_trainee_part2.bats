@@ -215,7 +215,7 @@ load 'fleet_dispatch/fleet_dispatch_run_trainee'
   refute_output --partial 'promoted row tr-brief'
 }
 
-@test "trainee floor: a harness with a slot and no row it takes marks the pool dry, starved names it past DISPATCH_STARVED_MIN, and a start clears it (ar-4739)" {
+@test "trainee floor: a harness with a slot and no row it takes marks the pool dry, starved names it past DISPATCH_STARVED_MIN without tripping, and a start clears it (ar-4739, ar-5747)" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_LOW_WATER=0
   fleet_state 8
@@ -236,8 +236,9 @@ load 'fleet_dispatch/fleet_dispatch_run_trainee'
   since=$(awk -F'\t' '$1 == "gotrain" { print $2 }' "$TRAINEE_DRY")
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(cat "$TRAINEE_DRY")" "gotrain	$since"
+  # A dry pool is a supply level, not a starved dispatch: named, and exit 0 (ask 0BQraJ, ar-5747).
   run "$REPO_ROOT/.local/bin/fleet-dispatch" starved
-  assert_failure
+  assert_success
   assert_output --partial 'trainee pool dry since '
   assert_output --partial ': gotrain had a slot and no queued or board row a trainee takes'
   # Younger than the window: not starved for it.
