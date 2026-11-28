@@ -987,10 +987,63 @@ EOF
   assert_output 2
 }
 
+# home-config PR #1521, head 1fbd16c8 (2026-11-25): run 5864 went green, then a re-run of the older run
+# 5863 posted its red zomboid-scripts last, and the combined status read that red (ar-5884)
+fj_runs() {   # <run> <status> posted first, then <run> <status> posted last, for zomboid-scripts
+  jq -cn --arg r1 "$1" --arg s1 "$2" --arg r2 "$3" --arg s2 "$4" '[
+    {id: 30, status: "pending", context: "checks / zomboid-scripts (pull_request)", target_url: "/o/r/actions/runs/\($r1)/jobs/1"},
+    {id: 47, status: $s1, context: "checks / zomboid-scripts (pull_request)", target_url: "/o/r/actions/runs/\($r1)/jobs/1"},
+    {id: 48, status: "success", context: "checks / nut-replay (pull_request)", target_url: "/o/r/actions/runs/5864/jobs/4"},
+    {id: 56, status: $s2, context: "checks / zomboid-scripts (pull_request)", target_url: "/o/r/actions/runs/\($r2)/jobs/1"}]' >"$NOTES_FIXTURE/fj.status"
+}
+
+@test "Forgejo: a stale run's red posted after the newer run's green on the same head reads green and lands" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  fj_runs 5864 success 5863 failure
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green'
+  run grep -c 'POST pulls/42/merge' "$LOG"
+  assert_output 1
+}
+
+@test "Forgejo: a red in the newest run fails checks naming its context, though an older run's green posted last" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  fj_runs 5864 failure 5863 success
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: checks / zomboid-scripts (pull_request)'
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
+}
+
+@test "Forgejo: a red on the second statuses page fails checks naming it; a full first page is read on" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  jq -cn '[range(100; 50; -1) | {id: ., status: "success", context: "c\(.)", target_url: "/o/r/actions/runs/9/jobs/\(.)"}]' >"$NOTES_FIXTURE/fj.status"
+  echo '[{"id":3,"status":"failure","context":"late","target_url":"/o/r/actions/runs/9/jobs/0"}]' >"$NOTES_FIXTURE/fj.status.2"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: late'
+  run grep -c '^curl GET commits/.*/statuses?limit=50&page=[12]$' "$LOG"
+  assert_output 2
+}
+
+@test "Forgejo: a status with no Actions run counts only its newest post, though each post has its own URL" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo '[{"id":1,"status":"failure","context":"ci/build","target_url":"https://ci.example/builds/10"},{"id":2,"status":"success","context":"ci/build","target_url":"https://ci.example/builds/11"}]' >"$NOTES_FIXTURE/fj.status"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green'
+}
+
 @test "Forgejo: a land that would refuse none waits for the head's first status, then stops at checks" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
-  echo '{"state":"","statuses":[]}' >"$NOTES_FIXTURE/fj.status"
+  echo '[]' >"$NOTES_FIXTURE/fj.status"
   fake_sleep
   AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=2 run "$LAND" 42 --item ship --ran-checks
   assert_failure 1

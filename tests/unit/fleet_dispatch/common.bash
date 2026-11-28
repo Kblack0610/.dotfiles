@@ -607,9 +607,9 @@ fj_item() {
   printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
   gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
   stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"; printf "%s %s\n" "$url" "$(cat)" >> "$NOTES_FIXTURE/fj.auth"
-case "$url" in */pulls/12) cat "$NOTES_FIXTURE/fj.pr" ;; */commits/*/status) cat "$NOTES_FIXTURE/fj.status" ;; *) exit 22 ;; esac'
+case "$url" in */pulls/12) cat "$NOTES_FIXTURE/fj.pr" ;; */commits/*/statuses*) cat "$NOTES_FIXTURE/fj.status" ;; *) exit 22 ;; esac'
   fj_pr "$1" "${3:-}"
-  jq -cn --arg s "$2" '{state: $s, statuses: [{status: $s}, {status: "success"}]}' > "$NOTES_FIXTURE/fj.status"
+  jq -cn --arg s "$2" '[{id: 2, status: $s, context: "checks / test"}, {id: 1, status: "success", context: "checks / lint"}]' > "$NOTES_FIXTURE/fj.status"
 }
 # fj_pr <state> [merge sha] [body] -- what Forgejo's API says of PR 12
 fj_pr() {
