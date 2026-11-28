@@ -1484,6 +1484,31 @@ notes --profile work ptask level run lv-8'
   assert_output 0
 }
 
+@test "a row two active items name closes with the last of them, not under the other (ar-6417)" {
+  story_notes
+  "$AQ" add --project game --from board:game:gm-8 --running --slug first-apply "chore(x): apply one" >/dev/null
+  "$AQ" add --project game --from board:game:gm-8 --running --slug second-apply "chore(x): apply two" >/dev/null
+  "$AQ" add --project game --from board:game:gm-8 --running --slug third-apply "chore(x): apply three" >/dev/null
+  "$AQ" move third-apply waiting >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move first-apply done --status ok
+  assert_success
+  assert_line 'first-apply: board row gm-8 left open, second-apply still works it'
+  run grep -c ' ptask .* done ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # an item waiting on the human still works the row
+  run "$AQ" move second-apply done --status ok
+  assert_success
+  assert_line 'second-apply: board row gm-8 left open, third-apply still works it'
+  # NEGATIVE CONTROL: the last one closes it
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move third-apply done --status ok
+  assert_success
+  assert_line 'third-apply: board row gm-8 closed'
+  run grep ' ptask .* done ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes ptask game --agent done gm-8 --proof item:third-apply'
+}
+
 @test "a row already closed stays quiet on an ok close; one the close missed, or a board that cannot be read, is named on stderr" {
   story_notes
   touch "$NOTES_FIXTURE/done.rc"
