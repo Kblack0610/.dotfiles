@@ -384,7 +384,7 @@ mod tests {
         "\n",
         r#"{"slug":"ar-9","red":"watch f","state":"done","queued":"2026-11-06T02:00:00Z","outcome":"cleared"}"#,
         "\n",
-        r#"{"slug":"ar-10","red":"watch board-chain","state":"done","queued":"2026-11-05T12:00:00Z","merged":"fed","outcome":"alert route"}"#,
+        r#"{"slug":"ar-10","red":"watch chain-doctor_fail","state":"done","queued":"2026-11-05T12:00:00Z","merged":"fed","outcome":"alert route"}"#,
         "\n",
     );
 

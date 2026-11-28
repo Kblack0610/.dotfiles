@@ -4,8 +4,10 @@
 #   user-units-failed [--exclude GLOB]... [--exclude-transient]
 #
 # Lists every systemd user unit in the failed state that no --exclude glob matches, one a line.
-# --exclude-transient also leaves out a transient unit (systemd-run): a named one such as
-# ar-3634-backlog-dry-0140.service slips past the run-* glob, and its failure is the job's caller's.
+# --exclude-transient also leaves out a transient unit (systemd Transient=yes, so systemd-run):
+# a named one such as ar-3634-backlog-dry-0140.service (exit 75, 2026-11-22) slips past the run-*
+# glob. Its failure is the job's caller's, and fleet-bench triage still files a fix(unit) row for it,
+# so it keeps one signal. A unit systemctl cannot show is listed, never dropped.
 # Exit 0 when none is left, 1 when one or more is. The exclude list is the watch's own (its
 # expect_cmd), one --exclude per unit class another signal owns, so every other unit is watched.
 # Until 2026-11-21 the watch matched only agentctl*, agent-*, fleet-*, sentinel* and watch-*, and

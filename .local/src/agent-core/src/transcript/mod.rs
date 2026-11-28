@@ -24,6 +24,14 @@ pub use said::{said_around_at, Said};
 pub use time_use::{time_use_at, TimeUse};
 pub use usage::{context_window, uses, Uses};
 
+/// The lines of a compiled-in `.config/agent-panel/*.conf`, trimmed, past its comments and blank
+/// lines: the one parse every conf this module reads goes through.
+fn conf_lines(conf: &'static str) -> impl Iterator<Item = &'static str> {
+    conf.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+}
+
 use plan::{plan_file, plan_slug};
 use prompt::human_at;
 use read::{collapse, read, truncate, turns};
@@ -61,7 +69,7 @@ pub struct FleetInfo {
     /// Epoch seconds of the newest entry `timestamp`, None when no entry carries one.
     /// The file's mtime is not this: it moves about hourly with no new lines.
     pub last_entry: Option<u64>,
-    /// Absolute paths the session changed through Edit, Write, MultiEdit or NotebookEdit,
+    /// Absolute paths the session changed through an edit tool (edit-tools.conf),
     /// in first-edit order. fleet-sessions counts only these as its dirt in a shared checkout.
     pub edited_files: Vec<String>,
     pub time_use: TimeUse,

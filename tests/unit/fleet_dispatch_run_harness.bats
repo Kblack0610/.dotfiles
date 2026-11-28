@@ -59,6 +59,22 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'started queue item pin-free on ocfree (beam)'
 }
 
+# ar-5893: fleet-bench sources reads the hold through this verb, not the ledger.
+@test "provider-holds: names each source whose hold stands with its why, and nothing for a lapsed one" {
+  route_ready; ocfree_ready
+  export FLEET_DISPATCH_STATE="$BATS_TEST_TMPDIR/state"; mkdir -p "$FLEET_DISPATCH_STATE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" provider-holds
+  assert_success
+  assert_output '{}'
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) + 3600 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" provider-holds
+  assert_success
+  assert_equal "$(jq -r '.ocfree' <<<"$output")" "a run on ocfree ended on a provider refusal, so it takes no start until $(date -d "@$(awk -F'\t' '{print $3}' "$FLEET_DISPATCH_STATE/provider-ends.tsv")" "+%F %H:%M")"
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) - 60 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" provider-holds
+  assert_output '{}'
+}
+
 # 2026-11-18: three nim canaries waited behind a 96 C workstation while razer-laptop sat idle (ar-3222).
 @test "fleet_harnesses: a free-harness canary starts on a worker that runs it ready while this machine is hot, and waits while the worker cannot" {
   route_ready; ocfree_ready
@@ -155,6 +171,40 @@ case "$1" in log) echo run-9 ;; classify)
   assert_not_called 'claude-acct link'
 }
 
+# 2026-11-21: trader tr-109 ran on razer-laptop with only the schedules-sync kubeconfig and failed Forbidden on freqtrade jobs (ar-5944).
+@test "needs:cluster: an item tagged for the cluster login, or a research row of a cluster project, stays off every worker; the same item untagged is placed" {
+  route_ready
+  acct main:ok
+  agent-queue move fix-menu done --status ok >/dev/null   # route_ready's claude item would take the worker's one session
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  worker '2.0 16 1 50' true '[]' '[]'
+  agent-queue add --project game --slug tag-cl --tags needs:cluster --priority urgent "Read the freqtrade jobs" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item tag-cl on razer-laptop'
+  [ -n "$(qitem queued tag-cl)" ] || fail "the needs:cluster item left the queue: $output"
+  # The wait names the cause.
+  assert_output --partial 'it needs the cluster login (needs:cluster), which only this machine has'
+  # A hand start on the worker is refused with the reason, and the item stays queued.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item tag-cl --host razer-laptop
+  assert_output --partial 'tag-cl needs the cluster login (needs:cluster), which only this machine has'
+  [ -n "$(qitem queued tag-cl)" ] || fail "the refused hand start moved the item: $output"
+  # Negative control: the same item without the tag is placed on the worker.
+  agent-queue set tag-cl tags="size/s" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item tag-cl on razer-laptop'
+  # A research row of a cluster project is the same without the tag.
+  agent-queue move tag-cl done --status ok >/dev/null
+  export DISPATCH_CLUSTER_PROJECTS=game
+  agent-queue add --project game --slug res-cl --from research:retro --priority urgent "Retro the cluster" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item res-cl on razer-laptop'
+  [ -n "$(qitem queued res-cl)" ] || fail "the cluster research row left the queue: $output"
+  # Positive control: the same research row of a project that is not cluster work, and a plain item, are placed.
+  export DISPATCH_CLUSTER_PROJECTS=home-config
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item res-cl on razer-laptop'
+}
+
 @test "fleet_harnesses: an older fleet-dispatch on the worker, or a name that is no harness name, leaves the worker reachable and says why" {
   worker '2.0 16 1 50' true '[]' '[ocfree, Bad_Name]'
   # The probe runs for real here; the worker's fleet-dispatch predates harness-ready (its usage exit).
@@ -245,6 +295,27 @@ case "$1" in log) echo run-9 ;; classify)
   assert_equal "$(qfield "$(qitem running t-one)" agent)" claude
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item t-one-b on codex (sol), routed by model-lane'
+}
+
+# 2026-11-26: ar-5957's trainee run ended on a provider refusal; requeued with agent: and routed: its trainee,
+# every pass routed it to claude and the start relaunched the trainee from agent:, failing the pass (ar-5747).
+@test "trainee: a requeued trainee item whose agent: is its routed: record starts on claude; a pin with no routed: stays on its harness" {
+  trainee_ready
+  acct "main:ok:/home/u/.claude:"
+  agent-queue add --project game --slug t-redo --priority urgent --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  agent-queue set t-redo agent=gotrain routed=gotrain model=glm trainee=gotrain:glm provider_tries=1 >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'could not start queue item t-redo'
+  assert_output --partial 'started queue item t-redo'
+  assert_equal "$(qfield "$(qitem running t-redo)" agent)" claude
+  assert_equal "$(qfield "$(qitem running t-redo)" routed)" ''
+  assert_not_called 'opencode run'
+  # Negative control: the same item with no routed: is a pin, so a hand start keeps gotrain and refuses it there.
+  agent-queue move t-redo queued >/dev/null
+  agent-queue set t-redo agent=gotrain model=glm >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item t-redo
+  assert_output --partial 'start: gotrain runs in a sandbox that sees its worktree alone'
+  assert_not_called 'opencode run'
 }
 
 @test "trainee: a slug with a lane trainee run in model-lane's log is refused, though its fresh item carries no trainee stamp" {

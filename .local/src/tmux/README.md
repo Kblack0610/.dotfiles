@@ -244,7 +244,10 @@ Two things verified, both load-bearing:
   ignores a window jump within one session (the agent panel's). Hooks in `.tmux.conf`
   (`client-attached`, `client-session-changed`, `session-window-changed`, index 1) run
   `tmx mark` on every arrival, whatever moved you, and it keeps the place now and the one
-  before per client tty in `~/.local/state/tmx/places/`.
+  before per client tty in `~/.local/state/tmx/places/`. Marks run one at a time under a
+  `flock` on that directory's `.lock` (the Brewfile installs `flock` on the Mac), and a mark
+  records only a client that is still on that window, so a hook that runs late on the world
+  you just left cannot make it "now" again; a window left before its hook ran is skipped.
 
 **tmux cannot move a live session between servers** - there is no `move-session -L`.
 Putting an existing session on another server means recreating it there.
@@ -368,7 +371,7 @@ breaking all three at once.
 | `landed` | clean, its work merged into the trunk or HEAD on a live remote branch (gc and reap run `git fetch --all --prune` first, and a failed fetch keeps that repo's pushed-only trees held), or past a PR its forge (GitHub, or Forgejo for a Forgejo-canonical repo) reports merged with only clean merges since, nobody in it | reaps it; if the reap refuses, keeps it with that reason | the reap |
 | `husk` | no `.git`, only caches a tool rewrote after the tree was removed | reaps it | the reap |
 | `claimed` | a live session, pane, Unity editor or process is in it, or another tool holds a git lock on it (a runner that reuses one tree every pass), or a running, waiting or review agent-queue item names its session (so a crash that kills tmux does not free it before restore); the reason names its unlanded work, or what is in it when the work has landed | keeps it | the session ends, that tool unlocks it, or the item closes |
-| `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, or a submodule worktree lives off it | keeps it and names it every night; once it has gone `HOLD_DAYS` (7) unchanged the `gc` runner's `worktree-gc` step runs `wt archive` on it, up to `WORKTREE_CAP` a night | `wt archive` (`wt revive <bundle>` restores it), or the human |
+| `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, a submodule worktree lives off it, or `git status` fails there (a broken submodule `.git`) | keeps it and names it every night; once it has gone `HOLD_DAYS` (7) unchanged the `gc` runner's `worktree-gc` step runs `wt archive` on it, up to `WORKTREE_CAP` a night | `wt archive` (`wt revive <bundle>` restores it), or the human |
 | `not-a-worktree` | a symlink, a main checkout, a dir with no `.git` holding more than caches, or a `.git` git cannot resolve | skips it, and does not count it as held | the human |
 
 A plain file in `~/.worktrees` is not listed at all. `wt new` creates a tree (or recycles an idle agent-N in place) and its session claims it at once, so `created` and `recycled` are moments, not states gc can see. The picker and `wt --list` still show their own work column (`dirty`, `unlanded`, `reapable`), not these words.

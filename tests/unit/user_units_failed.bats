@@ -86,6 +86,7 @@ failed() { printf '%s loaded failed failed %s\n' "$1" "${2:-unit}" >> "$STUB_FAI
   assert_output "git-sync-notes.service"
   # negative control: without the flag the transient unit trips it too
   run "$BIN" --exclude 'run-*'
+  assert_failure 1
   assert_output "ar-3634-backlog-dry-0140.service
 git-sync-notes.service"
 }

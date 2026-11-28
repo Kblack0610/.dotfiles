@@ -214,18 +214,21 @@ const sprints = {
 const BUCKET = ["WORKING", "STALLED", "NEEDS", "WORKING", "LANDED", "DONE"];
 const SESSION_ROWS = 342;
 const sessions = {
-  table: table(SESSION_ROWS, ["bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source", "session"], ["all", "running", "needs you", "stalled", "ended today"], { project: PROJECTS.slice(0, 3), harness: ["claude", "codex"] }),
+  table: table(SESSION_ROWS, ["bucket", "activity", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source", "session", "machine"], ["all", "running", "needs you", "stalled", "ended today"], { project: PROJECTS.slice(0, 3), harness: ["claude", "codex"] }),
   rows: rows(SESSION_ROWS, (i) => ({ key: `s-${i}`, target: `agent-${i}`, session_id: `${String(i).padStart(8, "0")}-aaaa-bbbb-cccc-000000000000`, bucket: pick(BUCKET, i), activity: pick(["editing", "gate", "review"], i), project: pick(PROJECTS, i), task: qTitle(i), by: pick(["dispatch", "hand", "resume"], i), pr: i > 2 ? `#${1590 + i}` : "", pr_state: i > 2 ? "open" : "", ci: i > 2 ? "green" : "", phases_done: i % 6, phases_total: 5, idle_min: 2 + i * 6, ended: null, context_tokens: i % 4 ? 40000 + i * 900 : null, context_window: i % 4 ? 200000 : null, context_pct: i % 4 ? Math.round((40000 + i * 900) / 2000) : null, cost_usd: 1.5 + i * 2.25, account: pick(["main", "bnb", "alt"], i), harness: pick(["claude", "codex"], i), source: pick(["queue", "hand"], i) })),
   spend_usd: 41.5, buckets: ["NEEDS", "STALLED", "WORKING", "LANDED", "DONE"], errors: [],
 };
 Object.assign(sessions, paged(sessions, "sessions/sessions"));
 const capacity = { parts: [{ text: "39 live", warn: false, start: "", confirm: "" }, { text: "2 slots free", warn: true, start: "", confirm: "" }], unlinked: 0, live: 39, errors: [] };
-const watch = { state: { sessions: rows(39, (i) => ({ target: `lab/agent-${i}:1`, bucket: pick(BUCKET, i), age_min: 30 + i * 20 })), vocab: { buckets: sessions.buckets }, generated_at: iso(NOW) }, transitions: [] };
+const watch = { state: { sessions: rows(39, (i) => ({ target: `lab/agent-${i}:1`, bucket: pick(BUCKET, i), age_min: 30 + i * 20 })), vocab: { buckets: sessions.buckets }, generated_at: iso(NOW) }, transitions: [],
+  // hub_core::boards::lanes: one lane per live session over the last day, as served.
+  lanes: { t0: (NOW - 86400) * 1000, until: NOW * 1000, lanes: [] } };
+watch.lanes.lanes = watch.state.sessions.map((s) => ({ target: s.target.split("/").pop(), gone: false, segs: [{ a: Math.max(watch.lanes.t0, (NOW - s.age_min * 60) * 1000), b: NOW * 1000, key: s.bucket, title: `${s.bucket} now` }] }));
 // Log's Rundowns: as many as agent-web keeps (shepherd.rs RUNDOWNS), each a long sum-up like the
 // live ones, of which the server sends the first page, so the inner tab's height is measured at a live count.
 const rundownBody = (i) => `## Your requests\n\n${rows(24, (k) => `- ${SLUGS[(i + k) % SLUGS.length]}-${k}, queued, no open PR, no ETA, waits on: ${TEXT[k % TEXT.length]}`).join("\n")}\n`;
 const shepherd = {
-  target: "", status: "", stats: null, ledger: { due: [], lease_at: null, lease_holder: "" },
+  target: "", status: "", pass: null, pass_error: null, ledger: { due: [], lease_at: null, lease_holder: "" },
   rundowns: rows(60, (i) => ({ file: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")}T${String(2359 - i).padStart(4, "0")}Z.md`, title: TEXT[i % TEXT.length].slice(0, 60), stamp: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")} 12:${String(i % 60).padStart(2, "0")} UTC`, body: rundownBody(i) })),
 };
 { const p = paged({ rows: shepherd.rundowns, table: { shown: shepherd.rundowns.length, pager: null } }, "rundowns"); Object.assign(shepherd, { rundowns: p.rows, rundowns_table: p.table }); }
@@ -235,7 +238,7 @@ const runner = (i) => ({ labels: { name: `runner-${i}`, host: pick(["asus-laptop
 const infra = {
   ok: true, at: NOW, grafana: home.grafana, down: [],
   instant: { cc: [{ labels: { __name__: "cc:overall_status" }, value: 0 }, { labels: { __name__: "cc:asks_open" }, value: 2 },
-    ...["workstation", "asus-laptop"].flatMap((host, i) => [["cc:host_cores", 24], ["cc:host_cpu_busy_ratio", 0.7 - i / 2], ["cc:host_mem_used_ratio", 0.5], ["cc:host_load1", 12], ["cc:host_temp_c", 71]].map(([__name__, value]) => ({ labels: { __name__, host }, value })))], red: [], runners: rows(4, runner), waiting: [], gates: [], hourly: [], local_hourly: [], failed: [], local_failed: [], recent: [], recent_dur: [], power: [], governor: [], cores: [], runner_use: [], withheld: [] },
+    ...["workstation", "asus-laptop"].flatMap((host, i) => [["cc:host_cores", 24], ["cc:host_cpu_busy_ratio", 0.7 - i / 2], ["cc:host_mem_used_ratio", 0.5], ["cc:host_load1", 12], ["cc:host_temp_c", 71]].map(([__name__, value]) => ({ labels: { __name__, host }, value })))], red: [], runners: rows(4, runner), waiting: [], gates: [], hourly: [], local_hourly: [], failed: [], local_failed: [], recent: [], recent_dur: [], cores: [], runner_use: [] },
 };
 const jobs = {
   table: table(7, ["state", "source", "name", "started", "took", "result", "host", "detail"], ["all", "running", "queued", "done", "failed"], { source: ["forgejo", "github", "local"], result: ["ok", "failed"] }),
@@ -246,8 +249,8 @@ const jobs = {
 const localFail = (i) => ({ repo: "game-core-playground", branch: `feat/${SLUGS[i]}`, platform: pick(["android", "windows", "ios"], i), result: pick(["failure", "cancelled"], i), n: 3 - i, last: ago(30 + i * 90) });
 infra.ci = { hosts: 3, slots: 6, busy: 4, queued: 1, oldest: ago(25), red: [], day: { runs: 40, pass: 0.9, failed_main: 1, failed_branch: 3, cancelled: 2, local: 5, local_pass: 0.8, read: true } };
 infra.tables = {
-  machines: { rows: [], table: table(0, ["machine", "state", "booked", "cpu", "6h", "load", "mem", "temp", "disk", "running", "next", "governor", "power", "up"]) },
-  pools: { rows: [], table: table(0, ["pool", "weight", "running", "waiting", "oldest", "done", "pass", "machines"]) },
+  machines: { rows: [], table: table(0, ["machine", "state", "booked", "cpu", "6h", "load", "mem", "temp", "disk", "running", "next", "up"]) },
+  pools: { rows: [], table: table(0, ["pool", "running", "waiting", "oldest", "done_1h", "done_5h", "done", "usual", "pass", "machines"]) },
   runners: { rows: [], table: table(0, ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"]) },
   queued: { rows: [], table: table(0, ["job", "pool", "ref", "n", "wait", "needs", "can"]) },
   local: { rows: rows(3, localFail), table: table(3, ["last", "repo", "branch", "platform", "result", "failed"], ["all"], { repo: ["game-core-playground"], platform: ["android", "windows", "ios"] }) },
@@ -357,13 +360,13 @@ alertRows.push({ ...amPage(0), what: "HomelabCriticalVulnerability", about: "", 
 const alerts = {
   at: NOW, level: "red", health: [{ name: "k3s", level: "red" }, { name: "ci", level: "ok" }], components: [{ domain: "k3s", name: "nodes", level: "red" }],
   firing: alertRows, rows: alertRows,
-  table: table(7, ["sev", "what", "project", "source", "since", "owner", "state"], ["all", "trip", "error", "no owner"], { sev: ["high", "normal", "low"], source: ["sentinel", "red_now", "infra"], state: ["fixing", "no owner", "error"] }),
+  table: table(7, ["sev", "what", "project", "system", "source", "since", "owner", "state"], ["all", "trip", "error", "no owner"], { sev: ["high", "normal", "low"], source: ["sentinel", "red_now", "infra"], state: ["fixing", "no owner", "error"] }),
   fixes: { open: [{ slug: SLUGS[0], red: TEXT[0], outcome: "fixing", queued: iso(ago(30)), pr: "", pr_url: "" }], settled: [], summary: "1 open" },
   history: rows(3, (i) => ({ at: ago(30 + i * 60), actor: "sentinel", verb: "tripped", text: `Sentinel: ${TEXT[i]}`, source: "agent-notify" })),
   watches: rows(4, (i) => ({ name: SLUGS[i], state: pick(["TRIP", "ERROR", "OK", "new"], i), severity: "high", since: ago(40), lastrun: ago(2), lasttrip: null, place: TEXT[i], what: "", action: "", evidence: "" })),
   counts: { firing: 7, tripped: 4, errors: 2, no_owner: 2, fixes_open: 1, fixes_settled: 0, history: 3, history_older: 0, watches: 4, watches_tripped: 1, watches_error: 1, watches_ok: 1, watches_new: 1, alertmanager: 1, alertmanager_alerts: 3 },
   strip: { firing: 7, fixes: 1, watches: 3 },
-  watches_table: table(4, ["name", "state", "severity", "project", "since", "lastrun", "place"], ["all", "trip", "error", "new", "ok"], { severity: ["high"], project: PROJECTS.slice(0, 2) }),
+  watches_table: table(4, ["name", "state", "severity", "project", "system", "since", "lastrun", "place"], ["all", "trip", "error", "new", "ok"], { severity: ["high"], project: PROJECTS.slice(0, 2) }),
   history_table: table(3, ["when", "actor", "verb", "prio", "source", "text"], ["all", "loud", "failed"], { actor: ["sentinel"], verb: ["tripped"] }),
   errors: [],
 };
@@ -391,7 +394,7 @@ const stackAll = {
   rows: rows(STACK_SKILLS, (i) => ({ name: `${pick(SLUGS, i)}-${i}`, category: pick(["ops", "workstreams", "monitoring"], i), description: TEXT[i % TEXT.length], repo: pick(["public", "private"], i), paths: i % 9 ? [] : ["**/*.unity"], calls: i * 7, runners: i % 4 ? [] : [`fleet-${pick(SLUGS, i)}`], drift: i % 5 ? [] : [{ kind: "deadpath", item: "~/gone", detail: "path does not exist" }] })),
   agents: { table: table(12, ["agent", "model", "tools", "repo"], ["all"], { model: ["sonnet", "inherit"] }), rows: rows(12, (i) => ({ name: `${pick(SLUGS, i)}-agent`, model: i % 2 ? "sonnet" : "", tools: "Read, Grep, Glob, Bash, WebSearch, WebFetch", repo: "public", description: TEXT[i % TEXT.length] })) },
   hooks: { table: table(STACK_HOOKS, ["harness", "event", "matcher", "script", "from", "rules"], ["all", "missing"], { harness: ["claude", "codex"], event: ["PreToolUse", "Stop"] }), rows: rows(STACK_HOOKS, (i) => ({ harness: pick(["claude", "codex"], i), event: pick(["PreToolUse", "Stop", "SessionStart"], i), matcher: i % 3 ? "Bash|Read|Edit|Write|MultiEdit" : "", script: `${pick(SLUGS, i)}.sh`, command: `~/.claude/hooks/${pick(SLUGS, i)}.sh`, from: "settings.json", found: i !== 3, rules: i % 4 ? 0 : 2, source: `~/.dotfiles/.claude/hooks/${pick(SLUGS, i)}.sh` })) },
-  rules: { table: table(STACK_RULES, ["rule", "kind", "number", "confidence", "state", "source"], ["rules", "mechanisms", "all", "stale", "moved", "restates", "dead", "absent"], { kind: ["invariant", "provisional"], state: ["ok", "moved"] }), rows: rows(STACK_RULES, (i) => ({ rule: TEXT[i % TEXT.length], kind: pick(["provisional", "invariant"], i), number: String(i * 3), confidence: pick(["high", "medium", "low"], i), form: "rule", state: i % 7 ? "ok" : "moved", source: "~/.local/src/docs/standards.md", today: "", revisit: "", why: TEXT[(i + 1) % TEXT.length] })) },
+  rules: { table: table(STACK_RULES, ["rule", "kind", "number", "confidence", "state", "source"], ["rules", "mechanisms", "all", "stale", "moved", "restates", "layer", "dead", "absent"], { kind: ["invariant", "provisional"], state: ["ok", "moved"] }), rows: rows(STACK_RULES, (i) => ({ rule: TEXT[i % TEXT.length], kind: pick(["provisional", "invariant"], i), number: String(i * 3), confidence: pick(["high", "medium", "low"], i), form: "rule", state: i % 7 ? "ok" : "moved", source: "~/.local/src/docs/standards.md", today: "", revisit: "", why: TEXT[(i + 1) % TEXT.length] })) },
   rule_files: [{ name: "agent-runtime.md", paths: [".local/bin/agentctl*", ".local/bin/fleet-*"] }, { name: "skill-corpus.md", paths: [".claude/skills/**"] }],
 };
 // The read with Rules on page `rp`: what /api/stack and /api/stack?rpg=N answer.
@@ -414,7 +417,7 @@ const costs = {
   totals: [{ window: "7d", usd: 2204, estimated: 0, sessions: 512, days: 7, through: "2026-11-14" }, { window: "30d", usd: 8120, estimated: 0, sessions: 2040, days: 30, through: "2026-11-14" }],
   totals_note: "7d and 30d are whole nightly days to the newest snapshot; the cut table's 24h is the live file",
   fleet_cost: {
-    why: null, usd: "about $859", cash: "$320", burn: "$539", as_of: NOW - 600, stale: false,
+    why: null, usd: "$859", cash: "$320", burn: "$539", as_of: NOW - 600, stale: false,
     coverage: "69% of tokens estimated: 275 of 453 sessions have no cost telemetry",
     unpriced: ["claude-sonnet-4-6: 32M tokens in 1 session not in the total, no billed sessions"],
     foot: "% is of the whole fleet's 24h cost. \"estimated\" is priced from tokens at rates fitted to measured sessions.",
@@ -509,12 +512,23 @@ const pipelines = {
 // Tests: hub_core::junit's suites of the picked run of one repo's test workflow, and the quarantine.
 const testRun = (id, o = {}) => ({ repo: "studio/game-core-playground", id, attempt: 1, branch: "main", sha: "abc1234", title: TEXT[4], state: "red", level: "bad", started: ago(90), prs: [], url: "https://github.com/studio/game-core-playground/actions/runs/1", ...o });
 const suite = (i) => ({ tier: pick(["EditMode", "PlayMode"], i), suite: `Game.Core.${pick(["Lobby", "HostMigration", "Inventory", "Yard"], i)}Tests`, tests: 40 + i, passed: 38 + i - (i % 2), failed: i % 2, quarantined: 0, skipped: 1, time: 60 + i * 12.5, state: i % 2 ? "failed" : "passed", level: i % 2 ? "bad" : "ok" });
+const testLane = (workflow, runs, rows, o = {}) => ({
+  workflow, run: runs[0], pinned: false, runs, says: "166 tests in 4 suites: 2 failed, 4 skipped, 160 passed",
+  totals: { suites: 4, tests: 166, passed: 160, failed: 2, skipped: 4, failed_suites: 2, time: 315 },
+  rows, fold: null, note: null, errors: [],
+  table: table(rows.length, ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"], ["all", "failed", "quarantined", "skipped", "passed"], {}), ...o,
+});
+const histOf = (i) => (i % 2 ? ["passed", "failed", "passed", "failed", "failed"] : ["passed", "passed", "passed", "passed", "passed"]);
 const tests = {
   at: NOW, stale_after: 1800, repos: ["studio/game-core-playground", "Kblack0610/.dotfiles"], repo: "studio/game-core-playground",
-  runs: [testRun(43001), testRun(43000, { state: "green", level: "ok", branch: "feat/yard" })], run: testRun(43001),
-  summary: "main abc1234: 166 tests in 4 suites: 2 failed, 4 skipped, 160 passed", totals: { suites: 4, tests: 166, passed: 160, failed: 2, skipped: 4, failed_suites: 2, time: 315 },
-  rows: rows(4, suite), more: 0, fold: null, note: null, errors: [],
-  table: table(4, ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"], ["all", "failed", "quarantined", "skipped", "passed"], { tier: ["EditMode", "PlayMode"] }),
+  totals: { suites: 5, tests: 200, passed: 193, failed: 2, skipped: 5, failed_suites: 2, time: 380 },
+  lanes: [
+    testLane("test.yml", [testRun(43001, { event: "schedule" }), testRun(43000, { state: "green", level: "ok", branch: "feat/yard" })], rows(4, (i) => ({ ...suite(i), history: histOf(i), flake: i % 2 ? 40 : 0 }))),
+    testLane("playmode.yml", [testRun(43002, { state: "green", level: "ok", event: "schedule" })], rows(1, suite), { totals: { suites: 1, tests: 34, passed: 33, failed: 0, skipped: 1, failed_suites: 0, time: 65 }, says: "34 tests in 1 suite: 0 failed, 1 skipped, 33 passed" }),
+    { workflow: "soak.yml", run: null, pinned: false, runs: [], says: "", totals: { suites: 0, tests: 0, passed: 0, failed: 0, skipped: 0, failed_suites: 0, time: 0 }, rows: [], fold: null, note: "soak.yml: no finished run in the ledger (a cancelled or skipped run is not listed)", errors: [], table: table(0, ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"], ["all"], {}) },
+  ],
+  errors: [],
+  table: table(5, ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"], ["all", "failed", "quarantined", "skipped", "passed"], { tier: ["EditMode", "PlayMode"] }),
 };
 
 // /api/home/cards: Needs you, then hub_core::cards::grid (Main red is the widgets' only; cards.rs PAGE_SKIPS), one card per tab, a link as its href.
@@ -529,11 +543,11 @@ const GRID_CARDS = [
   kcard("sessions", "Sessions", "39", "live sessions", "warn", [["ok", 34], ["warn", 3], ["red", 2]], [["Working", "34"], ["Need you", "3", "warn"], ["Stalled", "2", "red"]], [["trader-x", "stalled 3h", "red"], ["binks", "ask 40m"]]),
   kcard("board", "Board", "4115", "open rows, 277 doing", "red", [["ok", 3882], ["warn", 232], ["red", 1]], [["Doing", "277"], ["Requested", "232", "warn"], ["Late", "1", "red"]], [["submit Shape City", "shape-city - backlog, due 11-17", "red"], ["one tag table for intake lines", "agent-runtime - next up"]]),
   kcard("queue", "Queue", "12", "queued, 7 running", "warn", [["ok", 7], ["warn", 5]], [["Ready", "9"], ["Held", "3", "warn"], ["Done 24h", "41"]], [["review", "5 waiting 2h"]], { first_head: "Bottleneck" }),
-  kcard("alerts", "Alerts", "3", "firing", "red", [["red", 1], ["warn", 2]], [["Red", "1", "red"], ["Amber", "2", "warn"], ["Owned", "1"]], [["gateway 5xx", "home-k3s", "red"], ["board-chain", "stale 2h"]]),
+  kcard("alerts", "Alerts", "3", "firing", "red", [["red", 1], ["warn", 2]], [["Red", "1", "red"], ["Amber", "2", "warn"], ["Owned", "1"]], [["gateway 5xx", "home-k3s", "red"], ["chain-doctor_fail", "stale 2h"]]),
   kcard("done", "Done today", "85", "PRs merged", "ok", [], [["Shipped", "62"], ["Checks", "9"]], [["unity-core-playground", "30 shipped, 2 checks, 25 PRs", "ok"], ["dotfiles", "21 shipped, 40 PRs", "ok"]], { first_head: "By project", link: "#queue" }),
   kcard("health", "Health", "11 of 12", "machines up", "red", [["ok", 11], ["red", 1]], [["Domains down", "0"], ["Domains warn", "1", "warn"], ["Domains up", "6"], ["Vitals", "5/6", "warn"]], [["mac-mini", "down 2h", "red"]], { link: "#infra" }),
   kcard("ci", "CI", "4", "CI running", "red", [["ok", 5], ["red", 1]], [["Queued", "1"], ["Runners up", "5/6", "red"], ["No runner", "0"], ["Stuck", "0"]], [["runner-3 down", "CI runner", "red"], ["app CI", "oldest queued, 4m x1"]], { link: "#ci" }),
-  kcard("costs", "Costs", "$412", "Claude in 24h", "ok", [["ok", 3]], [["5h left", "62%"], ["Week", "41%"], ["Est.", "18%"]], [["agent-runtime", "$210", "ok"]]),
+  kcard("costs", "Costs", "$412", "estimated, 24h", "ok", [["ok", 3]], [["5h left", "62%"], ["Week", "41%"], ["Est.", "18%"]], [["agent-runtime", "$210", "ok"]]),
   kcard("releases", "Releases", "6", "apps", "warn", [["ok", 5], ["warn", 1]], [["Draft", "1", "warn"], ["Failed", "0"], ["Pinned", "2"]], [["binks", "draft gate"]]),
   kcard("schedules", "Schedules", "41", "scheduled", "ok", [["ok", 39], ["warn", 2]], [["Failing", "2", "warn"], ["Streak", "1"]], []),
   kcard("projects", "Projects", "-", "no data", "nodata", [], [], [], { error: "lab: unreadable" }),
@@ -576,7 +590,7 @@ const byTab = (tab) => GRID_CARDS.find((c) => c.tab === tab) ?? (() => { throw n
 export const CARD_ORDER = ids("ORDER");
 const homeCards = CARD_ORDER.filter((t) => t !== "red").map(byTab);
 export const FIXTURES = {
-  "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, sessions: 0, href: "#home" }, "/api/session-options": { describe: {}, accounts: [] },
+  "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, sessions: 0, href: "#home" }, "/api/session-options": { actions: [], accounts: [] },
   "/api/home": home, "/api/home/cards": homeCards, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
   "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/candidates?counts=1": candCounts, "/api/queue/projects": PROJECTS.slice(0, 5),
   "/api/projects": projects, "/api/deliverables": deliverables, "/api/coverage": coverage, "/api/stages": stages, "/api/stages/requirements": stageReqs, "/api/board": board, "/api/sprints": sprints, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,

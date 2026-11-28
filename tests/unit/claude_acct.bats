@@ -508,20 +508,6 @@ week() {
 # field <name> <jq>: from status --json's rows or room --json's accounts
 field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | .[] | select(.name == \$a) | $2"; }
 
-@test "status: a reset 7 days out or more shows its date, a nearer one its weekday alone" {
-  export CLAUDE_ACCT_NOW=$NOW
-  week main 30 200
-  run "$ACCT" status
-  assert_success
-  assert_output --partial "$(date -d "@$((NOW + 200 * 3600))" '+%a %m-%d %H:%M')"
-  # negative control: 6 days out reads as the weekday alone
-  week main 30 144
-  run "$ACCT" status
-  assert_success
-  assert_output --partial "$(date -d "@$((NOW + 144 * 3600))" '+%a %H:%M')"
-  refute_output --partial "$(date -d "@$((NOW + 144 * 3600))" '+%a %m-%d %H:%M')"
-}
-
 @test "status --json: run_out is when the live sessions empty the week at their burn now" {
   # 2026-11-09: a straight line from the week start said main ran out Tue 21:12; its burn then ran
   # it out Wed night to Thu morning (backtest: .59 points/h off over 6h, live x rate .32).
@@ -930,6 +916,25 @@ STUB
   [[ "$stderr" == *'no account has room'* ]]
 }
 
+@test "status and room: a reset more than 6 days out prints its date, not a weekday" {
+  # 2026-11-26 (ar-2755): a week that just reset lands on the weekday of today, so "Thu 16:00" read
+  # as this Thursday. Exactly 6 days (144h) keeps the weekday.
+  export CLAUDE_ACCT_NOW=$NOW TZ=UTC
+  rm -rf "${CLAUDE_ACCT_PROC:?}"/*
+  week alt 97 100
+  week main 20 144
+  run "$ACCT" status
+  assert_line --regexp "^main +- +20% +[0-9]+% +- +$(date -u -d "@$((NOW + 144 * 3600))" '+%a %H:%M') "
+  week main 20 145
+  run "$ACCT" status
+  assert_line --regexp "^main +- +20% +[0-9]+% +- +$(date -u -d "@$((NOW + 145 * 3600))" '+%m-%d %H:%M') "
+  week main 96 145
+  week alt 97 145
+  run --separate-stderr "$ACCT" room
+  assert_failure 1
+  [[ "$stderr" == *"lasts to its reset $(date -u -d "@$((NOW + 145 * 3600))" '+%m-%d %H:%M')" ]]
+}
+
 @test "room: with none, the line names the closest account, how far past its pace, and when it runs out" {
   # 2026-11-05 12:33: alt 15% used with 9% of its week gone, 1 point past the 5 of slack; bnb (here
   # main) at 96%, inside its reserve. "no account has room" alone read as every account full.
@@ -1183,7 +1188,7 @@ scope_env() {
   mkdir -p "$XDG_RUNTIME_DIR/systemd" "$SANDBOX/repo/unity-core-playground"
   rm -f "$XDG_RUNTIME_DIR/systemd/private"
   export BUS_LOG="$SANDBOX/bus.log"; : > "$BUS_LOG"
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$XDG_RUNTIME_DIR/systemd/private"
+  unix_sock "$XDG_RUNTIME_DIR/systemd/private"
   cat > "$SANDBOX/bin/busctl" <<'STUB'
 #!/bin/sh
 for a; do echo "bus: $a"; done >> "$BUS_LOG"
@@ -1619,7 +1624,8 @@ case "$url" in
   */v1/model/info) cat "$SANDBOX/gw/model-info.json" 2>/dev/null || exit 22 ;;
   */v1/chat/completions) if [[ -f "$SANDBOX/gw/route-spent" ]]; then cat "$SANDBOX/gw/route-spent"; else echo '{"choices":[{"message":{"content":"x"}}]}'; fi ;;
   query=*litellm_deployment_state*) cat "$SANDBOX/gw/shed.json" 2>/dev/null || exit 22 ;;
-  *) exit 22 ;;
+  # route_rpd passes time= last, so its query is matched in the whole argv
+  *) [[ "$*" == *litellm_proxy_total_requests* ]] && { cat "$SANDBOX/gw/rpd.json" 2>/dev/null || exit 22; exit 0; }; exit 22 ;;
 esac
 EOS
   chmod +x "$SANDBOX/bin/curl"
@@ -1816,6 +1822,31 @@ agy_usage() {
     "$SANDBOX/agy.json" > "$SANDBOX/agy.3p" && mv "$SANDBOX/agy.3p" "$SANDBOX/agy.json"
   rm -f "$XDG_CACHE_HOME/claude-acct/agy.json"
   run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .room.ok <<<"$output")" = true ]
+}
+
+@test "sources: agy-3p reads the Claude and GPT group, and each agy source is gated on its own week alone (ar-3990)" {
+  agy_setup
+  echo "agy-3p  agy           3p          reserve=5 max_live=2" >> "$CLAUDE_ACCT_SOURCES"
+  agy_usage 0.7 0.94 84
+  jq --arg wr "$(date -u -d "@$((NOW + 84 * 3600))" +%FT%TZ)" \
+    '.command.data.groups |= map(.buckets |= map(if .id == "3p-weekly" then .remaining_fraction = 0.8 | .reset_time = $wr else . end))' \
+    "$SANDBOX/agy.json" > "$SANDBOX/agy.x" && mv "$SANDBOX/agy.x" "$SANDBOX/agy.json"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field agy-3p .kind <<<"$output")" = agy ]
+  [ "$(field agy-3p .state <<<"$output")" = ok ]
+  [ "$(field agy-3p .week_used <<<"$output")" = 20 ]
+  [ "$(field agy .week_used <<<"$output")" = 30 ]
+  [ "$(field agy-3p .room.ok <<<"$output")" = true ]
+  # a spent 3p week refuses the 3p source only: the gemini source keeps its room
+  jq '.command.data.groups |= map(.buckets |= map(if .id == "3p-weekly" then .remaining_fraction = 0 else . end))' \
+    "$SANDBOX/agy.json" > "$SANDBOX/agy.x" && mv "$SANDBOX/agy.x" "$SANDBOX/agy.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/agy.json" "$XDG_CACHE_HOME/claude-acct/agy-3p.json"
+  run --separate-stderr "$ACCT" room --source agy-3p
+  assert_failure 1
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy-3p .room.reason <<<"$output")" = capped ]
   [ "$(field agy .room.ok <<<"$output")" = true ]
 }
 
@@ -2723,6 +2754,67 @@ route_info() {
   assert_success
   ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
   [[ "$stderr" == *'Prometheus is unreadable, so whether the gateway sheds m1 (kimi) is not read'* ]] || fail "$stderr"
+}
+
+# rpd_reads <requests> -- Prometheus answers route_rpd's query with that many requests today
+rpd_reads() { jq -nc --arg n "$1" '{status: "success", data: {resultType: "vector", result: [{metric: {}, value: [0, $n]}]}}' > "$SANDBOX/gw/rpd.json"; }
+
+@test "sources: room --source --model refuses a route once its requests since 00:00 UTC reach the source's rpd" {
+  src_setup
+  route_info
+  printf 'free litellm-key %s/res.key rpd=1800\n' "$SRC" >> "$SANDBOX/sources"
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  echo '{"status":"success","data":{"resultType":"vector","result":[]}}' > "$SANDBOX/gw/shed.json"
+  # Below the cap: room, and the line counts today's requests against it.
+  rpd_reads 1799.6
+  run --separate-stderr "$ACCT" room --source free --model "m1 (kimi)"
+  assert_success
+  assert_output --partial ', 1799 of its rpd 1800 requests today'
+  grep -qF 'requested_model="m1 (kimi)"' "$SANDBOX/curl.argv"
+  # At the cap: refused, reason route_rpd, the why naming the count and the cap.
+  rpd_reads 1800
+  run --separate-stderr "$ACCT" room --source free --model "m1 (kimi)" --json
+  assert_failure 1
+  [ "$(jq -r .room.ok <<<"$output")" = false ]
+  [ "$(jq -r .room.reason <<<"$output")" = route_rpd ]
+  [ "$(jq -r .room.why <<<"$output")" = '1800 requests on m1 (kimi) since 00:00 UTC, at its rpd of 1800; it takes starts again after midnight UTC' ]
+  # The window is the UTC day: just after midnight the range is the seconds since it, and 0 requests is room.
+  rpd_reads 0
+  : > "$SANDBOX/curl.argv"
+  CLAUDE_ACCT_NOW=$(( NOW - NOW % 86400 + 30 )) run --separate-stderr "$ACCT" room --source free --model "m1 (kimi)"
+  assert_success
+  grep -qF '[30s]' "$SANDBOX/curl.argv"
+  # Prometheus unreadable: room, said on stderr.
+  rm "$SANDBOX/gw/rpd.json"
+  run --separate-stderr "$ACCT" room --source free --model "m1 (kimi)"
+  assert_success
+  [[ "$stderr" == *"today's requests on m1 (kimi) are not read against its rpd 1800"* ]] || fail "$stderr"
+  # Negative controls: without --model, or on a source with no rpd, no request count is read.
+  rpd_reads 5000
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source free
+  assert_success
+  run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
+  assert_success
+  ! grep -q litellm_proxy_total_requests "$SANDBOX/curl.argv"
+}
+
+@test "sources: an rpd that is not a whole number over 0, or on a source that is not a gateway key, is named and left out" {
+  src_setup
+  printf 'free litellm-key %s/res.key rpd=0\nfree2 litellm-key %s/res.key rpd=1.5\n' "$SRC" "$SRC" >> "$SANDBOX/sources"
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [[ "$stderr" == *"free: rpd is not a whole number over 0"* && "$stderr" == *"free2: rpd is not a whole number over 0"* ]] || fail "$stderr"
+  [ "$(field free .rpd <<<"$output")" = null ]
+  # rpd caps a gateway route: on a codex source it is named and left out.
+  printf 'codex2 codex %s/codex rpd=10\n' "$SRC" >> "$SANDBOX/sources"
+  run --separate-stderr "$ACCT" status --json
+  [[ "$stderr" == *"codex2: rpd caps a gateway route, so a codex source has none"* ]] || fail "$stderr"
 }
 
 # queue_items <item json>... -- agent-queue answers source_live (--state running) and route_paced

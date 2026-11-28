@@ -8,8 +8,8 @@
 # ~/.agent/pace-overrides on the machine), which `pace-conf` sets and ends. One row per override,
 # key|value|from|until|by, times in epoch seconds: an empty until is the key's standing override,
 # a set one a window. pace_get takes a window in force now, else the standing override, else the
-# pace.conf line, so a window that ends falls back by itself with no timer (release-lane's read-time
-# expiry, machine-mode). Usage and troubleshooting: .local/src/docs/pace-conf.md.
+# pace.conf line, so a window that ends falls back by itself with no timer (a read-time expiry).
+# Usage and troubleshooting: .local/src/docs/pace-conf.md.
 PACE_CONF="${CLAUDE_ACCT_PACE_CONF:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/claude-acct/pace.conf}"
 PACE_OVERRIDES="${PACE_OVERRIDES:-$HOME/.agent/pace-overrides}"
 

@@ -251,9 +251,9 @@ pub async fn version(
     let runs = crate::builds::current((items.clone(), None)).await;
     let read = move || {
         let (rel, b, errors) = page_reads(&items, queue_error, runs);
-        let jobs = hub_core::builds::Paths::from_env().jobs;
+        let paths = hub_core::builds::Paths::from_env();
         let page = hub_core::version_page::read(
-            &System, &rel, &b.rows, &items, &jobs, &q.project, &q.version,
+            &System, &rel, &b.rows, &items, &paths, &q.project, &q.version,
         )
         .ok_or((
             StatusCode::NOT_FOUND,

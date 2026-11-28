@@ -152,35 +152,6 @@ cost() { "$AU" fleet-cost --json | jq -c "$1 | walk(if type == \"number\" then .
   assert_output '[9,["codex","gateway"]]'
 }
 
-@test "a session's row is its running total: the window books its in-window row less its newest row before the window" {
-  local before=$((NOW - 3 * 86400))
-  { printf '{"session_id":"lz","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":3,"tokens_total":10}\n' "$((before - 60))"
-    printf '{"session_id":"lz","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":5,"tokens_total":40}\n' "$before"
-    printf '{"session_id":"old","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":8,"tokens_total":90}\n' "$before"
-    printf '{"session_id":"flat","harness":"codex","updated_epoch":%s,"cost_usd":4,"tokens_total":60,"cost_src":"price"}\n' "$before"
-  } > "$OUTCOMES_ROOT/p/2026-10.jsonl"
-  touch -d "@$before" "$OUTCOMES_ROOT/p/2026-10.jsonl"   # a file last written before the window still holds the baseline
-  { printf '{"session_id":"lz","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":7,"tokens_total":100}\n' "$NOW"
-    printf '{"session_id":"flat","harness":"codex","updated_epoch":%s,"cost_usd":4,"tokens_total":60,"cost_src":"price"}\n' "$NOW"
-  } > "$OUTCOMES_ROOT/p/2026-11.jsonl"
-  run cost '[[.by_session[] | select(.harness != "claude") | [.sid, .usd, .tokens, .models]], .other_harness.opencode, .unpriced_sessions]'
-  assert_success
-  assert_output '[[["lz",2,60,{}]],{"usd":2,"sessions":1,"priced":1,"source":"harness"},[]]'
-  # negative controls: a session with only rows before the window books nothing, and one whose in-window
-  # row equals its baseline books no dollars, no priced count and no row
-  run cost '[.other_harness.codex, ([.by_session[].sid] | index("old"), index("flat"))]'
-  assert_output '[{"usd":0,"sessions":1,"priced":0,"source":null},null,null]'
-}
-
-@test "a session's dollars by model are what each model added since its row before the window" {
-  { printf '{"session_id":"x","harness":"codex","updated_epoch":%s,"cost_usd":4,"cost_by_model":{"gpt-5.4":3,"gpt-5.4-mini":1}}\n' "$((NOW - 3 * 86400))"
-    printf '{"session_id":"x","harness":"codex","updated_epoch":%s,"cost_usd":9,"cost_by_model":{"gpt-5.4":8,"gpt-5.4-mini":1}}\n' "$NOW"
-  } > "$OUTCOMES_ROOT/p/2026-11.jsonl"
-  run cost '[.by_session[] | select(.sid == "x") | [.usd, .models]]'
-  assert_success
-  assert_output '[[5,{"gpt-5.4":5}]]'
-}
-
 @test "a session with two runner labels loses what came before once and keeps the label it has" {
   jq -c '. + [{metric: {session_id: "billed", model: "claude-opus-5-5"}, value: [0, "3"]}]' "$FIX/window" > "$FIX/w" && mv "$FIX/w" "$FIX/window"
   run cost '[.total.claude_measured, .by_runner.dream.measured]'
@@ -268,6 +239,31 @@ PY
   # negative control: a Claude row names no provider
   run cost '[.by_session[] | select(.harness == "claude") | has("provider")] | any'
   assert_output 'false'
+}
+
+@test "a non-Claude session books what it spent in the window, its newest total less its newest total before it" {
+  local old=$((NOW - 3 * 86400)) mid=$((NOW - 2 * 86400))
+  { printf '{"session_id":"multi","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":1.0,"tokens_total":10}\n' "$old"
+    printf '{"session_id":"multi","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":1.5,"tokens_total":20}\n' "$mid"
+    printf '{"session_id":"multi","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":1.75,"tokens_total":30,"cost_by_model":{"m1":1.25,"m2":0.5}}\n' "$NOW"
+    printf '{"session_id":"idle","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":2.0,"tokens_total":10}\n' "$old"
+    printf '{"session_id":"idle","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":2.0,"tokens_total":10}\n' "$NOW"
+    printf '{"session_id":"fresh","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0.5,"tokens_total":10}\n' "$NOW"
+    printf '{"session_id":"flip","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0,"tokens_total":40}\n' "$old"
+    printf '{"session_id":"flip","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0.25,"tokens_total":50}\n' "$NOW"
+    printf '{"session_id":"still","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0,"tokens_total":40}\n' "$old"
+    printf '{"session_id":"still","harness":"opencode","provider":"lazer","updated_epoch":%s,"cost_usd":0,"tokens_total":60}\n' "$NOW"
+  } > "$OUTCOMES_ROOT/p/2026-11.jsonl"
+  run cost '[([.by_session[] | select(.harness != "claude") | [.sid, .usd, .models]] | sort_by(.[0])), [.unpriced_sessions[].sid], .other_harness.opencode.usd]'
+  assert_success
+  assert_output '[[["flip",0.25,{}],["fresh",0.5,{}],["multi",0.25,{"m1":0.179,"m2":0.071}]],["still"],1]'
+  # the earlier days book the rest: the three days' rows for multi sum to its final total
+  run cost '[.by_session[] | select(.sid == "multi") | [.usd, .tokens]]'
+  assert_output '[[0.25,10]]'
+  run bash -c "\"$AU\" fleet-cost --json --before \"$(date -u -d "@$((mid + 3600))" +%FT%TZ)\" | jq -c '[.by_session[] | select(.sid == \"multi\") | .usd]'"
+  assert_output '[0.5]'
+  run bash -c "\"$AU\" fleet-cost --json --before \"$(date -u -d "@$((old + 3600))" +%FT%TZ)\" | jq -c '[.by_session[] | select(.sid == \"multi\") | .usd]'"
+  assert_output '[1.0]'
 }
 
 @test "burn prices every session: an unbilled one counts in the per-PR cost and the zero-merge share, the billed-only registry does neither" {

@@ -171,6 +171,59 @@ pub(crate) fn agent_tiers(p: &config::Profile) -> String {
     Totals::of(&rows, &projects).tiers()
 }
 
+/// A board holding more urgent rows than this has no urgent left: `notes doctor` warns.
+pub(crate) const URGENT_MAX: usize = 5;
+/// An urgent row open longer than this many days is not being treated as urgent.
+pub(crate) const URGENT_MAX_AGE_DAYS: i64 = 3;
+
+/// One line per agent board (project) that holds more than [`URGENT_MAX`] open `#urgent` rows,
+/// or any older than [`URGENT_MAX_AGE_DAYS`] days by its created tag, else its `since:` marker
+/// (a row with neither has no age and is not counted old). An epic is not counted: its priority
+/// is derived from its children, which are counted themselves. Ordered by project name; empty
+/// when every board is clear.
+fn urgent_findings(rows: &[FeedRow], today: chrono::NaiveDate) -> Vec<String> {
+    let mut by_board: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    for r in rows {
+        if r.lane != "agent"
+            || r.r#type.as_deref() == Some("epic")
+            || r.priority != "urgent"
+            || r.untriaged
+        {
+            continue;
+        }
+        let old = r
+            .since
+            .as_deref()
+            .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+            .is_some_and(|d| (today - d).num_days() > URGENT_MAX_AGE_DAYS);
+        let e = by_board
+            .entry(r.project.as_deref().unwrap_or("?"))
+            .or_default();
+        e.0 += 1;
+        e.1 += usize::from(old);
+    }
+    by_board
+        .into_iter()
+        .filter(|(_, (n, old))| *n > URGENT_MAX || *old > 0)
+        .map(|(name, (n, old))| {
+            format!("{name} {n} urgent ({old} older than {URGENT_MAX_AGE_DAYS}d)")
+        })
+        .collect()
+}
+
+/// [`urgent_findings`] over every project of `p`, for `notes doctor`.
+pub(crate) fn agent_urgent_findings(p: &config::Profile) -> Vec<String> {
+    let today = chrono::Local::now().date_naive();
+    let mut rows = Vec::new();
+    for (name, summary) in daily::discover_project_dirs(p) {
+        let Some(dir) = summary.parent() else {
+            continue;
+        };
+        rows.extend(feed_for_dir(&p.name, &name, dir, today).1);
+    }
+    urgent_findings(&rows, today)
+}
+
 /// The rows a lane's board lists: all of the human lane's, the agent lane's minus its Backlog
 /// tier, which the count beside them stands for.
 fn listed(open: &[String], lane: Lane) -> impl Iterator<Item = &String> {
@@ -781,7 +834,16 @@ struct FeedRow {
     worker: Option<String>,
     /// `#requested`: the human asked for this row (their quote rides in it); never dispatched at night.
     requested: bool,
-    /// The row's own `#vX.Y.Z` tag: the release it is aimed at.
+    /// The row's own `#vX.Y.Z` tag: the release it is aimed at (`None` when it has none, and
+    /// then it ships with the sheet's open `version`).
+    target: Option<String>,
+    /// `plan` for a `#plan` row (a plan before work), else `None`. `oneshot` is retired
+    /// (`RETIRED_TAGS`): a row with no `#plan` is worked in one shot.
+    mode: Option<&'static str>,
+    /// `#go`: the plan needs no review before the build.
+    go: bool,
+    /// The row carries an `#ask/<id>` gate: it waits on that ask (the id is in `tags_cased`).
+    ask: bool,
     /// `<!-- id:<code>-<n> -->`: the row's stable id, which every `ptask` verb takes as a query.
     id: Option<String>,
     /// The `type(area):` prefix split out; `None` on a row without a well-formed one.
@@ -1192,6 +1254,10 @@ fn feed_row(
         .iter()
         .find_map(|t| t.strip_prefix("worker/").map(str::to_string));
     let requested = all.iter().any(|t| t == "requested");
+    let target = all.iter().find(|t| md::is_version_tag(t)).cloned();
+    let mode = all.iter().any(|t| t == "plan").then_some("plan");
+    let go = all.iter().any(|t| t == "go");
+    let ask = all.iter().any(|t| t.starts_with("ask/"));
     let points = crate::projects::points_of(line);
     let size = crate::projects::size_name(line);
     let (ty, area) = crate::projects::row_type_area(line).unzip();
@@ -1229,6 +1295,10 @@ fn feed_row(
         tier,
         worker,
         requested,
+        target,
+        mode,
+        go,
+        ask,
         id: md::row_id(line),
         r#type: ty,
         area,
@@ -2447,6 +2517,44 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // The dispatch-relevant tags are fields, not strings a UI greps out of `tags`: the row's own
+    // target release, `#plan` as the mode, `#go` and an `#ask/` gate (plan phase 1).
+    #[test]
+    fn a_row_carries_its_target_mode_go_and_ask_gate_as_fields() {
+        let sheet = std::path::Path::new("agent/README.md");
+        let row = |line: &str| {
+            let o = Origin {
+                profile: "p",
+                project: Some("demo"),
+                lane: "agent",
+                version: Some("v0.3.0"),
+                game: None,
+                sheet,
+                sheet_row: true,
+                aim: None,
+            };
+            let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 26).unwrap();
+            feed_row(&o, (1, line), Vec::new(), today)
+        };
+        let r = row("- [ ] fix(x): a #high #plan #go #v0.4.0 #ask/Ab12/yes <!-- id:dm-1 -->");
+        assert_eq!(
+            (r.target.as_deref(), r.mode, r.go, r.ask),
+            (Some("v0.4.0"), Some("plan"), true, true)
+        );
+        let v = serde_json::to_value(&r).unwrap();
+        assert_eq!(v["target"], "v0.4.0");
+        assert_eq!(
+            (&v["mode"], &v["go"], &v["ask"]),
+            (&"plan".into(), &true.into(), &true.into())
+        );
+        // Negative control: a plain row has none of them, and says so as null/false.
+        let r = row("- [ ] fix(x): b #high <!-- id:dm-2 -->");
+        assert_eq!((r.target, r.mode, r.go, r.ask), (None, None, false, false));
+        // `#planet` and `#askew` are other words, not the tags.
+        let r = row("- [ ] fix(x): c #planet #askew/1 #gone <!-- id:dm-3 -->");
+        assert_eq!((r.mode, r.go, r.ask), (None, false, false));
+    }
+
     // The feed says where the sweep lays each row out and in what order, so a view groups and
     // sorts by `section` and `rank` instead of deriving its own (plan phase 2).
     #[test]
@@ -2484,6 +2592,60 @@ mod tests {
         );
         assert_eq!(child.rank, crate::rank::of(&child.raw, today).key());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // `notes doctor` flags a board with more than 5 urgent rows, or any urgent row older than 3
+    // days by its created tag; the same board with fewer, newer rows (or only non-urgent old
+    // ones) is clear, so the check is not just "always warn".
+    #[test]
+    fn urgent_findings_flag_a_pile_or_an_aged_row_per_board() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 26).unwrap();
+        let rows = |project: &str, lines: &[&str]| -> Vec<FeedRow> {
+            let o = Origin {
+                profile: "p",
+                project: Some(project),
+                lane: "agent",
+                version: Some("v1"),
+                game: None,
+                sheet: std::path::Path::new("x.md"),
+                sheet_row: true,
+                aim: None,
+            };
+            lines
+                .iter()
+                .enumerate()
+                .map(|(i, l)| feed_row(&o, (i + 1, l), Vec::new(), today))
+                .collect()
+        };
+        let fresh = "- [ ] fix(a): hot #urgent #c1125";
+        let mut all = rows("pile", &[fresh; 6]);
+        all.extend(rows("ok", &[fresh; 5]));
+        all.extend(rows(
+            "aged",
+            &[
+                "- [ ] fix(a): old #urgent #c1122",
+                fresh,
+                "- [ ] fix(a): old but high #high #c1101",
+            ],
+        ));
+        all.extend(rows("edge", &["- [ ] fix(a): three days #urgent #c1123"]));
+        // An epic reads as its most urgent child, and a `since:` marker ages a row with no
+        // created tag: the epic is not counted, the marker row is.
+        all.extend(rows(
+            "epic",
+            &[
+                "- [ ] epic(a): the epic #of/x #c1001 <!-- id:e-1 -->",
+                "- [ ] fix(a): marked #urgent <!-- since:2026-11-01 -->",
+            ],
+        ));
+        assert_eq!(
+            urgent_findings(&all, today),
+            [
+                "aged 2 urgent (1 older than 3d)",
+                "epic 1 urgent (1 older than 3d)",
+                "pile 6 urgent (0 older than 3d)"
+            ]
+        );
     }
 
     // An epic ranks and shows as its most urgent open row, read across both lanes, whatever tag

@@ -1,17 +1,13 @@
 # Who gets this workstation, read by .local/lib/machine-mode.sh.
-# Format:  mode|runners|unity_slots|level
+# Format:  mode|level
 #   mode         the word you type and the chip shows
-#   runners      pool runners on this host taking new jobs (the governor's slot pin), and how many of its Unity slots run
-#   unity_slots  local Unity runs the governor grants a seat at once (its local pin, same key)
 #   level        how fast the fleet starts work, a row of the levels file; mid is the confs' own numbers.
 #                No mode pauses dispatch; `agent-hold set dispatch` is the one full stop.
 #
 # File order is the order `machine-mode next` and the chip's click walk. The last row is the
 # mode with nothing set, so it must stay what the machine does with no mode at all.
 
-# Human, 2026-11-23: this workstation takes no pool CI jobs in any mode; the other hosts' runners carry CI.
-# Turn it back on by setting full's runners to 1.
-full|0|2|high
-reserved|0|1|low
-shared|0|2|mid
-open|0|2|mid
+full|high
+reserved|low
+shared|mid
+open|mid

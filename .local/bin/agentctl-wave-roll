@@ -79,14 +79,19 @@ log() {
 declare -A FETCHED=()
 fetched=0 fetch_failed=0
 fetch_tags() { # $1=project
-  local repo
+  local repo err rc
   repo="$(project_repo_path "$1")"
   [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -z "${FETCHED[$repo]:-}" ] || return 0
   FETCHED[$repo]=1
   fetched=$((fetched + 1))
-  GIT_TERMINAL_PROMPT=0 timeout 60 git -C "$repo" fetch -q --no-write-fetch-head origin \
-    'refs/tags/*:refs/tags/*' 2>/dev/null \
-    || { fetch_failed=$((fetch_failed + 1)); log "fetch failed for $repo: comparing against local tags"; }
+  err="$(GIT_TERMINAL_PROMPT=0 timeout 60 git -C "$repo" fetch -q --no-write-fetch-head origin \
+    'refs/tags/*:refs/tags/*' 2>&1)" && return 0
+  rc=$?
+  # git's own first line is the cause; dropping it left 2026-11-19's all-9 failure unexplained (ar-3609).
+  [ "$rc" != 124 ] || err="timed out after 60s"
+  err="${err%%$'\n'*}"
+  fetch_failed=$((fetch_failed + 1))
+  log "fetch failed for $repo (${err:-git exit $rc}): comparing against local tags"
 }
 
 # roll PROFILE NAME LEVEL NEXT WHY [TAG]: one roll of the open version $ver through notes-roll

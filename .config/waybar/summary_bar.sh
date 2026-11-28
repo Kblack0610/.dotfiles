@@ -99,7 +99,6 @@ bar_detail() {
 #   lpad(n)  padded on the left to n, for a number column
 #   esc      Pango-escaped, after any fit or pad, so a column's width is the text's
 #   mins     minutes as 4m, 2h, 1h23m, 1d4h
-#   what     a ready item as "kind(area): title", the kind and area left out when empty
 BAR_JQ='
 def clean: tostring | gsub("[\n\t]"; " ") | gsub("[^ -~]"; "?");
 def fit($n): if length > $n then .[:([$n - 3, 0] | max)] + "..." else . end;
@@ -112,5 +111,4 @@ def mins: if . == null then "-"
   else floor | if . < 60 then "\(.)m"
   elif . < 1440 then "\(. / 60 | floor)h" + (if . % 60 > 0 then "\(. % 60 | two)m" else "" end)
   else "\(. / 1440 | floor)d" + (if . % 1440 >= 60 then "\(. % 1440 / 60 | floor)h" else "" end) end end;
-def what: (if .kind == "" then "" elif .area == "" then "\(.kind): " else "\(.kind)(\(.area)): " end) + .title;
 '

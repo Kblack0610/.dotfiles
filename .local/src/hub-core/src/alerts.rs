@@ -55,6 +55,9 @@ pub struct Alert {
     /// The watch's `project:`, else the project of its fix item's queue item; empty for a
     /// fleet-wide watch or a red nothing files a fix for.
     pub project: String,
+    /// The watch's `system:`; empty for a watch that names none and for every row no watch
+    /// backs (a red, the machinery, Alertmanager, a hold).
+    pub system: String,
     /// `sentinel` (a watch's own state files), `red_now` (`cc:red_now`), `infra` (the
     /// machinery: down runners, stuck runs, the exporter or GitHub not answering),
     /// `alertmanager` (a cluster rule firing) or `hold` (a standing hold, `HOLD`).
@@ -85,6 +88,10 @@ pub struct Alert {
     pub place: String,
     pub action: String,
     pub evidence: String,
+    /// Why a watch is red in one line (`Watch::reason`); empty for any other row. The health
+    /// hover prints it beside the watch's name (`hub alerts --reasons`).
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub reason: String,
     /// An Alertmanager rule's row: each place it fires in (`am_row`), worst first; empty for any
     /// other row. `Alerts::pages` lists them flat.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -123,10 +130,10 @@ impl Alert {
 
 impl Row for Alert {
     const COLUMNS: &'static [&'static str] = &[
-        "sev", "what", "project", "source", "since", "owner", "state",
+        "sev", "what", "project", "system", "source", "since", "owner", "state",
     ];
     const STATES: &'static [&'static str] = &["all", "trip", "error", "no owner", ALERTMANAGER];
-    const FACETS: &'static [&'static str] = &["sev", "project", "source", "state"];
+    const FACETS: &'static [&'static str] = &["sev", "project", "system", "source", "state"];
     const LEAD: &'static str = "what";
     const GLANCE: &'static [&'static str] = &["sev", "since", "state"];
 
@@ -139,6 +146,7 @@ impl Row for Alert {
             "sev" => text(&self.sev),
             "what" => text(&self.what),
             "project" => text(&self.project),
+            "system" => text(&self.system),
             "source" => text(&self.source),
             "since" => self.since.map_or(Val::None, |t| Val::Num(t as f64)),
             "owner" => text(&self.owner),
@@ -170,6 +178,7 @@ impl Row for Alert {
             &self.sev,
             &self.what,
             &self.project,
+            &self.system,
             &self.source,
             &self.owner,
             &self.state,
@@ -193,11 +202,11 @@ impl Row for Alert {
 /// is the default; the state tiles split it, so no fold hides the ok ones.
 impl Row for Watch {
     const COLUMNS: &'static [&'static str] = &[
-        "name", "state", "severity", "project", "since", "lastrun", "place",
+        "name", "state", "severity", "project", "system", "since", "lastrun", "place",
     ];
     // Each a word `vocab::tone` hues: trip and error red, ok green, new plain.
     const STATES: &'static [&'static str] = &["all", "trip", "error", "new", "ok"];
-    const FACETS: &'static [&'static str] = &["severity", "project"];
+    const FACETS: &'static [&'static str] = &["severity", "project", "system"];
     const LEAD: &'static str = "name";
     const GLANCE: &'static [&'static str] = &["state", "since"];
 
@@ -212,6 +221,7 @@ impl Row for Watch {
             "state" => text(&self.state),
             "severity" => text(&self.severity),
             "project" => text(&self.project),
+            "system" => text(&self.system),
             "since" => num(self.since),
             "lastrun" => num(self.lastrun),
             "place" => text(&self.place),
@@ -235,6 +245,7 @@ impl Row for Watch {
         [
             &self.name,
             &self.project,
+            &self.system,
             &self.place,
             &self.severity,
             &self.what,
@@ -748,6 +759,7 @@ pub fn join(
             sev: label(&w.severity).to_string(),
             what: w.name.clone(),
             project: w.project.clone(),
+            system: w.system.clone(),
             source: "sentinel".into(),
             since: w.since,
             state: if error { "error".into() } else { String::new() },
@@ -755,6 +767,7 @@ pub fn join(
             place: w.place.clone(),
             action: w.action.clone(),
             evidence: w.evidence.clone(),
+            reason: w.reason(),
             ..Default::default()
         };
         owner(
@@ -874,6 +887,23 @@ pub fn read(infra: &Infra, fixes: Result<Reds, String>, now: i64) -> Alerts {
         holds::read(&holds::dir()),
         now,
     )
+}
+
+/// Each red watch's reason by its name with `_` for `-`, the form `cc:watch_state` words an item
+/// in: what the health hover prints beside the watch (`hub alerts --reasons`). A watch with
+/// nothing past its status header has an empty reason. An unreadable watch directory is the
+/// error, which a machine with no watches (the laptop) gets.
+pub fn watch_reasons() -> Result<BTreeMap<String, String>, String> {
+    let (dir, state) = watch_dirs();
+    Ok(reasons(&runner::watches(&dir, &state)?))
+}
+
+fn reasons(watches: &[Watch]) -> BTreeMap<String, String> {
+    watches
+        .iter()
+        .filter(|w| matches!(w.state.as_str(), "TRIP" | "ERROR"))
+        .map(|w| (w.name.replace('-', "_"), w.reason()))
+        .collect()
 }
 
 /// A project card's count line over `watches`: how many carry `project:` and how many of them
@@ -999,7 +1029,7 @@ mod tests {
             kind: kind.into(),
             by: by.into(),
             since: Some(NOW - age),
-            kept: None,
+            ends: false,
             reason: format!("why {resource}"),
         };
         let mut ws = ok_watches();
@@ -1044,6 +1074,57 @@ mod tests {
         assert_eq!(a.firing.len(), 1);
         assert_eq!(a.firing[0].what, HOLD_WATCH);
         assert!(a.errors.contains(&"holds: denied".to_string()));
+    }
+
+    #[test]
+    fn a_watch_reason_is_its_first_probe_line_past_the_status_header() {
+        let probe = |state: &str, out: &str| Watch {
+            evidence: out.into(),
+            ..watch("chain-lag", state, "high", Some(NOW))
+        };
+        let w = probe(
+            "TRIP",
+            "TRIP exit 1 (want 0)\nchain handoff p90 113m, bound 60m\nsecond line",
+        );
+        assert_eq!(w.reason(), "chain handoff p90 113m, bound 60m");
+        // The header alone, or no output, is no reason: the hover says so.
+        assert_eq!(probe("TRIP", "TRIP exit 1 (want 0)").reason(), "");
+        assert_eq!(probe("OK", "").reason(), "");
+        // A blank line between the header and the output is skipped.
+        assert_eq!(
+            probe("TRIP", "TRIP exit 1 (want 0)\n\n  RED steam.yml: failure").reason(),
+            "RED steam.yml: failure"
+        );
+        // Output with no header is read from its first line, and a long line is cut.
+        assert_eq!(
+            probe("TRIP", "aws $1,011 ahead of pace").reason(),
+            "aws $1,011 ahead of pace"
+        );
+        let long = probe(
+            "TRIP",
+            &format!("TRIP exit 1 (want 0)\n{}", "x".repeat(300)),
+        )
+        .reason();
+        assert_eq!(long.chars().count(), crate::fleet::runner::REASON_CHARS + 3);
+        assert!(long.ends_with("..."));
+        // The reason rides the firing row and the by-name map keys a hyphen as `_`, never ok watches.
+        let a = join(
+            &infra(&[]),
+            Ok(vec![w.clone(), watch("fine", "OK", "low", None)]),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
+        assert_eq!(a.firing[0].reason, "chain handoff p90 113m, bound 60m");
+        let map = reasons(&a.watches);
+        assert_eq!(
+            map.into_iter().collect::<Vec<_>>(),
+            [(
+                "chain_lag".to_string(),
+                "chain handoff p90 113m, bound 60m".to_string()
+            )]
+        );
     }
 
     #[test]
@@ -1726,6 +1807,51 @@ mod tests {
             "{:?}",
             facet.values
         );
+    }
+
+    #[test]
+    fn a_firing_row_takes_its_watchs_system_and_the_facet_filters_on_it() {
+        let mut ws = ok_watches();
+        for (name, system) in [
+            ("ucp-nightly", "unity"),
+            ("fleet-drain", "fleet"),
+            ("bare", ""),
+        ] {
+            let mut w = watch(name, "TRIP", "normal", None);
+            w.system = system.into();
+            ws.push(w);
+        }
+        let a = join(
+            &infra(&[]),
+            Ok(ws),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
+        let system = |what: &str| {
+            a.firing
+                .iter()
+                .find(|r| r.what == what)
+                .map(|r| r.system.clone())
+        };
+        assert_eq!(system("ucp-nightly").as_deref(), Some("unity"));
+        assert_eq!(system("bare").as_deref(), Some(""));
+        let v = crate::table::View::new::<Alert>("system:unity", "", "", "");
+        let (rows, s) = v.summary(&a.firing);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].what, "ucp-nightly");
+        let facet = s
+            .facets
+            .iter()
+            .find(|f| f.key == "system")
+            .expect("a system facet");
+        let values: Vec<&str> = facet.values.iter().map(|x| x.value.as_str()).collect();
+        assert!(
+            values.contains(&"unity") && values.contains(&"fleet"),
+            "{values:?}"
+        );
+        assert!(!values.contains(&""), "{values:?}");
     }
 
     #[test]

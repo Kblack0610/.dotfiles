@@ -122,6 +122,52 @@ load 'agent_land/common'
   [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | head -1 | cut -d: -f1)" ]
 }
 
+@test "behind main before the checks, but the head's own run is pending or green: it is waited on first, and the base merged up only after it (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead" "$NOTES_FIXTURE/head.single"
+  printf '2\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "fetch: the head's own checks are pending or green; waiting on them before any merge of origin/main"
+  assert_line 'landed #42'
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | head -1 | cut -d: -f1)" ]
+  second_wait
+}
+
+@test "a merged-up head whose run is pending, re-run after a checks timeout: that run is the re-check, so the green head lands behind the moved base (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '3\n' >"$NOTES_FIXTURE/behind"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head; landing that green head behind it (no strict checks on main)'
+  assert_line 'landed #42'
+  run grep -c '^git merge -q --no-edit origin/main$' "$LOG"
+  assert_output 0
+}
+
+@test "behind main before the checks with the head's run pending, but the base conflicts: exit 3 before any wait, as before (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '2\n' >"$NOTES_FIXTURE/behind"
+  touch "$NOTES_FIXTURE/tree.conflicts"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'merging it conflicts'
+  run grep -c 'pr checks 42 --watch\|pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "behind main before the checks with a failed check on the head: merged up before the gate, as with no checks (ar-5865)" {
+  echo stale >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '2\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_line --partial "the head's own checks are pending or green"
+  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks 42 --watch' "$LOG" | head -1 | cut -d: -f1)" ]
+}
+
 @test "behind main before the checks and the merge conflicts: exit 3, no checks, no merge" {
   printf '2\n' >"$NOTES_FIXTURE/behind"
   touch "$NOTES_FIXTURE/merge.conflicts"
@@ -137,8 +183,9 @@ load 'agent_land/common'
   run "$LAND" 42 --item ship
   assert_line 'fetch: merged origin/main (1 behind) into the head and pushed it'
   second_wait
+  # one read of each, the policy the checks wait takes (required_unlisted); the catch-up reads none more
   run grep -c '^gh api repos/o/r/rules/branches/main$\|^gh api repos/o/r/branches/main/protection$' "$LOG"
-  assert_output 0
+  assert_output 2
   # The merge, then submodule_follow from the pre-merge head (rev-parse's stub answer), then the push.
   local m d p
   m=$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | cut -d: -f1)
@@ -203,6 +250,242 @@ load 'agent_land/common'
   assert_output 1
 }
 
+@test "no strict checks and the base moves on again by a commit that changes a file the head changes: merged up and re-checked, never landed behind it (#2962, #2963)" {
+  printf '0\n1\n3\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' .local/bin/agent-land tests/unit/agent_land.bats README.md >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land tests/unit/agent_land.bats docs/x.md >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head, but it changes files the head changes (.local/bin/agent-land, tests/unit/agent_land.bats); merging it up and re-checking'
+  refute_output --partial 'landing that green head behind it'
+  moved_again 2 3
+  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
+  [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "the base moves on again by a commit on the head's files and the re-checked head goes red: never merged" {
+  printf '0\n1\n3\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' green green 'Checks	fail	1m' >"$NOTES_FIXTURE/checks.seq"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'merging it up and re-checking'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 2
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "the base keeps changing the head's files past CATCHUP_OVERLAP_WAITS runs: exits 3, never merged, never behind it" {
+  printf '0\n1\n3\n3\n3\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'agent-land: origin/main moved on by 3 after 3 checks runs, and it changes files the head changes (.local/bin/agent-land): merge it, push and re-run once it settles'
+  refute_output --partial 'landing that green head behind it'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 3
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 4
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "the base moves on again by files the head does not change: the green head still lands behind it" {
+  printf '0\n1\n3\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' README.md >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head; landing that green head behind it (no strict checks on main)'
+  moved_again 1 2
+}
+
+# pick_fixture: a checkout whose tests/pick.sh answers from files, so the head's pick (mine.<tier>) and
+# the base's new files' pick (theirs.<tier>, read when PICK_CHANGED is set) are named by the case.
+# pick.fail: the picker exits 1; picked.yes: a test file the base added is picked by the head's changes; theirs.full: the base's pick is the whole tier ("(full: ...)" on stderr).
+pick_fixture() {
+  local top="$SANDBOX/pickrepo" t
+  mkdir -p "$top/tests"
+  cat >"$top/tests/pick.sh" <<'EOS'
+#!/usr/bin/env bash
+d=$(dirname "$0")
+[ ! -f "$d/pick.fail" ] || exit 1
+if [ -n "${PICK_CHANGED+x}" ]; then
+  [ ! -f "$d/theirs.full" ] || echo "$1: all 9 files (full: the change touches the test harness)" >&2
+  cat "$d/theirs.$1" 2>/dev/null
+else cat "$d/mine.$1" 2>/dev/null; fi
+exit 0
+EOS
+  chmod +x "$top/tests/pick.sh"
+  printf '%s\n' '# broad' 'unit/smoke.bats # the harness' >"$top/tests/broad.txt"
+  for t in unit integ rust ui notes; do : >"$top/tests/mine.$t"; : >"$top/tests/theirs.$t"; done
+  # test_picked: a base test file reaches the head's changed files when picked.yes exists
+  mkdir -p "$top/.local/lib"
+  printf '%s\n' 'test_picked() { [ -f "'"$top"'/tests/picked.yes" ]; }' >"$top/.local/lib/test-pick.sh"
+  printf '%s\n' unit/a.bats >"$top/tests/mine.unit"
+  printf '%s\n' "$top" >"$NOTES_FIXTURE/toplevel"
+  printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
+  printf 'x\n' >"$NOTES_FIXTURE/diff.status"
+  PICKDIR="$top/tests"
+}
+
+@test "main moves on during the gate's checks and its new files pick no test the head's run picked: that green head lands behind it, no merge-up, no second run (ar-6019)" {
+  pick_fixture
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'fetch: origin/main moved on by 1 and none of it can affect a test the head'"'"'s own run picked; landing that green head behind it (no strict checks on main)'
+  assert_line 'landed #42'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 0
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files pick a test the head's run picked: merged up and re-run, as before" {
+  pick_fixture
+  printf '%s\n' unit/a.bats >"$PICKDIR/theirs.unit"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files pick no test the head's run picked, but change a file the head changes: merged up and re-run, not landed behind" {
+  pick_fixture
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  printf '%s\n' docs/x.md >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' docs/x.md >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: origin/main moved on by 1 and none of it can affect a test the head'"'"'s own run picked, but it changes files the head changes (docs/x.md); merging it up and re-checking'
+  refute_output --partial 'landing that green head behind it'
+  moved_again 1 2
+}
+
+@test "main's new files pick only the broad set, which every head runs: they do not count as shared" {
+  pick_fixture
+  printf '%s\n' unit/smoke.bats >"$PICKDIR/theirs.unit"
+  printf '%s\n' unit/smoke.bats >>"$PICKDIR/mine.unit"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 0
+}
+
+@test "main's new files send the picker to the whole tier (the harness): merged up and re-run" {
+  pick_fixture
+  : >"$PICKDIR/theirs.full"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "a picker that fails: merged up and re-run, never landed behind on a guess" {
+  pick_fixture
+  : >"$PICKDIR/pick.fail"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files pick a integ-tier entry the head's run ran: merged up and re-run" {
+  pick_fixture
+  printf '%s\n' integ/x >"$PICKDIR/mine.integ"
+  printf '%s\n' integ/x >"$PICKDIR/theirs.integ"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files pick a rust-tier entry the head's run ran: merged up and re-run" {
+  pick_fixture
+  printf '%s\n' rust/x >"$PICKDIR/mine.rust"
+  printf '%s\n' rust/x >"$PICKDIR/theirs.rust"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files pick a ui-tier entry the head's run ran: merged up and re-run" {
+  pick_fixture
+  printf '%s\n' ui/x >"$PICKDIR/mine.ui"
+  printf '%s\n' ui/x >"$PICKDIR/theirs.ui"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main touches the gate's own machinery (CI files, lint, the notes binary): merged up and re-run, whatever the pick says" {
+  pick_fixture
+  printf '%s\n' .local/src/notes-cli/src/main.rs >"$NOTES_FIXTURE/diff.status"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main adds a test file the head's changed files reach: merged up and re-run, though the picker never saw the file" {
+  pick_fixture
+  printf '%s\n' tests/unit/new_thing.bats >"$NOTES_FIXTURE/diff.status"
+  : >"$PICKDIR/picked.yes"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main adds a test file the head's changed files do not reach: the green head lands behind it" {
+  pick_fixture
+  printf '%s\n' tests/unit/new_thing.bats >"$NOTES_FIXTURE/diff.status"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'none of it can affect'
+}
+
+@test "main's new commits change no file at all: the green head lands behind them" {
+  pick_fixture
+  : >"$NOTES_FIXTURE/diff.status"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 0
+}
+
+@test "a strict base never lands a head behind it, whatever the pick says" {
+  pick_fixture
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":true}}]' >"$NOTES_FIXTURE/rules.json"
+  run "$LAND" 42 --item ship
+  refute_output --partial 'none of it can affect'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 1
+}
+
+@test "main's new files miss the pick but merging them conflicts: the merge-up runs and exits 3" {
+  pick_fixture
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  : >"$NOTES_FIXTURE/tree.conflicts"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  refute_output --partial 'none of it can affect'
+}
+
 @test "a pushed head that reports no checks, after the gate's head ran green, is never merged" {
   printf '0\n1\n' >"$NOTES_FIXTURE/behind.seq"
   printf 'green\n' >"$NOTES_FIXTURE/checks.seq"
@@ -250,6 +533,32 @@ load 'agent_land/common'
   [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
 }
 
+@test "--admin is refused for an item dispatch started and for a headless run, before any merge (ar-6083)" {
+  "$SANDBOX/bin/agent-queue" set ship origin=run >/dev/null
+  run "$LAND" 42 --item ship --admin
+  assert_failure
+  assert_output --partial "--admin is the human's: queue item ship is origin run"
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+  "$SANDBOX/bin/agent-queue" set ship origin=hand >/dev/null
+  CLAUDE_CODE_ENTRYPOINT=sdk-cli run "$LAND" 42 --item ship --admin
+  assert_failure
+  assert_output --partial "--admin is the human's"
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "--admin through an item with no origin is refused when the session's launch item was dispatched (ar-6083)" {
+  # ship carries no origin, as an item a session files itself with --running does.
+  item launcher
+  "$SANDBOX/bin/agent-queue" set launcher origin=run >/dev/null
+  AGENT_QUEUE_ITEM=launcher run "$LAND" 42 --item ship --admin
+  assert_failure
+  assert_output --partial "the launch item launcher is origin run"
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
 @test "without --admin the merge carries no --admin" {
   run "$LAND" 42 --item ship
   assert_success
@@ -266,6 +575,7 @@ load 'agent_land/common'
 @test "the base moves on again, branch protection with strict checks: merged up again, and that head lands once its checks pass" {
   printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   echo '{"required_status_checks":{"strict":true,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
+  for _ in 1 2 3; do echo '[{"name":"Checks","bucket":"pass","workflow":"Checks"}]'; done >"$NOTES_FIXTURE/checks.cancelled"
   run "$LAND" 42 --item ship
   moved_again 2 3
 }
@@ -284,6 +594,7 @@ load 'agent_land/common'
   printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false}}]' >"$NOTES_FIXTURE/rules.json"
   echo '{"required_status_checks":{"strict":false,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
+  for _ in 1 2 3; do echo '[{"name":"Checks","bucket":"pass","workflow":"Checks"}]'; done >"$NOTES_FIXTURE/checks.cancelled"
   run "$LAND" 42 --item ship
   assert_output --partial 'landing that green head behind it'
   moved_again 1 2
@@ -405,12 +716,20 @@ git rev-parse HEAD
 gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr  --sha  --why open_pr=o/r#42 -- ship
+gh api repos/o/r/pulls/42/files --paginate --jq .[] | .filename, (.previous_filename // empty)
+git fetch -q origin
+git merge-base --is-ancestor origin/main HEAD
 git fetch -q origin
 git rev-list --count HEAD..origin/main
+git grep -qF shape-grow HEAD -- .github/workflows
 git merge-base HEAD origin/main
-shape-grow 5eedbase5eedbase HEAD
+shape-grow --body - 5eedbase5eedbase HEAD
 gh pr checks 42 --watch --fail-fast -i 30
-gh pr checks 42 --json name,bucket,workflow -q map(select(.bucket == "cancel"))
+gh pr checks 42 --json name,bucket,workflow
+git rev-parse HEAD
+gh run list --commit 0123456789abcdef --limit 100 --json status,conclusion,workflowName,attempt
+gh api repos/o/r/rules/branches/main
+gh api repos/o/r/branches/main/protection
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
@@ -429,6 +748,8 @@ git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
 dotfiles-autopull --now . --bg
 schedules-sync sync-prs o/r
 notes ingest record --stage land --action merged --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 -- ship
+gh pr view 42 --json body -q .body
+git show origin/main:.agent-land/after-merge
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= open_pr= closing_pr=o/r#42 -- ship
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
 notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
@@ -590,7 +911,7 @@ EOF
   assert_output 0
 }
 
-@test "a failing PR check stops before the second fetch and the merge, naming the check" {
+@test "a failing PR check stops before the after-gate fetch and the merge, naming the check" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
   printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
   run "$LAND" 42 --item ship
@@ -598,8 +919,9 @@ EOF
   assert_output --partial 'checks failed: Checks'
   run grep -c 'pr merge\|^notes' <(not_recorded)
   assert_output 0
+  # head_checks_live's fetch, then catch_up before's; catch_up after's never runs
   run grep -c '^git fetch' "$LOG"
-  assert_output 1
+  assert_output 2
 }
 
 @test "no checks reported: polled a bounded number of times, then it lands" {
@@ -665,10 +987,63 @@ EOF
   assert_output 2
 }
 
+# home-config PR #1521, head 1fbd16c8 (2026-11-25): run 5864 went green, then a re-run of the older run
+# 5863 posted its red zomboid-scripts last, and the combined status read that red (ar-5884)
+fj_runs() {   # <run> <status> posted first, then <run> <status> posted last, for zomboid-scripts
+  jq -cn --arg r1 "$1" --arg s1 "$2" --arg r2 "$3" --arg s2 "$4" '[
+    {id: 30, status: "pending", context: "checks / zomboid-scripts (pull_request)", target_url: "/o/r/actions/runs/\($r1)/jobs/1"},
+    {id: 47, status: $s1, context: "checks / zomboid-scripts (pull_request)", target_url: "/o/r/actions/runs/\($r1)/jobs/1"},
+    {id: 48, status: "success", context: "checks / nut-replay (pull_request)", target_url: "/o/r/actions/runs/5864/jobs/4"},
+    {id: 56, status: $s2, context: "checks / zomboid-scripts (pull_request)", target_url: "/o/r/actions/runs/\($r2)/jobs/1"}]' >"$NOTES_FIXTURE/fj.status"
+}
+
+@test "Forgejo: a stale run's red posted after the newer run's green on the same head reads green and lands" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  fj_runs 5864 success 5863 failure
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green'
+  run grep -c 'POST pulls/42/merge' "$LOG"
+  assert_output 1
+}
+
+@test "Forgejo: a red in the newest run fails checks naming its context, though an older run's green posted last" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  fj_runs 5864 failure 5863 success
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: checks / zomboid-scripts (pull_request)'
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
+}
+
+@test "Forgejo: a red on the second statuses page fails checks naming it; a full first page is read on" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  jq -cn '[range(100; 50; -1) | {id: ., status: "success", context: "c\(.)", target_url: "/o/r/actions/runs/9/jobs/\(.)"}]' >"$NOTES_FIXTURE/fj.status"
+  echo '[{"id":3,"status":"failure","context":"late","target_url":"/o/r/actions/runs/9/jobs/0"}]' >"$NOTES_FIXTURE/fj.status.2"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: late'
+  run grep -c '^curl GET commits/.*/statuses?limit=50&page=[12]$' "$LOG"
+  assert_output 2
+}
+
+@test "Forgejo: a status with no Actions run counts only its newest post, though each post has its own URL" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo '[{"id":1,"status":"failure","context":"ci/build","target_url":"https://ci.example/builds/10"},{"id":2,"status":"success","context":"ci/build","target_url":"https://ci.example/builds/11"}]' >"$NOTES_FIXTURE/fj.status"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green'
+}
+
 @test "Forgejo: a land that would refuse none waits for the head's first status, then stops at checks" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
-  echo '{"state":"","statuses":[]}' >"$NOTES_FIXTURE/fj.status"
+  echo '[]' >"$NOTES_FIXTURE/fj.status"
   fake_sleep
   AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_QUEUED_POLL=7 AGENT_LAND_CHECKS_TRIES=2 AGENT_LAND_CHECKS_FIRST_RUN_TRIES=2 run "$LAND" 42 --item ship --ran-checks
   assert_failure 1
@@ -757,55 +1132,63 @@ EOF
   assert_output --partial 'merge: #42 MERGED'
 }
 
-@test "shape: a clean change prints shape: clean and measures from the merge-base" {
+@test "shape: a clean change prints shape: clean, measured from the merge-base with the body on stdin" {
   run "$LAND" 42 --item ship
   assert_success
   assert_output --partial 'shape: clean'
-  run grep -c "^shape-grow 5eedbase5eedbase HEAD$" "$LOG"
+  run grep -c "^shape-grow --body - 5eedbase5eedbase HEAD$" "$LOG"
   assert_output 1
+  run cat "$NOTES_FIXTURE/shape.body"
+  assert_output --partial 'The change and why.'
 }
 
-@test "shape: a long function that got longer stops the landing before the checks, naming it" {
-  printf 'a.py:10 decide 247->269\nb.sh:3 run 0->151\n' >"$NOTES_FIXTURE/shape.out"
-  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
-  run "$LAND" 42 --item ship
-  assert_failure 1
-  assert_output --partial 'shape failed: long functions got longer: a.py:10 decide 247->269; b.sh:3 run 0->151. Extract the new logic as a pure function (inputs in, result out)'
-  run grep -c 'pr checks\|pr merge' "$LOG"
-  assert_output 0
-  # A Split: line naming no row id is not one.
-  printf 'The change.\n\nSplit: later\n' >"$NOTES_FIXTURE/body"
-  run "$LAND" 42 --item ship
-  assert_failure 1
-  assert_output --partial 'shape failed:'
-}
-
-@test "shape: a Split: line naming an open row that names each function lets it land" {
-  printf 'a.py:10 Gov.decide 247->269\nb.rs:4 handle#2 160->170\n' >"$NOTES_FIXTURE/shape.out"
-  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
-  mkdir -p "$HOME/.notes/lab/projects/current/x"
-  printf -- '- [ ] refactor(gov): split decide and handle #of/hc-1 <!-- id:hc-1204 filed:2026-11-18 tier:backlog -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
-  printf 'The change.\n\nSplit: hc-1204\n' >"$NOTES_FIXTURE/body"
+@test "shape: a repo whose CI runs shape-grow leaves it to the checks and does not run it" {
+  : >"$NOTES_FIXTURE/ci.shape"
   run "$LAND" 42 --item ship
   assert_success
-  assert_output --partial 'shape: grows, split owed by hc-1204: a.py:10 Gov.decide 247->269; b.rs:4 handle#2 160->170'
+  assert_output --partial 'shape: CI runs shape-grow, so the checks carry its verdict'
+  run grep -c '^shape-grow' "$LOG"
+  assert_output 0
+}
+
+@test "shape: a grown function or a copy stops the landing before the checks, naming it" {
+  printf 'a.py:10 decide 247->269\nb.sh:3 copy function run_it, also c.sh:9\nshape-grow: fix each line above in this change.\n' >"$NOTES_FIXTURE/shape.out"
+  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: a.py:10 decide 247->269; b.sh:3 copy function run_it, also c.sh:9. fix each line above in this change.'
+  run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "shape: Split: and Dup: lines naming open rows that name what they list let it land" {
+  printf 'a.py:10 Gov.decide 247->269 [Split: hc-1204]\nb.sh:3 copy function run_it, also c.sh:9 [Dup: hc-1205]\n' >"$NOTES_FIXTURE/shape.out"
+  mkdir -p "$HOME/.notes/lab/projects/current/x"
+  printf -- '- [ ] refactor(gov): split decide and handle #of/hc-1 <!-- id:hc-1204 filed:2026-11-18 tier:backlog -->\n- [ ] fold run_it into c.sh <!-- id:hc-1205 -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
+  printf 'The change.\n\nSplit: hc-1204 decide handle\nDup: hc-1205 run_it\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'shape: clean, covered: a.py:10 Gov.decide 247->269 [Split: hc-1204]; b.sh:3 copy function run_it, also c.sh:9 [Dup: hc-1205]'
   assert_output --partial 'merge: #42 MERGED'
 }
 
-@test "shape: a Split: id that is no row, a done row, or a row missing a function is refused" {
-  printf 'a.py:10 decide 247->269\nb.sh:3 run 0->151\n' >"$NOTES_FIXTURE/shape.out"
-  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
+@test "shape: an escape row that is no row, a done row, lists nothing or misses a name is refused, whoever runs shape-grow" {
+  : >"$NOTES_FIXTURE/ci.shape"
   mkdir -p "$HOME/.notes/lab/projects/current/x"
   printf -- '- [x] refactor: split decide and run <!-- id:hc-7 -->\n- [ ] refactor: split decide, rerun later <!-- id:hc-8 -->\n- [ ] refactor: split decide and run <!-- id:ar-10 -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
-  printf 'The change.\n\nSplit: ar-1\n' >"$NOTES_FIXTURE/body"
+  printf 'The change.\n\nSplit: ar-1 decide\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'shape failed: Split: ar-1 is not an open row on any sheet under ~/.notes/lab'
-  printf 'The change.\n\nSplit: hc-7\n' >"$NOTES_FIXTURE/body"
+  printf 'The change.\n\nDup: hc-7 decide\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
   assert_failure 1
-  assert_output --partial 'shape failed: Split: hc-7 is not an open row'
+  assert_output --partial 'shape failed: Dup: hc-7 is not an open row'
   printf 'The change.\n\nSplit: hc-8\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: Split: hc-8 lists nothing it covers'
+  printf 'The change.\n\nSplit: hc-8 decide run\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'shape failed: Split: hc-8 does not name run:'
@@ -913,6 +1296,132 @@ EOF
   assert_line 'landed #42'
   run grep '^sleep' "$LOG"
   assert_output 'sleep 0'
+}
+
+# gh run rerun --failed, then agent-land a second later: the watch listed only the passed jobs, read
+# green, and GitHub refused the merge BLOCKED (dotfiles#3546, run 45643023619, 2026-11-25, ar-6084).
+RERUN_GAP='[{"name":"shard weights","bucket":"pass","workflow":"shell tests"},{"name":"ui tier","bucket":"pass","workflow":"shell tests"}]'
+
+@test "a green watch while a re-run of its workflow has no check yet: it waits, then lands on the re-run's green (ar-6084)" {
+  printf '%s\n' "$RERUN_GAP" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"queued","workflowName":"shell tests","attempt":2}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green so far, but a run on the head has no check for its jobs yet (a re-run, or a workflow with none listed); waiting on it'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  run grep '^sleep' "$LOG"
+  assert_output 'sleep 60'
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "a green watch while a run of a workflow no check lists is pending: it waits, then lands (ar-6084)" {
+  printf '%s\n' '[{"name":"gate guard","bucket":"pass","workflow":"gate guard"}]' >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"pending","workflowName":"shell tests","attempt":1},{"status":"completed","conclusion":"success","workflowName":"gate guard","attempt":1}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green so far, but a run on the head has no check for its jobs yet (a re-run, or a workflow with none listed); waiting on it'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+}
+
+# A merge-up push opens its workflows' runs one by one: the watch listed only gate guard, read green, no
+# run was open for rerun_pending to see, and GitHub refused the merge on the required gate (#3671, ar-6328).
+GATE_GUARD_ONLY='[{"name":"gate guard","bucket":"pass","workflow":"gate guard"}]'
+GATE_LISTED='[{"name":"gate guard","bucket":"pass","workflow":"gate guard"},{"name":"gate","bucket":"pass","workflow":"shell tests"}]'
+
+@test "a green watch that lists no check a ruleset requires: it waits for the head to register it, then lands (ar-6328)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green so far, but origin/main requires gate, which the head has not registered yet; waiting on it'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 3
+  run grep -c '^sleep 60$' "$LOG"
+  assert_output 2
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "a green watch that lists no check branch protection requires: it waits the same (ar-6328)" {
+  echo '{"required_status_checks":{"strict":false,"contexts":["gate"]}}' >"$NOTES_FIXTURE/protection.json"
+  printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green so far, but origin/main requires gate, which the head has not registered yet; waiting on it'
+  assert_line 'landed #42'
+}
+
+@test "a required check the head never registers: stops at checks naming it after CHECKS_FIRST_RUN_TRIES waits, never the merge (ar-6328)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  for _ in 1 2 3 4; do echo "$GATE_GUARD_ONLY"; done >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=2 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: required check gate never registered on the head'
+  run grep -c '^gh pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a required check unlisted while a run on the head is open: that run is waited on first, without spending the registration tries (ar-6328 review)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"queued","workflowName":"shell tests","attempt":1}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=1 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
+}
+
+@test "a green watch whose head lists every required check lands with no extra wait (ar-6328)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  printf '%s\n' "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'has not registered yet'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 1
+}
+
+@test "a check that registers pending after a green watch is watched again, never green (ar-6084 review)" {
+  printf '%s\n' '[{"name":"gate guard","bucket":"pass","workflow":"gate guard"},{"name":"gate","bucket":"pending","workflow":"shell tests"}]' >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 2
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "a green watch beside a first attempt of its own workflow or a run waiting on approval lands at once; a failed runs read is never green (ar-6084)" {
+  printf '%s\n' "$RERUN_GAP" >"$NOTES_FIXTURE/checks.cancelled"
+  # a push run of its own held by concurrency, another workflow's run waiting on an environment, its own completed re-run
+  printf '%s\n' '[{"status":"pending","workflowName":"shell tests","attempt":1},{"status":"waiting","workflowName":"Deploy","attempt":1},{"status":"completed","conclusion":"success","workflowName":"shell tests","attempt":2}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'green so far'
+  assert_line 'landed #42'
+  run grep -c '^sleep' "$LOG"
+  assert_output 0
+  : >"$LOG"
+  printf 'OPEN\n' >"$NOTES_FIXTURE/state"
+  printf '%s\n' "$RERUN_GAP" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' 'ERR gh: API rate limit exceeded (HTTP 403)' >"$NOTES_FIXTURE/runs.open"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: reading the runs on the head: gh: API rate limit exceeded (HTTP 403)'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
 }
 
 @test "a cancelled check of an older run of its workflow on the head is no verdict: it lands on the newer run's green (ar-3095)" {
@@ -1094,7 +1603,7 @@ EOF
   printf '%s\n' 'ERR gh: API rate limit exceeded (HTTP 403)' >"$NOTES_FIXTURE/checks.cancelled"
   run "$LAND" 42 --item ship
   assert_failure 1
-  assert_output --partial 'checks failed: reading the cancelled checks: gh: API rate limit exceeded (HTTP 403)'
+  assert_output --partial 'checks failed: reading the checks after the watch: gh: API rate limit exceeded (HTTP 403)'
   refute_line 'checks: green'
   run grep -c 'pr merge' "$LOG"
   assert_output 0
@@ -1309,19 +1818,20 @@ EOF2
   assert_line --index 0 --partial 'item-line: gh pr view 42 --json body, then gh pr edit 42 --body-file -'
   assert_line --index 1 --partial 'head: git rev-parse HEAD must equal the PR'
   assert_line --index 2 --partial 'review: fleet-dispatch item-tier ship'
-  assert_line --index 3 --partial 'shape: shape-grow $(git merge-base HEAD origin/<base>) HEAD'
-  assert_line --index 4 --partial 'checks: gh pr checks 42 --watch'
-  assert_line --index 5 --partial 'fetch: git fetch origin'
-  assert_line --index 6 --partial 'validate: gh api repos/<owner>/<repo>/pulls/42/files | judge_work_level'
-  assert_line --index 7 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 8 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
-  assert_line --index 9 --partial 'proof: gh pr view 42 --json mergeCommit'
-  assert_line --index 10 --partial 'live: dotfiles-autopull --now .'
-  assert_line --index 11 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
-  assert_line --index 12 --partial 'split: gh search prs --owner <owner> --state open --match body -- "Item: ship"'
-  assert_line --index 13 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 14 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 15 --partial 'plan: tick'
+  assert_line --index 3 --partial 'workflow: gh api repos/<owner>/<repo>/pulls/42/files, then gh api -i user'
+  assert_line --index 4 --partial 'shape: shape-grow --body - $(git merge-base HEAD origin/<base>) HEAD, unless a workflow at HEAD runs it'
+  assert_line --index 5 --partial 'checks: gh pr checks 42 --watch'
+  assert_line --index 6 --partial 'fetch: git fetch origin'
+  assert_line --index 7 --partial 'validate: gh api repos/<owner>/<repo>/pulls/42/files | judge_work_level'
+  assert_line --index 8 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
+  assert_line --index 9 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
+  assert_line --index 10 --partial 'proof: gh pr view 42 --json mergeCommit'
+  assert_line --index 11 --partial 'live: dotfiles-autopull --now .'
+  assert_line --index 12 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
+  assert_line --index 13 --partial 'split: gh search prs --owner <owner> --state open --match body -- "Item: ship"'
+  assert_line --index 14 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 15 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 16 --partial 'plan: tick'
   run ran
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -1587,6 +2097,8 @@ EOF2
   assert_success
   grep -qE -- '^- \[/\] fix\(menu\): the back button .*id:gm-2' "$dir/agent/README.md" ||
     fail "the row was not started: $(cat "$dir/agent/README.md")"
+  # the item's task is on the row as a detail line, so a plain return would keep it (ar-3159)
+  grep -qF 'work the filed row' "$dir/agent/README.md" || fail "the task is not on the row: $(cat "$dir/agent/README.md")"
   run "$LAND" 42 --item back
   assert_success
   assert_output --partial 'board: closed "gm-2" with pr:o/r#42'
@@ -1609,7 +2121,9 @@ EOF2
   run agent-queue add --running --project game --slug back "gm-2: fix the back button"
   assert_success
   assert_output --partial 'back works row gm-2, which its title names'
-  [ "$(grep -c 'back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed: $(cat "$dir/agent/README.md")"
+  # rows only: the item's task goes on the row as a detail line (brief_to_row, ar-3159), and it names the button too
+  [ "$(grep -c '^- \[.\] .*back button' "$dir/agent/README.md")" = 1 ] || fail "a second row was filed: $(cat "$dir/agent/README.md")"
+  grep -qxF '  gm-2: fix the back button' "$dir/agent/README.md" || fail "the task is not on the row: $(cat "$dir/agent/README.md")"
   printf '%s\n' '# plan' 'rows: gm-9' '' '## Phases' '' '- [ ] 1. the back button' >"$PLAN"
   run "$LAND" 42 --item back --plan "$PLAN" --phase "1. the back button"
   assert_success

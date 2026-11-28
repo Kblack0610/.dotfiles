@@ -140,25 +140,25 @@ test("opening a run reads its log then, and only then; clicking again closes it"
 
 const job = (i, o = {}) => ({
   name: `PlayMode ${i}`, class: "aws/on-demand", wait_text: "1m", took_text: "32m45", runner: "aws-burst-1-pool-2",
-  price: { usd: 0.2, basis: "on-demand", text: "$0.20 (1/5 of $1.855/h)" }, steps_text: "checkout 2s, PlayMode 32m40", ...o,
+  steps_text: "checkout 2s, PlayMode 32m40", ...o,
 });
 const rdetail = (o = {}) => ({
-  key: { forge: "github.com", repo: "binks", id: 77, attempt: 2 }, title: "#77 Tests red 46m $0.20 + no rate",
+  key: { forge: "github.com", repo: "binks", id: 77, attempt: 2 }, title: "#77 Tests red 46m",
   header: "end to end 46m | before first job 2m | runner time 1h42 | tested abc1234 | partial", coverage: "partial",
   coverage_text: "partial: the archive holds 2 of the run's jobs so far", attempts: [1, 2],
-  jobs: [job(1), job(2, { class: "hosted", runner: "github-hosted", price: { usd: null, basis: "", text: "no rate" } })], rates_error: null, ...o,
+  jobs: [job(1), job(2, { class: "hosted", runner: "github-hosted" })], ...o,
 });
 
-test("an opened run shows its header, every job with its price, the steps and the coverage", async () => {
+test("an opened run shows its header, every job, the steps and the coverage", async () => {
   detail = rdetail({ jobs: Array.from({ length: 130 }, (_, i) => job(i)) });
   showBuilds();
   fire(runs, "click", { type: "click", target: brow(BKEY) });
   await settled();
   const b = runs.innerHTML;
-  assert.match(b, /<b>#77 Tests red 46m \$0.20 \+ no rate<\/b>/);
+  assert.match(b, /<b>#77 Tests red 46m<\/b>/);
   assert.match(b, /end to end 46m \| before first job 2m/);
   assert.equal((b.match(/<td data-label="job"/g) || []).length, 130, "every job, none capped");
-  assert.match(b, /<td data-label="\$" class="n">\$0.20 \(1\/5 of \$1.855\/h\)<\/td>/);
+  assert.doesNotMatch(b, /data-label="\$"|no rate/, "no run carries money");
   assert.match(b, /<b>Steps<\/b>/);
   assert.match(b, /<b>Coverage<\/b> <span class="muted">partial<\/span>/);
   assert.match(b, /<b>Attempts<\/b> 1, 2/);
@@ -166,7 +166,7 @@ test("an opened run shows its header, every job with its price, the steps and th
   detail = rdetail();
   fire(runs, "click", { type: "click", target: brow(BKEY) });
   await settled();
-  assert.match(runs.innerHTML, /<td data-label="runner" class="wrap muted">github-hosted<\/td><td data-label="\$" class="n">no rate<\/td>/);
+  assert.match(runs.innerHTML, /<td data-label="runner" class="wrap muted">github-hosted<\/td><\/tr>/);
   fire(runs, "click", { type: "click", target: brow(BKEY) });
 });
 
@@ -334,13 +334,17 @@ test("Infra shown before its reads answer says reading in Runs, Pipelines and Te
 const tcol = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const suite = (o) => ({ tier: "unit", suite: "a.bats", tests: 4, passed: 2, failed: 1, quarantined: 0, skipped: 1, time: 1.25, state: "failed", level: "bad", ...o });
 const pickRun = (id, o = {}) => ({ repo: "o/binks", id, attempt: 1, branch: "main", sha: "abc1234", title: "t", state: "red", level: "bad", started: NOW() - 600, prs: [], url: `https://github.com/o/binks/actions/runs/${id}`, ...o });
-const tdata = (o = {}) => ({
-  at: NOW() - 60, stale_after: 1800, runs: [pickRun(9), pickRun(8, { state: "green", branch: "feat/x" })], run: pickRun(9),
-  summary: "main abc1234: 5 tests in 2 suites: 1 failed, 1 skipped, 3 passed", totals: { suites: 2, tests: 5, passed: 3, failed: 1, skipped: 1, failed_suites: 1, time: 2 },
+const TCOLS = ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"];
+const ttable = (o = {}) => ({ q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "failed", n: 1 }, { name: "quarantined", n: 0 }, { name: "skipped", n: 0 }, { name: "passed", n: 1 }], columns: TCOLS.map(tcol), facets: [], ...o });
+const SAYS = "5 tests in 2 suites: 1 failed, 1 skipped, 3 passed";
+const TOTALS = { suites: 2, tests: 5, passed: 3, failed: 1, skipped: 1, failed_suites: 1, time: 2 };
+// One lane of /api/tests: a declared workflow, the run shown of it and that run's suites.
+const lane = (o = {}) => ({
+  workflow: "test.yml", run: pickRun(9), pinned: false, runs: [pickRun(9), pickRun(8, { state: "green", branch: "feat/x" })], says: SAYS, totals: TOTALS,
   rows: [suite(), suite({ tier: "ui", suite: "c.bats", tests: 1, passed: 1, failed: 0, skipped: 0, state: "passed", level: "ok", time: 70 })], fold: null, note: null, errors: [],
-  table: { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "failed", n: 1 }, { name: "quarantined", n: 0 }, { name: "skipped", n: 0 }, { name: "passed", n: 1 }], columns: ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"].map(tcol), facets: [] },
-  ...o,
+  table: ttable(), ...o,
 });
+const tdata = (o = {}) => ({ at: NOW() - 60, stale_after: 1800, totals: TOTALS, lanes: [lane()], errors: [], table: ttable(), ...o });
 const held = (o) => ({ test: "P.Yard.Each(\"a\")", repo: "unity-core-playground", row: "db-265", owner: "db-265 fix(yard): x", ends: "2026-11-20", days_left: 8, left: "8d", level: "ok", nightly: "failing", ...o });
 const qdata = (o = {}) => ({
   lanes: [{ repo: "unity-core-playground", says: "unity-core-playground: 2 quarantined over 2 owner rows, 1 ended; nightly 11-12: 8 known red, 1 now pass", level: "bad", url: "https://github.com/o/play/actions/runs/43215863750" }],
@@ -367,17 +371,81 @@ test("the Tests section draws the run's totals, its picker and each suite", () =
   assert.match(b, /<div data-tbl="t"><div id="tst-head"><h2 class="sec bad" id="sec-tests">Tests <span class="n">2<\/span><\/h2>/, "a failed suite hues the head");
   // The run's totals are a tile after the suites' state tiles (the Tests tblTab's tiles).
   assert.match(run("testsTiles")(tdata()), /<span class="tl">TESTS<\/span><span class="tv">5<\/span><span class="ts1">1 failed, 1 skipped<\/span>/);
-  assert.equal(run("testsTiles")(tdata({ run: null })), "", "no run, no tile");
-  assert.match(b, /<select data-twin="run" aria-label="CI run"><option value="9" selected>main abc1234 red, [^<]* ago<\/option><option value="8">feat\/x abc1234 green/);
+  assert.equal(run("testsTiles")(tdata({ lanes: [] })), "", "no lane, no tile");
+  assert.match(b, /<select data-twin="run" aria-label="CI run of test.yml"><option value="" selected>default \(latest nightly\)<\/option><option value="9">main abc1234 red, [^<]* ago<\/option><option value="8">feat\/x abc1234 green/);
   assert.match(b, /<td class="bad">failed<\/td><td>unit<\/td><td class="wrap">a\.<wbr>bats<\/td><td class="n">4<\/td><td class="n bad">1<\/td><td class="n muted">0<\/td><td class="n muted">1<\/td><td class="n">1.25s<\/td>/);
   assert.match(b, /<td class="n muted">0<\/td><td class="n">1m<\/td>/);
+  assert.match(b, /<div class="cline bad">5 tests in 2 suites: 1 failed, 1 skipped, 3 passed<\/div>/, "the lane's counts are the server's words");
+  assert.doesNotMatch(b, /<th[^>]*>history<\/th>/, "no history, no column");
+});
+
+const histRow = (o) => suite({ history: ["passed", "failed", "passed", "passed"], flake: 25, ...o });
+
+test("two lanes draw two headed blocks, each with its own run line, counts and suites", () => {
+  const second = lane({ workflow: "playmode.yml", run: pickRun(5, { state: "green", event: "schedule" }), runs: [pickRun(5, { state: "green", event: "schedule" })], says: "34 tests in 1 suite: 0 failed, 1 skipped, 33 passed",
+    totals: { ...TOTALS, failed: 0, failed_suites: 0 }, rows: [suite({ suite: "p.Play", state: "passed", level: "ok", failed: 0 })], table: ttable({ total: 1, shown: 1 }) });
+  showTests(tdata({ lanes: [lane(), second], totals: { ...TOTALS, suites: 3 } }));
+  const b = tests_.innerHTML;
+  const heads = [...b.matchAll(/<h3 class="sec[^"]*" id="sec-tests-(\d)">([^<]*)/g)].map((m) => [m[1], m[2]]);
+  assert.deepEqual(heads, [["0", "test.yml "], ["1", "playmode.yml "]]);
+  assert.match(b, /<h3 class="sec bad" id="sec-tests-0">/, "a lane with a failed suite is red");
+  assert.match(b, /<h3 class="sec" id="sec-tests-1">/, "a green lane is not");
+  assert.equal((b.match(/<select data-twin="run"/g) || []).length, 2, "a run picker for each lane");
+  assert.match(b, /<option value="5">main abc1234 nightly green/, "the nightly is named");
+  assert.match(b, /34 tests in 1 suite: 0 failed, 1 skipped, 33 passed/);
+  assert.equal((b.match(/<table class="tbl">/g) || []).length, 2, "a table for each lane");
+  assert.ok(b.indexOf("sec-tests-0") < b.indexOf("a.<wbr>bats") && b.indexOf("a.<wbr>bats") < b.indexOf("sec-tests-1") && b.indexOf("sec-tests-1") < b.indexOf("p.<wbr>Play"));
+});
+
+test("a pick in one lane keeps the runs another lane was pinned to, and a lane left alone follows its default", () => {
+  const a = lane({ pinned: true, run: pickRun(8, { state: "green", branch: "feat/x" }) });
+  const second = lane({ workflow: "playmode.yml", run: pickRun(5), runs: [pickRun(5), pickRun(4)] });
+  showTests(tdata({ lanes: [a, second] }));
+  const b = tests_.innerHTML;
+  assert.match(b, /aria-label="CI run of playmode.yml"><option value="8" selected>default \(latest nightly\)<\/option><option value="8,5">/, "the pinned lane's run rides along");
+  assert.match(b, /<option value="8,4">/);
+  assert.match(b, /aria-label="CI run of test.yml"><option value="">default[^<]*<\/option><option value="9">[^<]*<\/option><option value="8" selected>/, "no other lane is pinned, so nothing rides along");
+  const pick = run("tblPatch")({ type: "change", target: { dataset: { twin: "run" }, value: "8,4" } });
+  assert.equal(run(`tblSet('', { run: '${pick.run}' }, 't')`), "trun=8%2C4");
+});
+
+test("a lane with no finished run keeps its name and says why, with no picker and no table", () => {
+  showTests(tdata({ lanes: [lane(), lane({ workflow: "soak.yml", run: null, runs: [], rows: [], totals: { ...TOTALS, suites: 0, tests: 0, failed: 0, failed_suites: 0 }, says: "", note: "soak.yml: no finished run in the ledger (a cancelled or skipped run is not listed)", table: ttable({ total: 0, shown: 0 }) })] }));
+  const b = tests_.innerHTML;
+  assert.match(b, /<h3 class="sec" id="sec-tests-1">soak.yml<\/h3><div class="panel muted">soak.yml: no finished run in the ledger/);
+  assert.equal((b.match(/<select data-twin="run"/g) || []).length, 1, "only the lane with a run has a picker");
+  assert.doesNotMatch(b, /down/, "a missing run is a note, not an error");
+});
+
+test("a lane lists its suites in the order the server sends, the failed first", () => {
+  showTests(tdata({ lanes: [lane({ rows: [suite({ suite: "bad.bats" }), suite({ suite: "ok.bats", failed: 0, state: "passed", level: "ok" })] })] }));
+  const b = tests_.innerHTML;
+  assert.ok(b.indexOf("bad.<wbr>bats") < b.indexOf("ok.<wbr>bats"));
+});
+
+test("each suite carries its class history as a strip and its flake rate, in a column of its own", () => {
+  showTests(tdata({ lanes: [lane({ rows: [histRow(), histRow({ suite: "b.bats", history: ["failed", "failed"], flake: 0 })] })] }));
+  const b = tests_.innerHTML;
+  assert.match(b, /<th data-role="" data-label="history">history<\/th><\/tr>/);
+  assert.equal((b.match(/<span class="hstrip"/g) || []).length, 2, "a strip for each class");
+  assert.match(b, /<span class="hstrip" title="last 4 runs, oldest first: passed, failed, passed, passed"><i class="passed"><\/i><i class="failed"><\/i><i class="passed"><\/i><i class="passed"><\/i><\/span> <span class="warn" title="[^"]*">25% flaky<\/span>/);
+  assert.equal((b.match(/flaky/g) || []).length, 1, "no flake rate on a class that never flipped");
+  // a lane without history beside it draws no column
+  showTests(tdata({ lanes: [lane({ rows: [histRow()] }), lane({ workflow: "b.yml" })] }));
+  assert.equal((tests_.innerHTML.match(/<th[^>]*>history<\/th>/g) || []).length, 1);
+});
+
+test("the counts of every lane add up in the tests tile and match the lanes' own", () => {
+  const d = tdata({ lanes: [lane(), lane({ workflow: "b.yml", totals: { ...TOTALS, tests: 7 } })], totals: { ...TOTALS, tests: 12, suites: 4 } });
+  assert.match(run("testsTiles")(d), /<span class="tv">12<\/span>/);
+  assert.equal(d.lanes[0].totals.tests + d.lanes[1].totals.tests, 12, "fixture: the lanes sum to the header");
 });
 
 test("a suite whose failures are all quarantined is amber, and its tests say quarantined", async () => {
-  showTests(tdata({ rows: [suite({ failed: 0, quarantined: 1, state: "quarantined", level: "warn" })] }));
+  showTests(tdata({ lanes: [lane({ rows: [suite({ failed: 0, quarantined: 1, state: "quarantined", level: "warn" })] })] }));
   assert.match(tests_.innerHTML, /<td class="warn">quarantined<\/td><td>unit<\/td><td class="wrap">a\.<wbr>bats<\/td><td class="n">4<\/td><td class="n muted">0<\/td><td class="n warn">1<\/td>/);
   cases = cdata([{ name: "held one", fullname: "A.held", result: "quarantined", time: 0.2, message: "Expected 1" }], { quarantined: 1 });
-  fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
+  fire(tests_, "click", { type: "click", target: srow("9|unit|a.bats") });
   await settled();
   assert.match(tests_.innerHTML, /<span class="warn">quarantined<\/span> held one/);
   assert.match(tests_.innerHTML, /<div data-tbl="c"><div id="cas-tiles"><div class="tiles stiles">.*<button class="tile" data-ts="quarantined"><span class="tl">QUARANTINED<\/span><span class="tv">1<\/span><\/button>/);
@@ -394,7 +462,7 @@ test("the Quarantine table lists each held test under each lane's line with its 
   assert.match(b, /<td class="n ">8d<\/td><td class="">now passing<\/td>/);
   assert.match(b, /data-ts="ended"/);
   // no run picked still lists the quarantine
-  showTests(tdata({ run: null, runs: [], rows: [], quarantine: qdata() }));
+  showTests(tdata({ lanes: [], quarantine: qdata() }));
   assert.match(tests_.innerHTML, /id="sec-quarantine"/);
   // a bad file is the table's red line; no repo with a quarantine draws nothing
   showTests(tdata({ quarantine: qdata({ lanes: [], rows: [], error: "quarantine.json: EOF", table: { ...qdata().table, total: 0, links: [] } }) }));
@@ -405,7 +473,7 @@ test("the Quarantine table lists each held test under each lane's line with its 
 
 test("the suites and the Quarantine each draw the page they are sent under their own pager", () => {
   const pager = { page: 1, pages: 2, per: 100 };
-  showTests(tdata({ table: { ...tdata().table, total: 150, shown: 150, pager }, quarantine: qdata({ table: { ...qdata().table, total: 120, shown: 120, pager } }) }));
+  showTests(tdata({ lanes: [lane({ table: ttable({ total: 150, shown: 150, pager }) })], quarantine: qdata({ table: { ...qdata().table, total: 120, shown: 120, pager } }) }));
   const b = tests_.innerHTML, q = b.indexOf('id="sec-quarantine"');
   assert.match(b.slice(0, q), /<div id="tst-body">.*<nav class="tpager".*rows 1-100 of 150<\/span><\/nav><\/div><\/div>/s, "the suites' pager inside their data-tbl");
   assert.match(b.slice(q), /<nav class="tpager".*rows 1-100 of 120<\/span><\/nav>/s);
@@ -428,26 +496,26 @@ test("a Quarantine chip re-reads the tests under the q keys, and the suites' key
   tests = {};
 });
 
-test("the repo picker sits before the run picker, and a new repo drops the picked run", () => {
+test("the repo picker sits above the lanes, and a new repo drops the picked runs", () => {
   showTests(tdata({ repos: ["o/play", "o/binks"], repo: "o/binks" }));
-  assert.match(tests_.innerHTML, /<select data-twin="repo" data-tclear="run" aria-label="repo"><option value="o\/play">o\/play<\/option><option value="o\/binks" selected>o\/binks<\/option><\/select> <select data-twin="run"/);
-  assert.match(tests_.innerHTML, /<option value="9" selected>main abc1234 red/, "a run is named by branch, commit and result, its repo is the picker's");
+  assert.match(tests_.innerHTML, /<select data-twin="repo" data-tclear="run" aria-label="repo"><option value="o\/play">o\/play<\/option><option value="o\/binks" selected>o\/binks<\/option><\/select><\/div>/);
+  assert.match(tests_.innerHTML, /<option value="9">main abc1234 red/, "a run is named by branch, commit and result, its repo is the picker's");
   const pick = run("tblPatch")({ type: "change", target: { dataset: { twin: "repo", tclear: "run" }, value: "o/play" } });
   assert.deepEqual({ ...pick }, { repo: "o/play", run: "" });
   assert.equal(run("tblSet('trun=8', { repo: 'o/play', run: '' }, 't')"), "trepo=o%2Fplay");
 });
 
 test("a green run is one line that lists its suites through the passed chip", () => {
-  showTests(tdata({ rows: [], fold: "All green: 5 tests in 2 suites: 0 failed, 1 skipped, 4 passed" }));
+  showTests(tdata({ lanes: [lane({ rows: [], fold: "All green: 5 tests in 2 suites: 0 failed, 1 skipped, 4 passed" })] }));
   assert.match(tests_.innerHTML, /<button class="btn sm" data-ts="passed"[^>]*>All green: 5 tests in 2 suites/);
   assert.doesNotMatch(tests_.innerHTML, /<tr class="sr/);
 });
 
-test("a run with no artifacts says why, and no run at all names the declared workflows", () => {
-  showTests(tdata({ rows: [], note: "this run uploaded no junit-* artifact", summary: "main abc1234: no results", table: { ...tdata().table, total: 0, shown: 0 } }));
+test("a run with no artifacts says why, and no lane at all names the declared workflows", () => {
+  showTests(tdata({ lanes: [lane({ rows: [], note: "this run uploaded no junit-* artifact", table: ttable({ total: 0, shown: 0 }) })] }));
   assert.match(tests_.innerHTML, /<div class="panel muted">this run uploaded no junit-\* artifact/);
-  showTests(tdata({ run: null, runs: [], rows: [], summary: "no finished run of a declared test workflow in the ledger" }));
-  assert.match(tests_.innerHTML, /No finished run of a declared test workflow in the ledger \(testWorkflows in the project map\)\./);
+  showTests(tdata({ lanes: [] }));
+  assert.match(tests_.innerHTML, /No repo has a finished run of a declared test workflow in the ledger \(testWorkflows in the project map\)\./);
   assert.doesNotMatch(tests_.innerHTML, /<select data-twin="run"/);
 });
 
@@ -456,7 +524,7 @@ test("opening a suite reads its tests then, failed first with result tiles count
   // 310 failed in all, page 1 of 4 sent: the tile says the server's count, not the rows'.
   cases = cdata([{ name: "fails here", result: "failed", time: 0.2, message: "line 2: [ 1 -gt 2 ] failed" }, { name: "skipped one", result: "skipped", time: 0, message: "not on CI" }, { name: "passes", result: "passed", time: 0.1, message: "" }], { failed: 310, skipped: 1, passed: 1 }, { page: 1, pages: 4, per: 100 });
   asked.length = 0;
-  fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
+  fire(tests_, "click", { type: "click", target: srow("9|unit|a.bats") });
   await settled();
   assert.deepEqual(asked, ["/api/tests/cases?run=9&tier=unit&suite=a.bats"]);
   let b = tests_.innerHTML;
@@ -484,18 +552,18 @@ test("opening a suite reads its tests then, failed first with result tiles count
   assert.match(b, /skipped one/);
   assert.doesNotMatch(b, /fails here|passes/);
   // Opened again, a suite shows all its tests.
-  fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
+  fire(tests_, "click", { type: "click", target: srow("9|unit|a.bats") });
   assert.doesNotMatch(tests_.innerHTML, /skipped one/);
   asked.length = 0;
-  fire(tests_, "click", { type: "click", target: srow("unit|a.bats") });
+  fire(tests_, "click", { type: "click", target: srow("9|unit|a.bats") });
   await settled();
   assert.deepEqual(asked, ["/api/tests/cases?run=9&tier=unit&suite=a.bats"]);
 });
 
-test("an opened suite is let go when the table is read for another run", async () => {
+test("an opened suite is let go when no lane shows its run any more", async () => {
   showTests();
-  run("tst.sel = 'unit|a.bats'; Object.assign(cas, { run: 9, tier: 'unit', suite: 'a.bats', key: '9|unit|a.bats', data: { cases: [] } })");
-  tests = tdata({ run: pickRun(8, { state: "green" }) });
+  run("tst.sel = '9|unit|a.bats'; Object.assign(cas, { run: 9, tier: 'unit', suite: 'a.bats', key: '9|unit|a.bats', data: { cases: [] } })");
+  tests = tdata({ lanes: [lane({ run: pickRun(8, { state: "green" }) })] });
   await run("tst.refresh()");
   assert.equal(run("tst.sel"), null);
   assert.equal(run("cas.data"), null);

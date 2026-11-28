@@ -81,31 +81,57 @@ investigate rg -n 'gh run watch' docs
 EOF
 }
 
-# agent-11, 2026-11-05: `bash Logs/gate-land.sh` ran scripts/test/suite.sh on the pool, and time_use.rs
-# read it as a gate (ar-304) while session-outcomes.sh and agent-usage-burn.py counted no CI poll (ar-4253).
-@test "a session-written wrapper counts as what its text runs in both readers, as time_use.rs reads it; one gone, one with no cwd, or a file only read, is a plain job; an && leaves no empty segment to trip on" {
-  mkdir -p "$SANDBOX/w/Logs"
-  printf '#!/bin/bash\n# not gh run view here\nset -e\nscripts/test/suite.sh --pr 1\n' > "$SANDBOX/w/Logs/gate-land.sh"
-  printf 'cd x && bats tests/unit\n' > "$SANDBOX/w/Logs/test.sh"
-  printf "sleep 600\necho 'agent-land 1'\n" > "$SANDBOX/w/Logs/plain.sh"
-  jq -nc --arg d "$SANDBOX/w" '["bash Logs/gate-land.sh; echo exit=$?", "timeout 600 bash Logs/test.sh", "Logs/plain.sh", "cat Logs/gate-land.sh", "bash Logs/none.sh", "bash Logs/test.sh && echo ok"]
-    | to_entries[] | {type: "assistant", cwd: $d, message: {id: "m\(.key)", content: [{type: "tool_use", id: "t\(.key)", name: "Bash", input: {command: .value}}]}}' > "$SANDBOX/t.jsonl"
-  echo '{"type":"assistant","message":{"id":"nc","content":[{"type":"tool_use","id":"nc","name":"Bash","input":{"command":"bash Logs/gate-land.sh"}}]}}' >> "$SANDBOX/t.jsonl"
+# agent-core's open_job_reads_what_a_session_written_wrapper_runs holds time_use.rs to the same
+# files: a wrapper script a session wrote is read by its text (agent-11, 2026-11-05: `bash Logs/gate-land.sh`
+# ran scripts/test/suite.sh and read as a plain job in the two shell readers).
+wrapper_fixture() {
+  mkdir -p "$SANDBOX/wd/Logs"
+  printf '#!/bin/bash\n# not gh run view here\nset -e\nscripts/test/suite.sh --pr 1\n' > "$SANDBOX/wd/Logs/gate-land.sh"
+  printf "sleep 600\necho 'agent-land 1'\n" > "$SANDBOX/wd/Logs/plain.sh"
+  printf 'cd x && bats tests/unit\n' > "$SANDBOX/wd/Logs/test.sh"
+}
+
+@test "session-outcomes.sh counts a session-written wrapper by the text it runs, the strongest class of a chain" {
   # shellcheck source=/dev/null
   . "$REPO_ROOT/.local/lib/session-outcomes.sh"
+  wrapper_fixture
+  local n=0 cmd
+  : > "$SANDBOX/t.jsonl"
+  for cmd in 'bash Logs/gate-land.sh; echo exit=$?' './Logs/gate-land.sh' 'bash Logs/test.sh; bash Logs/gate-land.sh' \
+             'bash Logs/test.sh' 'bash Logs/plain.sh' 'bash Logs/gone.sh' 'echo Logs/gate-land.sh'; do
+    n=$((n + 1))
+    jq -nc --arg c "$cmd" --arg w "$SANDBOX/wd" --arg id "t$n" \
+      '{type: "assistant", cwd: $w, message: {id: "m\($id)", content: [{type: "tool_use", id: $id, name: "Bash", input: {command: $c}}]}}' >> "$SANDBOX/t.jsonl"
+  done
   run so_transcript_metrics "$SANDBOX/t.jsonl"
   assert_success
-  assert_equal "$(jq -c '.activity | [.test_runs, .ci_polls]' <<<"$output")" '[2,1]'
-  run python3 -I - "$BURN" "$SANDBOX/w" <<'PY'
+  # gate: 3 (the first, the second, the chain); test: 1; plain, gone and the echoed path: none
+  assert_equal "$(jq -c '.activity | [.test_runs, .ci_polls]' <<<"$output")" '[1,3]'
+  assert_equal "$(jq -c 'has("wrap")' <<<"$output")" 'false'
+}
+
+@test "agent-usage-burn.py reads a session-written wrapper's text: a gate is a wait, a test run is not" {
+  wrapper_fixture
+  run python3 -I - "$BURN" "$SANDBOX/wd" <<'EOF'
 import importlib.machinery, importlib.util, sys
 loader = importlib.machinery.SourceFileLoader("burn", sys.argv[1])
 mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("burn", loader))
 loader.exec_module(mod)
-p, cwd = mod.time_use_patterns(), sys.argv[2]
-for c in ["bash Logs/gate-land.sh; echo exit=$?", "timeout 600 bash Logs/test.sh", "Logs/plain.sh", "cat Logs/gate-land.sh", "bash Logs/none.sh", "bash Logs/test.sh && echo ok"]:
-    print(mod.wrapper_class(c, cwd, p), mod.call_class("Bash", {"command": c}, p, cwd))
-print(mod.call_class("Bash", {"command": "bash Logs/gate-land.sh"}, p))
-PY
+p = mod.time_use_patterns()
+for c in ("bash Logs/gate-land.sh; echo exit=$?", "./Logs/gate-land.sh", "bash Logs/test.sh; bash Logs/gate-land.sh",
+          "bash Logs/test.sh", "bash Logs/plain.sh", "bash Logs/gone.sh", "echo Logs/gate-land.sh"):
+    print(mod.call_class("Bash", {"command": c}, p, sys.argv[2]), c)
+print(mod.call_class("Bash", {"command": "bash Logs/gate-land.sh"}, p), "no cwd")
+EOF
   assert_success
-  assert_output $'gate wait\ntest investigate\njobs investigate\njobs investigate\njobs investigate\ntest investigate\ninvestigate'
+  assert_output - <<'EOF'
+wait bash Logs/gate-land.sh; echo exit=$?
+wait ./Logs/gate-land.sh
+wait bash Logs/test.sh; bash Logs/gate-land.sh
+investigate bash Logs/test.sh
+investigate bash Logs/plain.sh
+investigate bash Logs/gone.sh
+investigate echo Logs/gate-land.sh
+investigate no cwd
+EOF
 }
