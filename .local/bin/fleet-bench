@@ -3984,12 +3984,20 @@ queue_section() {
 # run its lane_run= names; unrouted when it has none), so a lane's trial candidate is scored on its
 # own lane's landings; with lane alone, redo counts the runs of that lane. This is the evidence a
 # lane graduates or demotes on.
+# lane_runs -> model-lane's run log, one row per run id, folded by lib/lane-runs.jq (the union merge of
+# ~/.agent can leave a rewritten row beside its old copy). A line that is no JSON (a torn append) is skipped.
+lane_runs() {
+  local fold
+  fold="$(grep -v '^#' "${BENCH_LIB_DIR:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib}/lane-runs.jq")" || return 1
+  jq -cRn "$fold"'[inputs | fromjson? | objects | select(.id and .ts)] | lane_runs[]' "$BENCH_LANE_LOG" 2>/dev/null
+}
+
 models_json() {
   local since by="${2:-}"; since=$(( $1 - BENCH_QUEUE_DAYS * 86400 ))
   jq -cn --arg by "$by" --argjson days "$BENCH_QUEUE_DAYS" --argjson since "$since" \
      --slurpfile items <(bench_read $BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
      --slurpfile outcomes <(outcomes_latest) \
-     --slurpfile runs <(jq -c 'select(.id and .ts)' "$BENCH_LANE_LOG" 2>/dev/null) \
+     --slurpfile runs <(lane_runs) \
      --slurpfile voids <([ ! -s "$BENCH_LANE_VOIDS" ] || jq -cR 'fromjson? | select(.id)' "$BENCH_LANE_VOIDS" 2>/dev/null) \
      --slurpfile ci <([ ! -s "$CI" ] || jq -c 'select(.repo and .number)' "$CI" 2>/dev/null) \
      --slurpfile sa <(source_attr "$1" | jq -c '.sessions') "$JQ_LIB"'

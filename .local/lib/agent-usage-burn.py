@@ -872,17 +872,18 @@ def other_harnesses(start, end, root):
                 continue
         except OSError:
             continue
-        for line in open(f, errors="ignore"):
-            try:
-                r = json.loads(line)
-            except ValueError:
-                continue
-            at = r.get("updated_epoch") or 0
-            if (r.get("harness") or "claude").startswith("claude") or r.get("provider") in GATEWAY_PROVIDERS or at >= end:
-                continue
-            seen = newest if at >= start else before
-            if at >= (seen.get(r.get("session_id")) or {}).get("updated_epoch", 0):
-                seen[r.get("session_id")] = r
+        with open(f, errors="ignore") as fh:
+            for line in fh:
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                at = r.get("updated_epoch") or 0
+                if (r.get("harness") or "claude").startswith("claude") or r.get("provider") in GATEWAY_PROVIDERS or at >= end:
+                    continue
+                seen = newest if at >= start else before
+                if at >= (seen.get(r.get("session_id")) or {}).get("updated_epoch", 0):
+                    seen[r.get("session_id")] = r
     out = defaultdict(lambda: {"usd": 0.0, "sessions": 0, "priced": 0, "sources": set()})
     rows, unpriced = [], []
     for sid, r in newest.items():

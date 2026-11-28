@@ -117,6 +117,31 @@ EOF
   assert_output --partial '## Agents (demoapp)'
 }
 
+@test "the agent changelog folds in the repo's sessions, except for an app of a monorepo" {
+  # binks is apps/binks in bnb-platform: bnb-platform's sessions are every app's, not binks's.
+  cat > "$SANDBOX/bin/agent-usage" <<'EOF'
+#!/usr/bin/env bash
+[ "${1:-}" = changelog ] && printf '## Agents (%s)\n' "${2:-}"
+EOF
+  chmod +x "$SANDBOX/bin/agent-usage"
+  export PROJECT_MAP_FILE="$SANDBOX/project-map.json"
+  echo '{"trackers": {"_comment": "a string key", "demoapp": {"repo": "mono", "path": "apps/demoapp"}, "tool": {"repo": "mono"}}}' > "$PROJECT_MAP_FILE"
+  with_frozen
+  run "$NOTES_ROLL" personal demoapp
+  assert_success
+  run cat "$FROZEN"
+  assert_output --partial '## Agents (demoapp)'
+  refute_output --partial '## Agents (mono)'
+  # negative control: a project in the repo with no path keeps the repo's sessions
+  printf '# v1.0.0\n' > "$FROZEN"
+  with_frozen
+  run "$NOTES_ROLL" personal tool
+  assert_success
+  run cat "$FROZEN"
+  assert_output --partial '## Agents (tool)'
+  assert_output --partial '## Agents (mono)'
+}
+
 @test "a roll with no agent sessions recorded still succeeds and says so" {
   cat > "$SANDBOX/bin/agent-usage" <<'EOF'
 #!/usr/bin/env bash
