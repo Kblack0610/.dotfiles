@@ -109,8 +109,8 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           candidates, drain, errors} (hub_core::bar): live sessions worst first, the items ready
           to start in start order, the top cleared board candidates; agent-mqtt-publish sends it
           retained as summary/bar. A source it could not read is in errors and the exit is still 0
-  briefing the human overview (what needs you, what landed, builds and releases, overnight,
-          money) for the window from WHEN (epoch seconds or RFC 3339, default 12h ago); --md is
+  briefing the human overview (what needs you, what landed, a line per project, builds and
+          releases, overnight, money) for the window from WHEN (epoch seconds or RFC 3339, default 12h ago); --md is
           the file agentctl-briefing writes as briefing.md, and --agents-md FILE writes the agent
           briefing (what needs you, one line per area: Infra, Sessions, Workers overnight,
           Nightly, Delivery, Costs, and the detail) from the same read. Exits 1 when a source
