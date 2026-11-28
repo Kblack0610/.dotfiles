@@ -1273,6 +1273,30 @@ workflow_gate() {
   fail workflow "#$pr changes .github/workflows and this gh token's scopes ($scopes) have no workflow, so GitHub would refuse its merge after the checks: run agent-land $pr${repo:+ --repo $repo}${item:+ --item $item} from a host whose gh token has the scope, or ask the human to run gh auth refresh -s workflow here and re-run it"
 }
 
+HOLD_BIN="${AGENT_LAND_HOLD:-$(dirname "$(readlink -f "$0")")/agent-hold}"
+# hold_gate: a hold whose --scope covers a file this PR changes (agent-hold covers: its repo, or a path
+# in it) refuses the merge, whatever project the item is from, unless the hold grants the item (its row,
+# epic or plan: agent-queue grant-names) or this session. Checked before the checks and again on the
+# head that would merge, so a hold set during the wait still stops it. A repo no scope names costs no
+# file read; a file list or a hold that cannot be read, or a PR whose repo it cannot name, refuses. Why: home-config #1333, a
+# unity-core-playground row's work, changed apps/ci-runner-governor 40 minutes after the human locked
+# home-config by #hold/ tags on its own rows (2026-11-20, ar-4187).
+hold_gate() {
+  local name='' scopes files names out
+  scopes=$("$HOLD_BIN" scopes 2>&1) || fail hold "agent-hold scopes: $(lastline "$scopes"), so whether a hold locks #$pr's files is unknown; re-run"
+  [ -n "$scopes" ] || return 0
+  if [[ "$pr_ref" == */*#* ]]; then name=${pr_ref%#*}; elif [ -n "${repo:-}" ]; then name=$repo; else name=$(origin_repo .) || name=''; fi
+  name=${name##*/}
+  [ -n "$name" ] || fail hold "could not tell #$pr's repo, and a hold has a --scope, so whether it locks #$pr's files is unknown; re-run with --repo <owner>/<repo>"
+  awk -F'\t' -v r="${name,,}" 'tolower($2) == r { f = 1 } END { exit !f }' <<<"$scopes" || return 0
+  files=$(pr_files 2>&1) || fail hold "could not read #$pr's changed files ($(lastline "$files")), and a hold scopes $name; re-run"
+  names=$(aq_retry grant-names "$item" 2>/dev/null) || names=$item
+  # gate: al-hold-gate
+  # shellcheck disable=SC2086 # a word list: one --for name each
+  out=$("$HOLD_BIN" covers "$name" ${names:+--for $names} <<<"$files" 2>&1) && return 0
+  fail hold "$(paste -sd';' <<<"$out" | sed 's/;/; /g'). Nothing merged: wait for the hold to end, or ask its setter to grant ${item:-<item>} (agent-hold grant <resource> ${item:-<item>})"
+}
+
 # review_gate: a tier-3 item (`fleet-dispatch item-tier`, the one beside this script: harness or tooling, promoted from a row or
 # queued by hand) merges only behind the red-fix gate, fix-red step 5: a "Review: /code-review <level>,
 # <what it found and what you did>" line in the body (n/a or empty is refused), and checks that ran
@@ -1885,6 +1909,7 @@ else
   # (GitHub cannot build its merge ref), so its last, stale Checks red would read as a failure.
   stack_gate
   review_gate
+  hold_gate
   loose_gate
   workflow_gate
   # A head behind <base> is caught up first, the same merge as after the gate: a session that
@@ -1901,6 +1926,7 @@ else
   done
 
   head=$(git rev-parse HEAD)
+  hold_gate
   validate_gate
   out=$(pr_merge "$head" 2>&1) || fail merge "$(lastline "$out")"
   mark_partial

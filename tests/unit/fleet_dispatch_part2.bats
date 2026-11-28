@@ -1819,3 +1819,29 @@ stale_fixture() {
   run grep -c '^agent-ask post' "$NOTES_FIXTURE/calls.log"
   assert_output 1
 }
+
+@test "candidates: a hold's --scope skips a row of any project whose work lands there, and a grant passes it; suggest says why (ar-4187)" {
+  export AGENT_HOLD_DIR="$HOME/.agent/holds"
+  project game beta "$SANDBOX/repos/game"
+  project app alpha "$SANDBOX/repos/app"
+  row game agent gm-1 "- [ ] fix(game): the score is wrong $T <!-- id:gm-1 -->"
+  row app agent ap-1 "- [ ] fix(app): tune game/tools/build in the game repo $T <!-- id:ap-1 -->"
+  row app agent ap-2 "- [ ] fix(app): a new page $T <!-- id:ap-2 -->"
+  row app agent ap-3 "- [ ] fix(app): the ci-runner-governor in infra lends $T <!-- id:ap-3 -->"
+  row app agent ap-4 "- [ ] fix(app): apps/ci-runner-governor again #of/ap-9 $T <!-- id:ap-4 -->"
+  row app agent ap-5 "- [ ] fix(app): our own ci-runner-governor page $T <!-- id:ap-5 -->"
+  row app agent ap-6 "- [ ] fix(app): edit apps/ci-runner-governor/main.go $T <!-- id:ap-6 -->"
+  "$REPO_ROOT/.local/bin/agent-hold" set lock --kind resource --by coordinator --scope 'game' "the human locked game"
+  "$REPO_ROOT/.local/bin/agent-hold" set gov --kind resource --by coordinator --scope 'infra:apps/ci-runner-governor' "governor"
+  "$REPO_ROOT/.local/bin/agent-hold" grant gov ap-9
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'ap-2,ap-4,ap-5'
+  run cmd_suggest --json
+  assert_success
+  b() { jq -r --arg k "$1" 'select(.key == $k) | .blocked | join("; ")' <<<"$output"; }
+  assert_equal "$(b gm-1)" 'held by the lock hold, whose scope game its work lands in (agent-hold show lock)'
+  assert_equal "$(b ap-1)" 'held by the lock hold, whose scope game its work lands in (agent-hold show lock)'
+  assert_equal "$(b ap-3)" 'held by the gov hold, whose scope infra:apps/ci-runner-governor its work lands in (agent-hold show gov)'
+  assert_equal "$(b ap-6)" 'held by the gov hold, whose scope infra:apps/ci-runner-governor its work lands in (agent-hold show gov)'
+}

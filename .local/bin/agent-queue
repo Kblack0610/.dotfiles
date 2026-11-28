@@ -88,6 +88,7 @@
 #   retask <slug> [task...]    replace a queued item's task (the brief its session gets) and its board row's brief, from args or stdin
 #   attribute <slug> < changed-paths    credit the item to the registry project whose path owns most of its PR
 #   credit-of <project> < changed-paths  print what attribute would record ("<winner>\t<touches>"), writing nothing
+#   grant-names <slug>                   the names a hold grant can give the item (row id or slug, #of/ epics, plan slug), space-separated: agent-land passes them to agent-hold covers --for
 #   requeue <slug> --hold <resource> [--class c] | --ask <id>   a started item back to its board row, gated on that agent-hold
 #       or ask (#hold/<res>, #ask/<id>): the item closes returned, and dispatch promotes the row once the gate clears;
 #       an item with no row (hand-queued) gets a story row filed first (story_row_for), refused only when none can be
@@ -4004,6 +4005,16 @@ credit_of() {
     | (if length > 1 and .[0].n == .[1].n then "" else .[0].key end) + "\t" + (map(.key) | sort | join(" "))'
 }
 
+# grant-names <slug> -> item_grant_names of that item, space-separated: what agent-land asks
+# agent-hold covers --for, so a hold's grant reads the same names for a PR as for its item's start.
+cmd_grant_names() {
+  # gate: none
+  [ $# -eq 1 ] || die "usage: agent-queue grant-names <slug>"
+  local f; f="$(find_item "$1")"
+  [ -n "$f" ] || die "no item $1"
+  item_grant_names "$f"; echo
+}
+
 cmd_credit_of() {
   [ $# -eq 1 ] || die "usage: agent-queue credit-of <project> < changed-paths"
   [ -f "$AQ_MAP" ] || return 0
@@ -5143,6 +5154,7 @@ case "${1:-}" in
   rehome) shift; cmd_rehome "$@" ;;
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
+  grant-names) shift; cmd_grant_names "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
   human-work) shift; cmd_human_work "$@" ;;
   backfill-briefs) shift; cmd_backfill_briefs "$@" ;;
