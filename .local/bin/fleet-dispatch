@@ -4571,7 +4571,7 @@ cmd_start() {
       # agent-queue refuses to move a held item to running (ar-3260): asked before the launch, so a
       # refused start leaves no session working an item still queued.
       hold=$(jq -r '.hold // empty' <<<"$it")
-      [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }
+      [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }; start_merged "$item" "$it" && { exec 7>&-; return 4; }
     fi
     project=$(jq -r .project <<<"$it")
     [ -n "$area" ] || area=$(jq -r '.area // empty' <<<"$it")
@@ -5618,6 +5618,25 @@ item_pr_state() {
   if [[ "$pr" == */*#* ]]; then so_pr_view "$pr" "$(pr_repo_dir "$pr" "$project")" "$PR_STATE_JSON" "$PR_STATE_JQ"; return; fi
   so_pr_view "$pr" "$(repo_dir "$project")" "$PR_STATE_JSON,body" \
     "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | $PR_STATE_JQ"
+}
+
+# start_merged <slug> <item json> -- a queued item whose recorded pr: its forge reads MERGED (item_pr_state, with a
+# merge commit) is done ok with that merge recorded, and its row closes on merge proof (close_row): returns 0.
+# Returns 1 when the PR is open, closed unmerged, unreadable or has no merge commit, so the start goes on; cmd_start
+# then exits 4 (no session started, the item taken: start_item reads that as another start's), and a validate item,
+# which reviews its author's PR, is never closed by it.
+# Why: an item on a PR another session had already merged started a session that found nothing to do (#2539).
+start_merged() {
+  local info state oid
+  [ -n "$(jq -r '.pr // ""' <<<"$2")" ] && ! jq -e '(.tags // "") | split(" ") | index("validate")' <<<"$2" >/dev/null || return 1
+  info=$(item_pr_state "$1" "$2") || return 1
+  read -r state oid _ <<<"$info"; oid=${oid#-} oid=${oid//,/ }
+  [ "$state" = MERGED ] && [ -n "$oid" ] && own_record "$1" "$2" || return 1
+  agent-queue set "$1" "merged=$oid" >/dev/null || return 1
+  agent-queue move "$1" done --status ok --if queued >/dev/null || { agent-queue set "$1" merged= >/dev/null; return 1; }
+  logline "start: queue item $1 not started: its PR $(jq -r .pr <<<"$2") merged; closed done"
+  say "start: $1 not started: its PR $(jq -r .pr <<<"$2") already merged; closed done"
+  close_row "$1" || true
 }
 
 # own_record <slug> <item json> -- the slug names this record: agent-queue show and set read a reused

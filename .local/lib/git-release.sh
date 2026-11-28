@@ -60,6 +60,8 @@
 
 # shellcheck source=origin-repo.sh
 . "$(dirname "${BASH_SOURCE[0]}")/origin-repo.sh"
+# shellcheck source=main-state.sh
+. "$(dirname "${BASH_SOURCE[0]}")/main-state.sh"
 
 # _gr_highest <repo> <glob> — the highest NON-PRERELEASE tag matching <glob>.
 #
@@ -442,16 +444,14 @@ git_tag_prs() {
 # Answers "what is open in THIS repo", which is a different question from the
 # `--author=@me` cross-repo sweeps in the daily/* commands. Do not fold those in.
 #
-# Read from the PR store (`schedules-sync prs`, $SCHEDULES_SYNC), keyed by the origin's
-# owner/repo, or host/owner/repo for a non-GitHub origin. A repo the store does not list, or
+# Read from the PR store (pr_store), keyed by origin_store_name. A repo the store does not list, or
 # whose rows are stale, reads as none. In a monorepo the optional title regex keeps one
 # app's surface from listing another app's PRs.
 git_open_prs() {
-  local repo="$1" filt="${2:-}" limit="${3:-4}" name host
+  local repo="$1" filt="${2:-}" limit="${3:-4}" name
   [ -n "$repo" ] && [ -d "$repo/.git" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
-  name=$(origin_repo "$repo") || return 0
-  host=$(origin_host "$repo"); [ "$host" = github.com ] || name="$host/$name"
-  { "${SCHEDULES_SYNC:-schedules-sync}" prs "$name" --state open 2>/dev/null || true; } \
+  name=$(origin_store_name "$repo") || return 0
+  { pr_store "$name" --state open 2>/dev/null || true; } \
     | jq -r --arg f "$filt" --argjson n "$limit" '[.[] | select(.draft | not) | select($f=="" or (.title|test($f))) | "#\(.number) \(.title)"] | .[:$n][]' 2>/dev/null || true
 }
