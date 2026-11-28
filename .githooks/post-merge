@@ -1,6 +1,6 @@
 #!/bin/bash
-# Post-merge hook: restart Noctalia when a merge changed its plugins (below), and re-render
-# theme-switch's generated files when a merge removed them.
+# Post-merge hook: reload systemd --user when a merge changed a user unit, restart Noctalia when it
+# changed its plugins (below), and re-render theme-switch's generated files when a merge removed them.
 #
 # THE HAZARD THIS EXISTS FOR
 # --------------------------
@@ -35,6 +35,15 @@ DOTFILES_ROOT="${DOTFILES_ROOT:-$HOME/.dotfiles}"
 # Only the main checkout is stowed, so only a merge there acts; Git runs a hook at the toplevel,
 # so $PWD is it.
 [ "$PWD" -ef "$DOTFILES_ROOT" ] || exit 0
+
+# systemd keeps a loaded unit's old definition until a daemon-reload, and an enabled unit stays loaded,
+# so a pulled edit to one ran as the old unit until the next boot (#3792's session-snapshot-up.service
+# read NeedDaemonReload=yes after its merge, ar-6389). macOS has no systemctl.
+SYSTEMD_USER=".config/systemd/user"
+if ! git diff --quiet ORIG_HEAD HEAD -- "$SYSTEMD_USER" 2>/dev/null && command -v systemctl >/dev/null; then
+  echo "post-merge: $SYSTEMD_USER changed, reloading systemd --user"
+  systemctl --user daemon-reload || echo "post-merge: daemon-reload failed; run it by hand" >&2
+fi
 
 # Noctalia's hot reload watches the plugin file it opened, and a merge replaces that file, so a
 # pulled chip.luau never loads until the shell restarts (#2448 sat unloaded on the live bar).

@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # .githooks/post-merge restarts noctalia.service when a merge in the stowed checkout changed the
 # Noctalia plugins: Noctalia's hot reload misses a file git replaced, so without the restart a
-# pulled chip.luau never loads. It also re-renders a missing generated theme file, and a merge
-# anywhere else does neither. Each test merges in a throwaway repo with a stub systemctl.
+# pulled chip.luau never loads. It also reloads systemd --user when a merge changed a user unit and
+# re-renders a missing generated theme file, and a merge anywhere else does none of these. Each test merges in a throwaway repo with a stub systemctl.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -16,8 +16,9 @@ setup() {
   git init -q -b main "$REPO"
   git -C "$REPO" config user.email t@t && git -C "$REPO" config user.name t
   git -C "$REPO" config core.hooksPath "$REPO_ROOT/.githooks"
-  mkdir -p "$REPO/.local/share/noctalia/plugins/dotfiles-chips" "$REPO/docs"
+  mkdir -p "$REPO/.local/share/noctalia/plugins/dotfiles-chips" "$REPO/docs" "$REPO/.config/systemd/user"
   echo one > "$REPO/.local/share/noctalia/plugins/dotfiles-chips/chip.luau"
+  echo one > "$REPO/.config/systemd/user/demo.service"
   echo one > "$REPO/docs/desk.md"
   git -C "$REPO" add -A && git -C "$REPO" commit -qm base
   export DOTFILES_ROOT="$REPO"
@@ -61,6 +62,21 @@ restarts() { grep -c 'restart noctalia.service' "$FX/calls.log" || true; }
   run merge_change .local/share/noctalia/plugins/dotfiles-chips/chip.luau
   assert_success
   [ "$(restarts)" = 0 ]
+}
+
+reloads() { grep -c 'systemctl --user daemon-reload' "$FX/calls.log" || true; }
+
+@test "a merge that changes a user unit reloads systemd --user" {
+  run merge_change .config/systemd/user/demo.service
+  assert_success
+  assert_output --partial 'reloading systemd --user'
+  [ "$(reloads)" = 1 ]
+}
+
+@test "a merge that leaves the user units alone reloads nothing" {
+  run merge_change docs/desk.md
+  assert_success
+  [ "$(reloads)" = 0 ]
 }
 
 # theme_switch_stub <root>: a theme-switch under <root> that logs its call instead of rendering.
