@@ -304,8 +304,7 @@ snapshot() {
     done
 
     # Watches: the registry is the manifest dir; a paused manifest stays visible as paused.
-    local qnow; qnow="$(date +%s)"   # once a pass: each watch's quarantine is in force while UNTIL is ahead
-    load_watch_labels
+    local qnow; qnow="$(date +%s)"; load_watch_labels   # once a pass: each watch's quarantine is in force while UNTIL is ahead
     for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
         [ -f "$f" ] || continue
         name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"
@@ -321,8 +320,7 @@ snapshot() {
             --arg state "${ws:-NEW}" --argjson paused "$paused" --argjson stale "$stale" \
             --arg severity "$(watch_trip_level "$f" "$WSTATE")" \
             --arg since "$(iso "$since")" --argjson since_epoch "$(num "$since")" \
-            --arg lastrun "$(iso "$lr")" --argjson quarantined "$quarantined" \
-            --argjson labels "$(watch_labels_json "$name")" \
+            --arg lastrun "$(iso "$lr")" --argjson quarantined "$quarantined" --argjson labels "$(watch_labels_json "$name")" \
             '{state: $state, paused: $paused,
               since: (if $since == "" then null else $since end),
               last_run: (if $lastrun == "" then null else $lastrun end),
