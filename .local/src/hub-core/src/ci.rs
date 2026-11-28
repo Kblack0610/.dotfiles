@@ -37,7 +37,7 @@ const HOSTED: &str = "github-hosted";
 const NEXT: usize = 5;
 
 /// A busy ARC runner younger than this may have no pod series yet: kube-state-metrics is
-/// scraped about every 30s, so a fresh pod is no blind join (`Ci::unplaced`).
+/// scraped about every 30s, so a fresh pod is no blind join (`unplaced`).
 const POD_SERIES_GRACE_SECS: f64 = 90.0;
 
 /// The prefix of the Unity scale sets (`arc-unity-test`); the rest of the name is its group.
@@ -160,10 +160,6 @@ pub struct Ci {
     /// One red line per kind of job no online runner can take (`Queued::problem`), oldest first,
     /// with the count of waiting jobs when more than one. Both surfaces draw these as they are.
     pub red: Vec<String>,
-    /// Busy pool runners `gone` drops past `POD_SERIES_GRACE_SECS`: with no pod series they sit on
-    /// no machine, so the rows and units miss their jobs. Information, never `Glance::alert`: a
-    /// listing that outlived its pod reads the same (2026-11-27, #3758).
-    pub unplaced: u32,
     /// The view every CI surface opens on (`glance`), filled once the machines are built.
     pub glance: Glance,
     /// CI runs and local Unity gates that finished since local midnight: the Runners "CI runs
@@ -354,9 +350,9 @@ fn matrix(job: &str) -> (String, String, Option<u32>) {
 }
 
 /// What runs on each machine, one `Work` per scale set, repo, ref and job, the most jobs first.
-pub fn work_by_host(rows: &[Slot]) -> BTreeMap<String, Vec<Work>> {
+pub fn work_by_host<'a>(rows: impl IntoIterator<Item = &'a Slot>) -> BTreeMap<String, Vec<Work>> {
     let mut by: BTreeMap<String, Vec<Work>> = BTreeMap::new();
-    for r in rows.iter().filter(|r| r.state == "busy") {
+    for r in rows.into_iter().filter(|r| r.state == "busy") {
         // `job_name`'s "-" is a runner that names no job: no word, never a job called "-".
         let (job, unit, of) = matrix(if r.job == "-" { "" } else { &r.job });
         let set = if r.set.is_empty() { &r.pool } else { &r.set };
@@ -554,7 +550,7 @@ pub struct Glance {
     pub units: Option<Units>,
     /// Job pods no node has room for, by kind and size (`jobpods::pending`).
     pub pending: Vec<Pending>,
-    /// `Ci::unplaced`: busy ARC runners on no machine, so no row or unit counts their jobs.
+    /// Busy ARC runners on no machine, so no row or unit counts their jobs (`unplaced`).
     pub unplaced: u32,
     /// The Unity pool's jobs running of its most (`unity`).
     pub unity: Option<Unity>,
@@ -629,7 +625,6 @@ pub fn glance(infra: &Infra) -> Glance {
         }
     }
     g.parts.sort_by(|a, b| a.name.cmp(&b.name));
-    let (mut passed, mut ran) = (0.0, 0.0);
     for p in &infra.pools {
         g.queued += p.waiting.unwrap_or(0.0) as u32;
         if let Some(o) = p.oldest.filter(|_| p.waiting.unwrap_or(0.0) > 0.0) {
@@ -637,10 +632,6 @@ pub fn glance(infra: &Infra) -> Glance {
         }
         let done = p.done.unwrap_or(0.0);
         g.done += done as u32;
-        if let Some(r) = p.pass {
-            passed += r * done;
-            ran += done;
-        }
         g.kinds.push(JobKind {
             kind: p.pool.clone(),
             running: p.running,
@@ -653,7 +644,6 @@ pub fn glance(infra: &Infra) -> Glance {
             pass: p.pass,
         });
     }
-    g.pass = (ran > 0.0).then(|| passed / ran);
     let window = |f: fn(&crate::machines::Pool) -> Option<f64>| {
         let n: Vec<f64> = infra.pools.iter().filter_map(f).collect();
         (!n.is_empty()).then(|| n.iter().sum::<f64>() as u32)
@@ -668,11 +658,12 @@ pub fn glance(infra: &Infra) -> Glance {
         }
         (ran > 0.0).then(|| passed / ran)
     };
+    g.pass = pass_in(|p| p.done, |p| p.pass);
     g.pass_1h = pass_in(|p| p.done_1h, |p| p.pass_1h);
     g.pass_5h = pass_in(|p| p.done_5h, |p| p.pass_5h);
     g.pending = crate::jobpods::pending(&infra.pods);
     let alias = infra.aliases();
-    let mut work = work_by_host(&[&infra.ci.rows[..], &starting(infra)].concat());
+    let mut work = work_by_host(infra.ci.rows.iter().chain(&starting(infra)));
     let mut ci_nodes: BTreeMap<String, Booked> = BTreeMap::new();
     // Busy cores over the CI nodes; None once one has no reading.
     let mut real = Some(0.0);
@@ -747,7 +738,7 @@ pub fn glance(infra: &Infra) -> Glance {
         .collect();
     long.sort_by_key(|a| std::cmp::Reverse(a.ran));
     g.long = long;
-    g.unplaced = infra.ci.unplaced;
+    g.unplaced = unplaced(infra);
     g.unity = unity(infra);
     g.hosted = hosted(infra);
     g
@@ -864,6 +855,23 @@ fn gone(infra: &Infra, pools: &[Pool], name: &str) -> bool {
         && pools
             .iter()
             .any(|p| !p.name.is_empty() && name.starts_with(p.name))
+}
+
+/// Busy pool runners `gone` drops past `POD_SERIES_GRACE_SECS`: a listing that outlived its pod
+/// or a pod kube-state-metrics missed (the runner-to-pod join is blind to it), and either way no
+/// machine row or unit counts its job. Information, never `Glance::alert`: the two read the same
+/// (2026-11-27, #3758).
+fn unplaced(infra: &Infra) -> u32 {
+    let pools = pools(infra);
+    let busy: HashSet<&str> = infra
+        .get("runners")
+        .iter()
+        .filter(|s| s.label("state") == "running")
+        .filter(|s| s.value.is_some_and(|t| t >= POD_SERIES_GRACE_SECS))
+        .map(|s| s.label("name"))
+        .filter(|n| gone(infra, &pools, n))
+        .collect();
+    busy.len() as u32
 }
 
 /// The names of the runners `gone` says have no pod, for the machine rows.
@@ -1200,18 +1208,6 @@ pub fn build(infra: &Infra) -> Ci {
     ci.queued = ci.queue.iter().map(|q| q.n).sum();
     ci.oldest = ci.queue.iter().map(|q| q.wait).max().unwrap_or(0);
     ci.red = ci.red_lines();
-    // `gone` drops a pool runner with no pod series; one GitHub says has run a job past the
-    // grace is either a listing that outlived its pod or a pod kube-state-metrics missed (the
-    // runner-to-pod join is blind to it), and either way no machine row counts its job.
-    let busy_gone: BTreeSet<&str> = infra
-        .get("runners")
-        .iter()
-        .filter(|s| s.label("state") == "running")
-        .filter(|s| s.value.is_some_and(|t| t >= POD_SERIES_GRACE_SECS))
-        .map(|s| s.label("name"))
-        .filter(|n| gone(infra, &sets, n))
-        .collect();
-    ci.unplaced = busy_gone.len() as u32;
     ci.local = local(infra);
     ci.day = day(infra, crate::text::local_day_start(infra.at as i64));
     ci
@@ -2780,7 +2776,7 @@ mod tests {
             series(vec![pool("arc-org-light", "self-hosted,linux,light", "23")]),
         );
         i.derive();
-        assert_eq!((i.ci.unplaced, i.ci.glance.unplaced), (0, 0));
+        assert_eq!(i.ci.glance.unplaced, 0);
         let lint = i.ci.rows.iter().find(|r| r.job == "lint").unwrap();
         assert_eq!(lint.set, "arc-org-light");
 
@@ -2800,7 +2796,7 @@ mod tests {
         ]));
         i.derive();
         let g = &i.ci.glance;
-        assert_eq!((i.ci.unplaced, g.unplaced), (1, 1));
+        assert_eq!(g.unplaced, 1);
         assert!(i.ci.red.is_empty(), "{:?}", i.ci.red);
         assert_eq!(g.alert, Level::Ok);
     }
