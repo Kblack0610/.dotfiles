@@ -1247,10 +1247,10 @@ outcomes_cli() {
 
 # ── list: the TSV the cockpit's factory view consumes ────────────────────────
 
-@test "list emits 33 tab-separated fields per ask, delivery and its answers after parked_until, previews, then audit_of last" {
+@test "list emits 34 tab-separated fields per ask, delivery and its answers after parked_until, previews, audit_of, then judge_level last" {
   post demo 'ship it?' >/dev/null
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print NF; exit}"'
-  assert_output '33'
+  assert_output '34'
   local f; f="$(ls "$HOME"/.agent/asks/demo/*.md | head -1)"
   printf 'assume_at: 2026-11-06T14:30:00-0800\n' >> "$f"
   run bash -c '"$AGENT_ASK" list demo | awk -F"\t" "{print \$25; exit}"'
@@ -4059,4 +4059,68 @@ seed_answered() {
   run cat "$d/so1.md"
   assert_line 'judge_override: no'
   assert [ ! -s "$HOME/.local/state/agent-ask/demoted" ]
+}
+
+# ── batch: the daily Decisions batch ─────────────────────────────────────────
+
+# batch_ask <project> <level> <question> [recommend]: a pending question the judge levelled.
+batch_ask() {
+  local id; id="$("$AGENT_ASK" post --project "$1" --options 'yes=do it|no=skip it' ${4:+--recommend "$4"} "$3")"
+  printf 'judge_level: %s\n' "$2" >> "$(ask_file "$id")"
+  printf '%s' "$id"
+}
+
+@test "batch lists only self, repo and fleet asks that are not approvals or audits" {
+  export AGENT_ASK_BATCH="$BATS_TEST_TMPDIR/batch" AGENT_ASK_PARK_CONF="$BATS_TEST_TMPDIR/park.conf"
+  printf 'PARK_DAYS="urgent=1 high=3 normal=7 low=14"\n' > "$AGENT_ASK_PARK_CONF"
+  local a b c d
+  a="$(batch_ask demo repo 'pick a?' yes)"
+  b="$(batch_ask demo critical 'pick b?' yes)"
+  c="$(post demo 'unlevelled?')"
+  d="$("$AGENT_ASK" post --project demo --kind approval 'approve d?')"
+  printf 'judge_level: repo\n' >> "$(ask_file "$d")"
+  run "$AGENT_ASK" batch
+  assert_success
+  assert_output --partial "$a"
+  refute_output --partial "$b"
+  refute_output --partial "$c"
+  refute_output --partial "$d"
+}
+
+@test "batch parks what the last batch listed and nobody answered, and is idempotent within a day" {
+  export AGENT_ASK_BATCH="$BATS_TEST_TMPDIR/batch" AGENT_ASK_PARK_CONF="$BATS_TEST_TMPDIR/park.conf"
+  printf 'PARK_DAYS="urgent=1 high=3 normal=7 low=14"\n' > "$AGENT_ASK_PARK_CONF"
+  local old new
+  old="$(batch_ask demo repo 'old?' yes)"
+  printf '2000-01-01\t%s\tdemo\tyes\told?\n' "$old" > "$AGENT_ASK_BATCH"
+  new="$(batch_ask demo fleet 'new?' no)"
+  run "$AGENT_ASK" batch
+  assert_success
+  assert_equal "$("$AGENT_ASK" show "$old" | sed -n 's/^parked_until: //p' | cut -c1-1)" 2
+  run bash -c '"$AGENT_ASK" batch 2>/dev/null | cut -f1'
+  assert_output "$new"
+  assert_equal "$(cut -f1 "$AGENT_ASK_BATCH" | sort -u)" "$(date +%F)"
+  # a second pass the same day parks nothing more and prints the same batch
+  local late; late="$(batch_ask demo repo 'late?' yes)"
+  run bash -c '"$AGENT_ASK" batch 2>/dev/null | cut -f1'
+  assert_output "$new"
+  assert_equal "$("$AGENT_ASK" show "$late" | sed -n 's/^parked_until: //p')" ''
+}
+
+@test "batch --take answers each pending pick with its recommendation and skips an ask with none" {
+  export AGENT_ASK_BATCH="$BATS_TEST_TMPDIR/batch" AGENT_ASK_PARK_CONF="$BATS_TEST_TMPDIR/park.conf"
+  printf 'PARK_DAYS="urgent=1 high=3 normal=7 low=14"\n' > "$AGENT_ASK_PARK_CONF"
+  local a b
+  a="$(batch_ask demo repo 'pick a?' yes)"
+  b="$(batch_ask demo repo 'pick b?')"
+  "$AGENT_ASK" batch >/dev/null 2>&1
+  run "$AGENT_ASK" batch --take
+  assert_success
+  assert_equal "$("$AGENT_ASK" show "$a" | sed -n 's/^status: //p')" answered
+  assert_equal "$("$AGENT_ASK" show "$b" | sed -n 's/^status: //p')" pending
+}
+
+@test "batch refuses an unknown argument" {
+  run "$AGENT_ASK" batch --bogus
+  assert_failure 2
 }
