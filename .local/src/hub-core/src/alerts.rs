@@ -55,6 +55,9 @@ pub struct Alert {
     /// The watch's `project:`, else the project of its fix item's queue item; empty for a
     /// fleet-wide watch or a red nothing files a fix for.
     pub project: String,
+    /// The watch's `system:`; empty for a watch that names none and for every row no watch
+    /// backs (a red, the machinery, Alertmanager, a hold).
+    pub system: String,
     /// `sentinel` (a watch's own state files), `red_now` (`cc:red_now`), `infra` (the
     /// machinery: down runners, stuck runs, the exporter or GitHub not answering),
     /// `alertmanager` (a cluster rule firing) or `hold` (a standing hold, `HOLD`).
@@ -127,10 +130,10 @@ impl Alert {
 
 impl Row for Alert {
     const COLUMNS: &'static [&'static str] = &[
-        "sev", "what", "project", "source", "since", "owner", "state",
+        "sev", "what", "project", "system", "source", "since", "owner", "state",
     ];
     const STATES: &'static [&'static str] = &["all", "trip", "error", "no owner", ALERTMANAGER];
-    const FACETS: &'static [&'static str] = &["sev", "project", "source", "state"];
+    const FACETS: &'static [&'static str] = &["sev", "project", "system", "source", "state"];
     const LEAD: &'static str = "what";
     const GLANCE: &'static [&'static str] = &["sev", "since", "state"];
 
@@ -143,6 +146,7 @@ impl Row for Alert {
             "sev" => text(&self.sev),
             "what" => text(&self.what),
             "project" => text(&self.project),
+            "system" => text(&self.system),
             "source" => text(&self.source),
             "since" => self.since.map_or(Val::None, |t| Val::Num(t as f64)),
             "owner" => text(&self.owner),
@@ -174,6 +178,7 @@ impl Row for Alert {
             &self.sev,
             &self.what,
             &self.project,
+            &self.system,
             &self.source,
             &self.owner,
             &self.state,
@@ -197,11 +202,11 @@ impl Row for Alert {
 /// is the default; the state tiles split it, so no fold hides the ok ones.
 impl Row for Watch {
     const COLUMNS: &'static [&'static str] = &[
-        "name", "state", "severity", "project", "since", "lastrun", "place",
+        "name", "state", "severity", "project", "system", "since", "lastrun", "place",
     ];
     // Each a word `vocab::tone` hues: trip and error red, ok green, new plain.
     const STATES: &'static [&'static str] = &["all", "trip", "error", "new", "ok"];
-    const FACETS: &'static [&'static str] = &["severity", "project"];
+    const FACETS: &'static [&'static str] = &["severity", "project", "system"];
     const LEAD: &'static str = "name";
     const GLANCE: &'static [&'static str] = &["state", "since"];
 
@@ -216,6 +221,7 @@ impl Row for Watch {
             "state" => text(&self.state),
             "severity" => text(&self.severity),
             "project" => text(&self.project),
+            "system" => text(&self.system),
             "since" => num(self.since),
             "lastrun" => num(self.lastrun),
             "place" => text(&self.place),
@@ -239,6 +245,7 @@ impl Row for Watch {
         [
             &self.name,
             &self.project,
+            &self.system,
             &self.place,
             &self.severity,
             &self.what,
@@ -752,6 +759,7 @@ pub fn join(
             sev: label(&w.severity).to_string(),
             what: w.name.clone(),
             project: w.project.clone(),
+            system: w.system.clone(),
             source: "sentinel".into(),
             since: w.since,
             state: if error { "error".into() } else { String::new() },
@@ -1799,6 +1807,51 @@ mod tests {
             "{:?}",
             facet.values
         );
+    }
+
+    #[test]
+    fn a_firing_row_takes_its_watchs_system_and_the_facet_filters_on_it() {
+        let mut ws = ok_watches();
+        for (name, system) in [
+            ("ucp-nightly", "unity"),
+            ("fleet-drain", "fleet"),
+            ("bare", ""),
+        ] {
+            let mut w = watch(name, "TRIP", "normal", None);
+            w.system = system.into();
+            ws.push(w);
+        }
+        let a = join(
+            &infra(&[]),
+            Ok(ws),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
+        );
+        let system = |what: &str| {
+            a.firing
+                .iter()
+                .find(|r| r.what == what)
+                .map(|r| r.system.clone())
+        };
+        assert_eq!(system("ucp-nightly").as_deref(), Some("unity"));
+        assert_eq!(system("bare").as_deref(), Some(""));
+        let v = crate::table::View::new::<Alert>("system:unity", "", "", "");
+        let (rows, s) = v.summary(&a.firing);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].what, "ucp-nightly");
+        let facet = s
+            .facets
+            .iter()
+            .find(|f| f.key == "system")
+            .expect("a system facet");
+        let values: Vec<&str> = facet.values.iter().map(|x| x.value.as_str()).collect();
+        assert!(
+            values.contains(&"unity") && values.contains(&"fleet"),
+            "{values:?}"
+        );
+        assert!(!values.contains(&""), "{values:?}");
     }
 
     #[test]
