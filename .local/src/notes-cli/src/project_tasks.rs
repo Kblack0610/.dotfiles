@@ -6212,6 +6212,9 @@ Version: v0.0.1
         );
         fs::write(&bin, script).unwrap();
         fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        // Another test's fork can still hold the stub's write fd: the exec the asserts depend on
+        // would fail with ETXTBSY, `rehome_items` would only warn, and `log` would never be written.
+        crate::config::test_exec_ready(&bin, &[]);
         rehome_items(
             bin.to_str().unwrap(),
             "ar-9",
