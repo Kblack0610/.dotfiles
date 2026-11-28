@@ -362,6 +362,12 @@ impl Boards {
     }
 }
 
+/// The pass card: the shepherd's numbers worded, or why there are none.
+pub type PassCard = Result<hub_core::shepherd::Card, String>;
+
+/// One shepherd read: the ledger and the pass card.
+pub type ShepherdRead = (boards::Due, Option<PassCard>);
+
 pub enum Msg {
     Input(Event),
     Tick,
@@ -435,12 +441,7 @@ pub enum Msg {
     Stack(Box<hub_core::stack::Stack>),
     Fleet(Box<hub_core::fleet::Fleet>),
     /// The shepherd's ledger, for Sessions' Shepherd.
-    Shepherd(
-        Box<(
-            boards::Due,
-            Option<Result<hub_core::shepherd::Card, String>>,
-        )>,
-    ),
+    Shepherd(Box<ShepherdRead>),
     /// The shepherd wrote its ledger (`.due`, `.lease`).
     ShepherdFiles,
     /// One runner's page (hub_core::fleet::runner), for the name it was read for.
@@ -579,7 +580,7 @@ pub struct App {
     pub shepherd: Option<boards::Due>,
     /// The pass card beside it: `fleet-shepherd stats` worded by `hub_core::shepherd::Card`, or why
     /// there is none. None until the first read.
-    pub shepherd_pass: Option<Result<hub_core::shepherd::Card, String>>,
+    pub shepherd_pass: Option<PassCard>,
     /// The runner whose page is open (Enter on a Runners row, or `hub tab 'fleet <runner>'`);
     /// None is the Runners table.
     pub fleet_page: Option<String>,
@@ -1670,6 +1671,14 @@ impl App {
         }
     }
 
+    fn took_shepherd(&mut self, (due, pass): ShepherdRead) {
+        self.shepherd = Some(due);
+        self.shepherd_pass = pass;
+        if self.shepherd_read.done() {
+            self.read_shepherd();
+        }
+    }
+
     /// The shown Sessions inner tab's read, and only its: the sessions and their forecast, the
     /// runners (or the open runner's page), or the shepherd's ledger.
     pub fn read_sessions_shown(&mut self) {
@@ -2497,14 +2506,7 @@ impl App {
                     self.read_fleet();
                 }
             }
-            Msg::Shepherd(d) => {
-                let (due, pass) = *d;
-                self.shepherd = Some(due);
-                self.shepherd_pass = pass;
-                if self.shepherd_read.done() {
-                    self.read_shepherd();
-                }
-            }
+            Msg::Shepherd(d) => self.took_shepherd(*d),
             Msg::ShepherdFiles => {
                 if self.tab == Tab::Sessions && self.sessions_inner == "shepherd" {
                     self.read_shepherd();
