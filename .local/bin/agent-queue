@@ -2223,7 +2223,7 @@ plan_items_live() {
 task_plan_phase() {
   local re1='^(Phase |P)([0-9]+) of (the plan )?([^[:space:]]+\.md)([.,;:) ]|$)' re2='Plan: ([^[:space:]]+\.md) phase P?([0-9]+)'
   if [[ "$1" =~ $re1 ]]; then printf '%s\t%s\n' "${BASH_REMATCH[4]}" "${BASH_REMATCH[2]}"
-  elif [[ "$1" =~ $re2 ]]; then printf '%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
+  elif [[ "$1" =~ $re2 ]]; then printf '%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
   else return 1; fi
 }
 
