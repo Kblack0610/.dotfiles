@@ -3227,6 +3227,10 @@ epics_fixture() {
   run bash -c '. "$1"; PLAN_DIRS="$2/p1:$2/p2" PLAN_JOBS=3 epic_plans > "$2/par"; PLAN_DIRS="$2/p1:$2/p2" PLAN_JOBS=1 epic_plans > "$2/ser"
     cmp "$2/par" "$2/ser" && jq -r "[.epic, (.phases | map(.state) | join(\"\"))] | @tsv" "$2/par" | tr "\t\n" " "' _ "$SUBJECT" "$SANDBOX"
   assert_output "gm-1 doneopen gm-2 doneopen gm-3 doneopen gm-4 doneopen gm-5 doneopen gm-6 doneopen gm-7 doneopen gm-8 open "
+  # a bad PLAN_JOBS reads as the default, and a plan whose phase list is empty drops alone, not the plans after it
+  run bash -c '. "$1"; plan_phase_list() { [ "${1##*/}" = plan2.md ] || echo "[]"; }
+    PLAN_DIRS="$2/p1:$2/p2" PLAN_JOBS=0 epic_plans | jq -r .epic | tr "\n" " "' _ "$SUBJECT" "$SANDBOX"
+  assert_output "gm-1 gm-3 gm-4 gm-5 gm-6 gm-7 gm-8 "
 }
 
 @test "a sample freezes an epic's ETA when first seen and on a scope change, and scores it once when its rows land" {

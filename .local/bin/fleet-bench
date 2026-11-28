@@ -7017,7 +7017,8 @@ queue_slots() {
 # 13k rows that carry them, not all 170k (grouping those was 4s of the forecast, ar-1737). awk reads
 # the sampler's own compact jq -c rows by index(), no regex (0.3s; four match() calls were 2.5s), and
 # the plan key is the rest of the row from "plan_file" on, so a row it cannot split is kept whole and
-# a changed trailing field only keeps an extra row: a format change costs time, never a count.
+# a changed trailing field only keeps an extra row: a format change costs time, never a count. It reads
+# file order, which the sampler's appends keep equal to epoch order per session.
 progress_pace() {
   [ -s "$PROGRESS" ] || return 0
   LC_ALL=C awk '

@@ -272,7 +272,8 @@ plan_epic_settle() {
 # (output order unchanged), and one jq builds every line from tab-separated file, epic and phases (ar-1737).
 : "${PLAN_JOBS:=8}"
 epic_plans() {
-  local d f e seen=" " dirs files=() tmp i n=$PLAN_JOBS size
+  local d f e seen=" " dirs files=() tmp i n=$PLAN_JOBS size pids=()
+  [[ "$n" =~ ^[1-9][0-9]*$ ]] || n=8
   IFS=: read -ra dirs <<<"$PLAN_DIRS"
   for d in "${dirs[@]}"; do
     [ -d "$d" ] || continue
@@ -284,16 +285,19 @@ epic_plans() {
   done
   [ "${#files[@]}" -gt 0 ] || return 0
   tmp=$(mktemp -d) || return 1
+  trap 'rm -rf -- "$tmp"' RETURN
   size=$(( (${#files[@]} + n - 1) / n ))
   for ((i = 0; i < n; i++)); do
     ( for f in "${files[@]:i*size:size}"; do
         e=$(plan_epic "$f"); [ -n "$e" ] || continue
         printf '%s\t%s\t%s\n' "$f" "$e" "$(plan_phase_list "$f")"
       done >"$tmp/$i" ) &
+    pids+=("$!")
   done
-  wait
-  for ((i = 0; i < n; i++)); do cat "$tmp/$i"; done | jq -cR 'split("\t") | {file: .[0], epic: .[1], phases: (.[2] | fromjson)}'
-  rm -rf -- "$tmp"
+  wait "${pids[@]}"
+  # a plan whose phase list came back empty is skipped on its own, as before; it never ends the stream
+  for ((i = 0; i < n; i++)); do cat "$tmp/$i"; done |
+    jq -cR 'split("\t") | select((.[2] // "") != "") | {file: .[0], epic: .[1], phases: (.[2] | fromjson)}'
 }
 
 # plan_rows <plan file> -> each `<code>-<N>` on the plan's lowercase `rows:` line, one a line: the

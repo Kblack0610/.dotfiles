@@ -8259,6 +8259,14 @@ last_run_start() {
   grep -E '^- [0-9-]+ [0-9:]+ started .* \(run\) .*queue item ' "$LOG" 2>/dev/null | tail -n 1 | cut -d' ' -f2,3
 }
 
+# headroom_last -> the last pass's headroom, while it is younger than three passes: an old one is no answer
+# (null then).
+headroom_last() {
+  local hr
+  [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
+  printf '%s\n' "$hr"
+}
+
 # stats -- one JSON object for the feed (agent-mqtt-publish summary/dispatch), numbers only where a
 # number will do, because mqtt2prom keeps nothing else: runnable items and the oldest one's age, by
 # all and by urgent (runnable_urgent, oldest_urgent_s: urgent items and fresh asks, runs_now, and only what a start would
@@ -8279,23 +8287,16 @@ last_run_start() {
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
 # recomputing it here made stats take 18s of the publisher's lock (ar-2310).
-# headroom_last -> the last pass's headroom, while it is younger than three passes: an old one is no answer
-# (null then).
-headroom_last() {
-  local hr
-  [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
-  printf '%s\n' "$hr"
-}
-
-# stats --room -> only room_max_live, the pace target the last pass published ({} when stale), read from the
-# headroom file alone: fleet-bench epics wants the slot count, not the queue, board and log reads behind the
-# rest, which took 2.4s of its read (ar-1737).
+# stats --room prints only room_max_live, the pace target the last pass published ({} when stale), read from
+# the headroom file alone: fleet-bench epics wants the slot count, not the queue, board and log reads behind
+# the rest, which took 2.4s of its read (ar-1737). Any other argument is a usage error.
 cmd_stats() {
   local now q aq since started pass=null hr=null board held_since
-  if [ "${1:-}" = --room ]; then
-    headroom_last | jq -c 'if . == null then {} else {room_max_live: .max_live} end'
-    return
-  fi
+  case "${1:-}" in
+    "") ;;
+    --room) headroom_last | jq -c 'if . == null then {} else {room_max_live: .max_live} end'; return ;;
+    *) echo "usage: fleet-dispatch stats [--room]" >&2; return 2 ;;
+  esac
   now=$(date +%s); since=$(date -d "@$(( now - 3600 ))" '+%Y-%m-%d %H:%M')
   hr=$(headroom_last)
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }

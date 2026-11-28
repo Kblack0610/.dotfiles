@@ -335,6 +335,8 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -c '[.could_start, .room_max_live]' <<<"$output")" '[null,null]'
   run cmd_stats --room
   assert_equal "$output" '{}'
+  run cmd_stats --rooms
+  assert_failure 2
 }
 
 @test "negative control: a fleet worker over its own load pace gets no session, and the pass says why" {
