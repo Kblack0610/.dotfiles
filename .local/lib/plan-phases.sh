@@ -285,7 +285,6 @@ epic_plans() {
   done
   [ "${#files[@]}" -gt 0 ] || return 0
   tmp=$(mktemp -d) || return 1
-  trap 'rm -rf -- "$tmp"' RETURN
   size=$(( (${#files[@]} + n - 1) / n ))
   for ((i = 0; i < n; i++)); do
     ( for f in "${files[@]:i*size:size}"; do
@@ -298,6 +297,7 @@ epic_plans() {
   # a plan whose phase list came back empty is skipped on its own, as before; it never ends the stream
   for ((i = 0; i < n; i++)); do cat "$tmp/$i"; done |
     jq -cR 'split("\t") | select((.[2] // "") != "") | {file: .[0], epic: .[1], phases: (.[2] | fromjson)}'
+  rm -rf -- "$tmp"
 }
 
 # plan_rows <plan file> -> each `<code>-<N>` on the plan's lowercase `rows:` line, one a line: the
