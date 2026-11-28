@@ -8,6 +8,8 @@
 # test runs by bare name, so it stays a word even when .local/bin links it from .local/src or a
 # stub in tests/helpers shadows it.
 _TEST_PICK_REPO="$(git -C "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" rev-parse --show-toplevel 2>/dev/null || echo .)"
+# shellcheck source=uncomment.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/uncomment.sh"
 _test_pick_names() {
   [ "${_TEST_PICK_NAMES_FOR-}" = "$1" ] && return 0
   _TEST_PICK_NAMES_FOR="$1"
@@ -116,27 +118,6 @@ _test_pick_unstub() {
     }
     print head out body tail
   }'
-}
-
-# _test_pick_uncomment: stdin to stdout without comments: whole comment lines, and the tail of a
-# line from a `#` that starts a word outside quotes (`"issue #12" | agentctl add` keeps its name).
-# A line whose quotes do not close keeps its tail. fleet_dispatch/common.bash ends a code line with
-# "so no pass asks fleet-bench for canaries", which picked all ten fleet_dispatch*.bats files
-# (~3,500 s of the unit tier) for a fleet-bench change although it stubs fleet-bench (#3104, ar-3036).
-_test_pick_uncomment() {
-  awk '/^[[:space:]]*#/ { next }
-    {
-      q = ""
-      for (i = 1; i <= length($0); i++) {
-        c = substr($0, i, 1)
-        if (q == "'"'"'") { if (c == q) q = ""; continue }
-        if (c == "\\") { i++; continue }
-        if (q == "\"") { if (c == q) q = ""; continue }
-        if (c == "\"" || c == "'"'"'") q = c
-        else if (c == "#" && substr($0, i - 1, 1) ~ /[[:space:]]/) { $0 = substr($0, 1, i - 1); break }
-      }
-      print
-    }'
 }
 
 # _test_pick_otherdir: stdin to stdout without each changed word that ends a path in another
@@ -258,7 +239,7 @@ test_picked() {
   # only as "$AGENT_ASK", so #2385's agent-ask change was not picked and went red on main (ar-4309).
   local var ref code
   _test_pick_aliases
-  code="$(_test_pick_uncomment <<<"$text")"
+  code="$(uncomment <<<"$text")"
   if [ -n "$_TEST_PICK_ALIAS_RE" ]; then
     while read -r var ref; do
       code+=$'\n'"\$REPO_ROOT/$ref" text+=$'\n'"\$REPO_ROOT/$ref"
@@ -277,12 +258,12 @@ test_picked() {
       [ -f "$_TEST_PICK_REPO/$ref" ] || continue
       # Not a pipe: grep -q stops at the first match, and under the callers' pipefail sed's SIGPIPE
       # on a large script would turn that match into a failure.
-      grep -qE "$_TEST_PICK_HOP" <(_test_pick_uncomment <"$_TEST_PICK_REPO/$ref") && return 0
+      grep -qE "$_TEST_PICK_HOP" <(uncomment <"$_TEST_PICK_REPO/$ref") && return 0
     done < <(grep -oE '\$\{?REPO_ROOT\}?/[A-Za-z0-9._/-]+' <<<"$code" | sed -E 's#^\$\{?REPO_ROOT\}?/##' | sort -u)
   fi
   # A basename counts where it can name the file. A shared basename (README.md, SKILL.md) is
   # matched as `<parent dir>/<name>` (_test_pick_path_named). For any other, dropped first:
-  # comments (_test_pick_uncomment) and @test titles (prose), `stub <name>` and the fake's own quoted body (a fake
+  # comments (uncomment) and @test titles (prose), `stub <name>` and the fake's own quoted body (a fake
   # stands in for it), `<name>/` (a directory of that name, such as ~/.config/agentctl/), a path
   # in another directory that ends in it (_test_pick_otherdir) and
   # `<name>@` (a systemd unit). Without these, unit/fleet_dispatch.bats, a third of the unit tier,
@@ -290,7 +271,7 @@ test_picked() {
   # picked every fleet_dispatch*.bats file on a store-sync change (ar-3036).
   [ -n "$_TEST_PICK_PATHS" ] && _test_pick_path_named "$1" "$text" && return 0
   [ -n "$_TEST_PICK_WORDS" ] && grep -qE "$_TEST_PICK_WORDS" \
-    <(_test_pick_unstub <<<"$text" | _test_pick_uncomment | _test_pick_otherdir | sed -E 's/^@test[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"')//
+    <(_test_pick_unstub <<<"$text" | uncomment | _test_pick_otherdir | sed -E 's/^@test[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"')//
       s/(^|[[:space:];&|(])stub[[:space:]]+[^[:space:]]+/\1stub/g; s#[A-Za-z0-9._-]+[/@]#/#g') && return 0
   # A fixture is data for the tests that name it, so a change under tests/fixtures/<top> picks
   # those, not the whole tier: a comms-lint fixture ran every file of both tiers (#3040, 6.3 min).
