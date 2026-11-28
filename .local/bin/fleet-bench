@@ -6598,7 +6598,9 @@ cmd_health() {
 # On 2026-10-29 the pool queue was an hour old at 09:30, local runs starved from 13:00 and merges
 # collapsed at 14:20; the human found it at 19:59, because nothing read any of these for a decision.
 
-FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_oldest_wait_seconds'
+FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_oldest_wait_seconds|cc:pool_done_24h'
+# cc:pool_done_24h is for throughput only: it names every pool that ran a job in 24h, github-hosted included, which
+# has no slot row, so an idle hosted pool still gets its pool line (ar-5963).
 # A rule whose series is missing cannot fire, so its absence must not read as healthy. cc:pool_oldest_wait_seconds
 # is left out: it is only there while something waits.
 FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:pool_waiting","cc:pool_busy","cc:pool_slots"]'
@@ -6925,6 +6927,13 @@ cmd_throughput() {
       --arg q "$queue" --rawfile r <(runs_between "$from" "$to") "$JQ_LIB"'
     $sf[0] as $s | (($b - $a) / 3600) as $h
     | ($q | split("\n") | map(select(. != "") | split("\t")) | reduce .[] as $x ({}; .[$x[0]][$x[1]] = ($x[2] | tonumber))) as $wait
+    # A pool line for every pool the cc:pool_* rules name: one with slots, one with jobs waiting or running
+    # now, or one that ran jobs in 24h. The hosted pool has no slot row, so reading slots alone left its live
+    # waiting count off the report beside a 24h p50 of 0m (ar-5963). "now" is live; "(24h)" is the exporter
+    # quantile over finished jobs, a different window, so a 0m p50 beside jobs waiting now is no contradiction.
+    | ([($s // {}) | (.["cc:pool_slots"] // {} | to_entries[] | select(.value > 0) | .key),
+        ((.["cc:pool_waiting"], .["cc:pool_busy"]) // {} | to_entries[] | select(.value > 0) | .key),
+        (.["cc:pool_done_24h"] // {} | keys[])] | unique) as $pools
     | ($r | run_rows) as $runs
     | ($runs | map(select(.res != "pass"))) as $bad
     | "window: \($a | hm) -> \($b | hm) (\($h | round1)h)",
@@ -6941,17 +6950,18 @@ cmd_throughput() {
           elif ($unread | length) > 0 then "merges unread (no mapped repo, or no clone here that fetches): \($unread | join(", "))"
           else empty end)),
       (if $s == null then "pool and hosts: prometheus unreadable"
-       else ($s["cc:pool_slots"] // {} | keys[] | . as $p | select(($s["cc:pool_slots"][$p] // 0) > 0)
-             | "pool \($p): \($s["cc:pool_waiting"][$p] // 0) waiting, \($s["cc:pool_busy"][$p] // 0) running"
+       else ($pools[] | . as $p
+             | "pool \($p): now \($s["cc:pool_waiting"][$p] // 0) waiting"
+               + (if (($s["cc:pool_slots"][$p] // 0) > 0) or ($s["cc:pool_busy"] // {} | has($p)) then ", \($s["cc:pool_busy"][$p] // 0) running" else "" end)
                + (if $s["cc:pool_oldest_wait_seconds"][$p] then ", oldest \($s["cc:pool_oldest_wait_seconds"][$p] | dur)" else "" end)
-               + (if $wait[$p] then ", finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)" else "" end)),
+               + (if $wait[$p]["0.5"] != null and $wait[$p]["0.9"] != null then "; finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)" else "" end)),
             "hosts, load per core: " + ($s["cc:host_load1"] // {} | to_entries | map(select(($s["cc:host_cores"][.key] // 0) > 0) | {k: .key, v: (.value / $s["cc:host_cores"][.key])})
                | map(select(.v >= 0.5)) | sort_by(-.v) | if length == 0 then "all under 0.5x" else map("\(.k) \(.v | round1)x") | join(", ") end)
        end),
-      # A wait the exporter reports with no slot row of its own: a subset by a shard label (unity-gate,
-      # unity-full) or a pool with no live slots. It is its own query, so it prints with the snapshot
-      # unreadable too. unity-queue-wait reads the gate one (ar-3437).
-      ($wait | keys[] | . as $p | select((($s // {})["cc:pool_slots"][$p] // 0) == 0 and $wait[$p]["0.5"] != null and $wait[$p]["0.9"] != null)
+      # A wait the exporter reports with no pool line of its own: a subset by a shard label (unity-gate,
+      # unity-full), which no cc:pool_* rule names. It is its own query, so with the snapshot unreadable
+      # every pool prints here. unity-queue-wait reads the gate one (ar-3437).
+      ($wait | keys[] | . as $p | select(($pools | index($p) | not) and $wait[$p]["0.5"] != null and $wait[$p]["0.9"] != null)
        | "wait \($p): finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)")'
 }
 
