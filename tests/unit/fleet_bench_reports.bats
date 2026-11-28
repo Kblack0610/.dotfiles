@@ -1947,6 +1947,10 @@ live_merges() {
   assert_line 'pool unity: now 0 waiting, 0 running; finished jobs waited p50 0m, p90 40m (24h)'
   assert_line 'wait unity-gate: finished jobs waited p50 0m, p90 10m (24h)'
   refute_line --partial 'wait github-hosted'
+  # with --to the snapshot is of that moment, never labelled now
+  BENCH_NOW=$T0 run "$SUBJECT" throughput --from $((T0 - 3600)) --to "$T0"
+  assert_success
+  assert_line --regexp '^pool github-hosted: at [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} 5 waiting, oldest 12m; finished jobs waited p50 0m, p90 2m \(24h\)$'
   # idle, the hosted pool keeps its line from the jobs it ran in 24h, and reads 0 waiting rather than vanishing
   jq '.data.result |= map(select(.metric.__name__ | test("waiting|oldest") | not))' "$SANDBOX/snap.json" > "$SANDBOX/idle.json"
   stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) cat '$SANDBOX/idle.json' ;; esac"
