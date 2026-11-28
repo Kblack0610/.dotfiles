@@ -22,7 +22,7 @@
 #       A queue item's session adding a task that says land, from an item with a PR recorded, with no --after is gated on that item's own live `after:` blockers (landing_after).
 #       A plan phase or validate item (stack_dependent) after a slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: it is stacked on it
 #       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
-#       head, and agent-land refuses it (exit 4) until that slug closed ok. A PR in another project's repo is no base (its checkout lacks the commit): that after: holds until the close (stack_same_checkout). A dependency closed unmerged stays a dead hold. Any other --after holds until that slug closed ok, open PR or not.
+#       head, and agent-land refuses it (exit 4) until that slug closed ok. A phase's PR in another project's repo is no base (its checkout lacks the commit): that after: holds until the close (stack_same_checkout); a validate item still stacks, and dispatch cuts it in the PR's repo, since it lands that PR. A dependency closed unmerged stays a dead hold. Any other --after holds until that slug closed ok, open PR or not.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. When notes refuses that row for
@@ -848,6 +848,8 @@ stack_pr() {
 # after hc-955's PR in .dotfiles). The project is the item's, or the add under way's (AQ_ADD_PROJECT); a
 # board-row gate (cmd_gate after/<row>) knows none, and the item it promotes is held by this check. Unresolved
 # on either side counts as the same: the old behaviour.
+# hold_for skips it for a validate item: its author closes only when it lands that PR, so a hold never releases,
+# and fleet-dispatch's stack_base cuts its worktree in the PR's repo instead (ar-2940: validate-ask-du3ev0).
 stack_same_checkout() {
   local repo proj pdir odir
   [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] && [ -n "${2-}" ] || return 0
@@ -895,7 +897,7 @@ hold_for() {
       ok) ;;
       "") stack_pr "$s"
         [ -z "$STK" ] || stack_dependent "$dep" || STK=""
-        [ -z "$STK" ] || stack_same_checkout "$STK" "$([ -z "$dep" ] && echo "${AQ_ADD_PROJECT-}" || fm_get "$dep" project)" || STK=""
+        [ -z "$STK" ] || [[ " $tags " == *" validate "* ]] || stack_same_checkout "$STK" "$([ -z "$dep" ] && echo "${AQ_ADD_PROJECT-}" || fm_get "$dep" project)" || STK=""
         if [ -n "$STK" ]; then HOLD_STACK="$HOLD_STACK${HOLD_STACK:+ }$s=$STK"; else live="$live${live:+ }$s"; fi ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
