@@ -2550,6 +2550,41 @@ fix_item() {
   assert_output --regexp " retry:ar-1 --raw "
 }
 
+# 2026-11-28 (ar-1945): #1443 merged at 10:41Z; triage re-filed lab-sync's STALLED from 10:20Z at 11:18Z,
+# past the 30 minute patience, and the runner's After-deploy run read WORKED at 11:20Z.
+@test "triage: a merged fix that closed after a runner's verdict stands for it until the runner runs again" {
+  log_triage_setup
+  mkdir -p "$AGENTCTL_STATE_DIR/beta"
+  printf "NAME=beta\nSCHEDULE='*-*-* 04:00'\n" > "$LEDGER_CONF_DIR/beta.conf"
+  printf STALLED > "$AGENTCTL_STATE_DIR/beta/last-outcome"
+  printf '[2026-10-30T04:00:00-07:00] outcome=STALLED why: regen exited 1\n' > "$AGENTCTL_STATE_DIR/beta/activity.log"
+  route '^fix.runner.: ([a-z-]+) is' agent fix-red 'fix it'
+  local c; c=$(printf '%s' 'fix(runner):beta' | sha256sum | cut -c1-8)
+  at() { date -u -d "@$((T0 + $1))" +%FT%TZ; }
+  item() { jq -cn --arg c "red cause:$c" --arg f "$(at "$1")" \
+    '{slug: "ar-1", tags: $c, state: "done", status: "ok", queued: "2020-01-01T00:00:00Z", pr: "o/r#5", merged: "abc", finished: $f}' > "$ITEMS"; }
+  # the verdict is from before the fix, which closed 40 minutes ago, past TRIAGE_WATCH_AFTER
+  touch -d "@$((T0 - 3600))" "$AGENTCTL_STATE_DIR/beta/last-outcome"
+  item -2400
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # NEGATIVE CONTROL: the runner ran after the fix and still reads STALLED, so it did not hold
+  touch -d "@$((T0 - 600))" "$AGENTCTL_STATE_DIR/beta/last-outcome"
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$c retry:ar-1 --raw "
+  # a runner that never runs again holds its fix only TRIAGE_PROVES_MAX past the merge
+  : > "$PLOG"; : > "$BOARD"
+  touch -d "@$((T0 - 9000))" "$AGENTCTL_STATE_DIR/beta/last-outcome"
+  item -7200
+  TRIAGE_PROVES_MAX=3600 run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp " cause:$c retry:ar-1 --raw "
+}
+
 # ar-4018: Needs you holds only what the human can do. A red whose fixes did not hold is the agent
 # system's still: it files no human row and pages no one. reflective-penguin P2 (ask UfRZaR): it gets one
 # escalation, a root-cause pass pinned to Opus, and only when that did not hold either one ask.
