@@ -92,6 +92,26 @@ watch() {
   assert_output ''
 }
 
+# The fleet-health-coverage watch runs `fleet-bench health --coverage` and trips on its exit 1, so
+# these two cases are what it guards: a new Flows row, and a watch deleted without a replacement.
+@test "health --coverage guard: a new Flows row with no watch, or a deleted watch, makes it exit 1 and name the part" {
+  watch life-watch OK '[Lifecycle]'
+  run "$SUBJECT" health --coverage
+  assert_success
+  printf '| Admission | What caps the queue? | `d.md` | - | none |\n' > "$SANDBOX/row"
+  sed -i "/^| Lifecycle /r $SANDBOX/row" "$FLEET_ARCH_DOC"
+  run "$SUBJECT" health --coverage
+  assert_failure
+  assert_output 'Admission'
+  watch adm-watch OK '[Admission]'
+  run "$SUBJECT" health --coverage
+  assert_success
+  rm "$TRIAGE_WATCHES/adm-watch.yaml" "$TRIAGE_WATCH_STATE/adm-watch.state"
+  run "$SUBJECT" health --coverage
+  assert_failure
+  assert_output 'Admission'
+}
+
 @test "health negative control: a tripped watch makes its parts TRIP, the verdict RED, and the exit 1" {
   printf TRIP > "$TRIAGE_WATCH_STATE/queue-watch.state"
   run "$SUBJECT" health
