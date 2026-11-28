@@ -884,7 +884,7 @@ mod tests {
             result: result.into(),
             ..Requirement::default()
         };
-        let mut rows = vec![r("TODO"), r("HUMAN"), r("FAIL"), r("TODO")];
+        let mut rows = [r("TODO"), r("HUMAN"), r("FAIL"), r("TODO")];
         rows.sort_by_key(Requirement::rank);
         let order: Vec<_> = rows.iter().map(|r| r.result.as_str()).collect();
         assert_eq!(order, ["FAIL", "HUMAN", "TODO", "TODO"]);

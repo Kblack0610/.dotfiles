@@ -2,7 +2,7 @@
 //! agent-web's Costs tab draws): where the tokens go (`u`, `U` the window) and what Langfuse sees
 //! (`l`): what the fleet costs, not who is working.
 
-use hub_core::tokens::{Count, Langfuse, Share, Split, Tokens};
+use hub_core::tokens::{Langfuse, Share, Split, Tokens};
 use ratatui::text::{Line, Span};
 
 use crate::fit::{clip_line, Cell, Table};
@@ -342,6 +342,7 @@ fn token_table(tools: &[Share], part: &[String], p: Palette, w: usize) -> Vec<Li
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hub_core::tokens::Count;
     use hub_core::tokens::{LangfuseView, LfModel, LfTool};
 
     const NOW: i64 = crate::fleettab::tests::NOW;
