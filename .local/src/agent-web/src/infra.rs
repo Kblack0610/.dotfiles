@@ -83,7 +83,7 @@ pub fn render(infra: &Infra, base: &Map<String, Value>, q: &ViewQuery) -> String
     let mut tables = Map::new();
     for (name, pre) in TABLES {
         let t = match name {
-            "machines" => shown(&infra.machine_rows(), q, pre),
+            "machines" => shown(&infra.machines, q, pre),
             "pools" => shown(&infra.pools, q, pre),
             "runners" => shown(&infra.ci.rows, q, pre),
             "queued" => shown(&infra.ci.queue, q, pre),
@@ -117,11 +117,6 @@ impl Cache {
     /// The same answer for Home's health strip and red-now rows.
     pub async fn infra(&self) -> Infra {
         self.answer().await.0.clone()
-    }
-
-    /// The rates in the same answer, for the Builds section's prices.
-    pub async fn rates(&self) -> hub_core::run_detail::Rates {
-        self.answer().await.0.rates()
     }
 }
 

@@ -219,6 +219,18 @@ J
   assert_output 'held (agent-hold dispatch) by binks: load 72.9; no new sessions'
 }
 
+# session-snapshot up releases its dispatch hold once it hands the reopens to the walk (ar-3601): the
+# walk itself keeps a pass from starting new work while it runs, and a walk that ended holds nothing.
+@test "gate reads closed while a restore walk runs, and open once it ends" {
+  acct
+  echo "activating" > "$NOTES_FIXTURE/systemctl.show.fleet-restore.service.ActiveState"
+  run gate
+  assert_output --partial 'a restore walk is reopening sessions (fleet-restore.service;'
+  echo "inactive" > "$NOTES_FIXTURE/systemctl.show.fleet-restore.service.ActiveState"
+  run gate
+  refute_output --partial 'restore walk'
+}
+
 @test "red: a red item merges its own PR: no --pr-only, and its brief names fix-red" {
   project game beta "$SANDBOX/repos/game"
   stub wt 'printf "%s\n" "$WT_NEW_CMD" >> "$NOTES_FIXTURE/cmds.log"; echo "game-agent-1"'
