@@ -1854,9 +1854,10 @@ judge_demote_check() {
   read -r n over < <(ask_files --all | xargs -r -d "\n" awk -v rule="$rule" -v level="$level" '
     function out() {
       if (when == "") when = oat
-      if (ov != "" && ov != "none" && r == rule && lv == level && when != "") print when, (ov != "kept")
+      if (so == "" && ov != "" && ov != "none" && r == rule && lv == level && when != "") print when, (ov != "kept")
     }
-    FNR == 1 { if (NR > 1) out(); by = r = lv = when = ov = oat = "" }
+    FNR == 1 { if (NR > 1) out(); by = r = lv = when = ov = oat = so = "" }
+    /^standing_order: / && so == "" { so = 1 }
     /^answered_by: / && by == "" { by = substr($0, 14) }
     /^judge_rule: / && r == "" { r = substr($0, 13) }
     /^judge_level: / && lv == "" { lv = substr($0, 14) }
@@ -3222,7 +3223,7 @@ route_physical() {
 # The shape of a question, so two asks that differ only in a quoted title, an id or a number are one:
 # lowercased, each quoted or backticked span `Q`, each token that opens with a digit `N`. Defined in jq
 # once: `standing` groups by it and post matches by it.
-JQ_SHAPE='def shape: ascii_downcase | gsub("\"[^\"]*\"|`[^`]*`"; "Q") | gsub("[0-9][0-9a-z._:-]*"; "N") | gsub("[ \t\n]+"; " ") | .[0:140];'
+JQ_SHAPE='def shape: ascii_downcase | gsub("\"[^\"]*\"|`[^`]*`"; "Q") | gsub("[0-9][0-9a-z._:-]*"; "N") | gsub("[ \t\n]+"; " ");'
 ask_shape() { jq -Rrn "$JQ_SHAPE"'input | shape' <<<"$1"; }
 
 # standing_orders: the rows of standing-orders.conf, `<project>/<kind>/<shape>=<answer>` a line, comments
@@ -3241,11 +3242,13 @@ standing_order_for() {
   case "$kind" in question|gate|approval) ;; *) return 1 ;; esac
   [ -z "$(field "$f" audit_of)" ] && [ -z "$(field "$f" resume)" ] || return 1
   [ "$(field "$f" judge_level)" != critical ] && [ "$(field "$f" judge_human_only)" != true ] || return 1
+  case "$(field "$f" judge_rule)" in external|knowledge) return 1 ;; esac
   ! human_floor "$(ask_text "$f")" "$f" >/dev/null || return 1
   key="$(field "$f" project)/$kind/$(ask_shape "$(field "$f" question)")"
   while IFS= read -r row; do
     [ "${row%=*}" = "$key" ] || continue
     ans="${row##*=}"
+    [ -n "$ans" ] || return 1
     if [ -n "$(field "$f" options)" ]; then
       opt="$(tr '|' '\n' <<<"$(field "$f" options)" | grep -ixF -m1 -- "$ans")" || return 1
       ans="$opt"
@@ -3288,7 +3291,7 @@ cmd_standing() {
       "$JQ_EPOCH$JQ_SHAPE"'
     ($orders | split("\n") | map(sub("=[^=]*$"; ""))) as $have
     | map(select((.answered_at | epoch) as $t | $t != null and $t >= (now - $days * 86400))
-        | . + {pick: ($picks[.id] // (if (.options // "") == "" then .answer else null end)), shape: (.question | shape)}
+        | . + {pick: $picks[.id], shape: (.question | shape)}
         | select(.pick != null))
     | group_by([.project, .kind, .shape])[]
     | sort_by(.answered_at | epoch) | .[-$bar:] as $last
@@ -3302,12 +3305,12 @@ cmd_standing() {
     row="$project/$kind/$shape=$answer"
     title="Standing order: answer '$answer' to $project $kind asks like '$shape'"
     # The queue project is the one that owns the conf, not the ask's. A repeat is the open or the
-    # decided proposal (a rejected shape is not proposed again); a cap hit is retried next pass.
+    # decided proposal (a rejected shape is not proposed again); a cap hit is retried at the next hourly pass.
     $AGENT_ASK_PROPOSE_CMD add --stream standing-orders --project agent-runtime --verb queue --key "$key" \
       --why "The human answered the same way $n times running (asks $ids). Accepting queues one PR adding the row to standing-orders.conf in the private repo; later asks of this shape then settle with '$answer' at post, never one with a resume of its own, a critical one or one at the human floor. Delete the row to undo." \
       --evidence "$ids" \
       --arg "feat(asks): add the standing order \`$row\` to standing-orders.conf in the private repo, .config/agentctl/agents (the human accepted it after $n same answers: asks $ids) #size/s" \
-      "$title" >/dev/null 2>&1 || true
+      "$title" >/dev/null || echo "agent-ask standing: could not file the proposal for '$project/$kind/$shape'" >&2
   done <<<"$rows"
 }
 

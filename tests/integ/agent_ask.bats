@@ -3477,6 +3477,22 @@ live_answer_file() {
   assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
 }
 
+@test "override: standing-order answers overridden by the human are not in a judge cell's window" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=3 AGENT_ASK_DEMOTE_PRECISION=75
+  local d="$HOME/.agent/asks/demo" i
+  for i in 1 2 3 4 5; do live_answer_file "$i" "$i" kept; done
+  # two newer answers of a standing order, both overridden: counted, the window 4-8 would be 3 of 5 over
+  for i in 7 8; do live_answer_file "$i" "$i" wait; echo 'standing_order: demo/question/x' >> "$d/L0000$i.md"; done
+  printf 'id: L00006\nproject: demo\nclaude_session: sid-9\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:06:00+0000\njudge_rule: ship_deploy\njudge_level: repo\n' > "$d/L00006.md"
+  "$AGENT_ASK" settle-session sid-9 answered "wait"
+  assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
+  # negative control: without the standing_order lines the same files demote the cell
+  sed -i '/^standing_order/d' "$d"/L0000[78].md
+  sed -i '/^judge_override/d' "$d/L00006.md"
+  "$AGENT_ASK" settle-session sid-9 answered "wait"
+  assert [ -s "$HOME/.local/state/agent-ask/demoted" ]
+}
+
 @test "precedents: a disagreement older than the ask reaches the judge, a newer one and an agreement do not" {
   local d="$HOME/.agent/asks/demo"
   mkdir -p "$d"
@@ -3915,12 +3931,12 @@ SH
 
 # -- standing orders from precedent --
 
-# seed_answered <project> <kind> <question> <answer> [<answered_by>] [<resume>]: one answered ask file.
+# seed_answered <project> <kind> <question> <answer> [<answered_by>] [<resume>] [<days old>] [<status>]: one answered ask file.
 seed_answered() {
   local d="$HOME/.agent/asks/$1" id; mkdir -p "$d"
   id="s$(find "$HOME/.agent/asks" -name 's*.md' | wc -l)"
-  printf 'id: %s\nproject: %s\nkind: %s\nstatus: answered\nquestion: %s\noptions: yes|no\nrecommend: yes\nanswer: %s\nanswered_by: %s\nanswered_at: %s\nresume: %s\ncreated: %s\n' \
-    "$id" "$1" "$2" "$3" "$4" "${5-human}" "$(date +%Y-%m-%dT%H:%M:%S%z)" "${6-}" "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$d/$id.md"
+  printf 'id: %s\nproject: %s\nkind: %s\nstatus: %s\nquestion: %s\noptions: yes|no\nrecommend: yes\nanswer: %s\nanswered_by: %s\nanswered_at: %s\nresume: %s\ncreated: %s\n' \
+    "$id" "$1" "$2" "${8-answered}" "$3" "$4" "${5-human}" "$(date -d "${7-0} days ago" +%Y-%m-%dT%H:%M:%S%z)" "${6-}" "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$d/$id.md"
 }
 
 @test "standing: the same human answer three times running to one ask shape is a candidate; nothing else is" {
@@ -3933,6 +3949,12 @@ seed_answered() {
   for n in 1 2 3; do seed_answered judged question "Merge PR $n?" yes judge; done
   for n in 1 2 3; do seed_answered resumed approval "Send the post \"title $n\"?" yes human 'run: mkt answer x'; done
   for n in 1 2 3; do seed_answered ordered approval "Rebase branch $n?" yes; done
+  # ... another kind; answers older than STANDING_DAYS; a cancelled ask; long questions that differ only past 140 characters
+  for n in 1 2 3; do seed_answered notice info "Read the notice $n?" yes; done
+  for n in 1 2 3; do seed_answered stale approval "Prune cache $n?" yes human '' 90; done
+  for n in 1 2 3; do seed_answered gone approval "Drop table $n?" yes human '' 0 cancelled; done
+  local long="Start the very long board row again after the flaky test in the shared harness failed in its last runs on the nightly and the fix is still waiting on review from the owner so"
+  for n in alpha beta gamma; do seed_answered longq approval "$long $n?" yes; done
   printf '%s\n' 'ordered/approval/rebase branch N?=yes' > "$BATS_TEST_TMPDIR/standing.conf"
   export AGENT_ASK_STANDING_FILE="$BATS_TEST_TMPDIR/standing.conf"
   run "$AGENT_ASK" standing
@@ -4004,6 +4026,14 @@ seed_answered() {
   # negative control: an answer that is not one of the ask's options
   fake_judge "$(score ship_deploy "" "fine")"
   printf '%s\n' 'demo/approval/start board row demo-N again after its last N runs failed?=maybe' > "$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: a row with no answer
+  printf '%s\n' 'demo/approval/start board row demo-N again after its last N runs failed?=' > "$BATS_TEST_TMPDIR/standing.conf"
   run "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' \
     'Start board row demo-14 again after its last 4 runs failed?'
   assert_success
