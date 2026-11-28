@@ -3,8 +3,6 @@
 //! machines, pools and CI rows `hub_core` builds once for both surfaces (`infratables` draws
 //! them), so it cannot disagree with Grafana or agent-web's Infra tab.
 
-use std::collections::HashMap;
-
 use hub_core::infra::Infra;
 use hub_core::workload;
 use ratatui::text::{Line, Span};
@@ -12,48 +10,17 @@ use ratatui::text::{Line, Span};
 use crate::fit::{clip_line, wrap};
 use crate::fmt::Palette;
 use crate::infratables::InfraTables;
-use hub_core::display::fmt::dur_secs;
 
 pub struct Board<'a> {
     infra: &'a Infra,
     p: Palette,
-    /// `cc:<name>` or `cc:<name>/<domain|host|pool|site>` -> value.
-    v: HashMap<String, f64>,
 }
 
 impl<'a> Board<'a> {
     pub fn new(infra: &'a Infra, p: Palette) -> Board<'a> {
-        let mut v = HashMap::new();
-        for s in infra.get("cc") {
-            let name = s.label("__name__");
-            let sub = if name == "cc:domain_status" {
-                s.label("domain")
-            } else {
-                ["host", "pool", "site"]
-                    .into_iter()
-                    .map(|k| s.label(k))
-                    .find(|v| !v.is_empty())
-                    .unwrap_or("")
-            };
-            let key = if sub.is_empty() {
-                name.to_string()
-            } else {
-                format!("{name}/{sub}")
-            };
-            if let Some(x) = s.value {
-                v.insert(key, x);
-            }
-        }
-        Board { infra, p, v }
+        Board { infra, p }
     }
 
-    fn get(&self, k: &str) -> Option<f64> {
-        self.v.get(k).copied()
-    }
-    /// A count, or ? when the rule is absent.
-    fn num(&self, k: &str) -> String {
-        self.get(k).map_or("?".into(), |x| format!("{x:.0}"))
-    }
     fn dim(&self, s: String) -> Line<'static> {
         Line::styled(s, self.p.dim())
     }
@@ -63,7 +30,7 @@ impl<'a> Board<'a> {
     fn ci_line(&self) -> String {
         let g = &self.infra.ci.glance;
         let mut out = format!("ci {} running", g.busy);
-        let hosted = self.get("cc:github_hosted_running").unwrap_or(0.0);
+        let hosted = self.infra.github_hosted();
         if hosted > 0.0 {
             out += &format!(" +{hosted:.0} github-hosted");
         }
@@ -138,32 +105,23 @@ impl<'a> Board<'a> {
     /// The machinery's headline numbers. The status tag, what needs you and the domain strip
     /// went to the Home sections above (`hub_core::home`).
     pub fn numbers(&self, w: usize) -> Vec<Line<'static>> {
-        let mut items = vec![
-            format!(
-                "nodes {}/{}",
-                self.num("cc:k3s_nodes_ready"),
-                self.num("cc:k3s_nodes_total")
-            ),
-            format!(
-                "heartbeats {}/{}",
-                self.num("cc:machines_up"),
-                self.num("cc:machines_total")
-            ),
-            self.ci_line(),
-            format!("agent runners {} failed", self.num("cc:runners_failed")),
-            format!(
-                "watches {}/{} tripped",
-                self.num("cc:watches_tripped"),
-                self.num("cc:watches_total")
-            ),
-            hub_core::costs::spend_badge(),
-        ];
-        if self.get("cc:agent_sessions_running").is_some() {
-            items.push(format!(
-                "agent sessions {}",
-                self.num("cc:agent_sessions_running")
-            ));
-        }
+        // The tiles agent-web draws (`Infra::kpis`): the same series and counts; the CI one keeps
+        // the hub's own line, which leads with the queue.
+        let tile = |name: &str| {
+            self.infra
+                .kpis
+                .iter()
+                .find(|k| k.name == name)
+                .map(|k| format!("{} {}", k.name.to_lowercase(), k.value))
+        };
+        let mut items: Vec<String> = ["NODES", "HEARTBEATS"]
+            .into_iter()
+            .filter_map(tile)
+            .collect();
+        items.push(self.ci_line());
+        items.extend(["AGENT RUNNERS", "WATCHES"].into_iter().filter_map(tile));
+        items.push(hub_core::costs::spend_badge());
+        items.extend(tile("SESSIONS"));
         wrap(&items, "  ", w)
             .into_iter()
             .map(|l| clip_line(self.dim(l), w))
@@ -176,10 +134,9 @@ impl<'a> Board<'a> {
     /// naming the missing label.
     pub fn ci_head(&self, failed: Option<usize>, w: usize) -> Vec<Line<'static>> {
         let ci = &self.infra.ci;
-        let secs = |v: i64| dur_secs(v as f64);
         let mut head = vec![
             Span::styled("CI RUNNERS", self.p.head()),
-            Span::raw(format!("  {}", ci.glance.head(secs))),
+            Span::raw(format!("  {}", ci.glance.head)),
         ];
         if let Some(n) = failed.filter(|n| *n > 0) {
             head.push(Span::styled(
@@ -343,6 +300,7 @@ pub(crate) mod tests {
     use crate::fit::plain;
     use hub_core::prom::Series;
     use serde_json::{json, Value};
+    use std::collections::HashMap;
 
     fn series(rows: Vec<(Value, &str)>) -> Vec<Series> {
         let res: Vec<Value> = rows
@@ -1315,14 +1273,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_agent_session_count_shows_only_when_the_rule_has_a_value() {
+    fn the_session_tile_reads_the_series_agent_web_reads() {
         let mut i = fixture();
-        assert!(!text(&i, 160).contains("agent sessions"));
-        i.instant.get_mut("cc").unwrap().extend(series(vec![(
-            json!({"__name__": "cc:agent_sessions_running"}),
-            "26",
-        )]));
-        assert!(has(&text(&i, 160), "agent sessions 26"));
+        assert!(has(&text(&i, 160), "sessions ?/?"));
+        i.instant.get_mut("cc").unwrap().extend(series(vec![
+            (json!({"__name__": "cc:sessions_working"}), "3"),
+            (json!({"__name__": "cc:sessions_total"}), "26"),
+            // The older gauge no longer feeds the line.
+            (json!({"__name__": "cc:agent_sessions_running"}), "99"),
+        ]));
+        let out = text(&i, 160);
+        assert!(has(&out, "sessions 3/26"), "{out}");
+        assert!(!out.contains("sessions 99"), "{out}");
     }
 
     #[test]
