@@ -317,13 +317,18 @@ pub fn queueable(reg: &project_map::Registry, machine: &str) -> Vec<String> {
     names
 }
 
-/// `queueable` for this machine, from the registry at `map_path()`; empty when it cannot be read.
+/// `queueable` for this machine, from the registry at `map_path()`; empty when it cannot be read,
+/// with the reason on stderr (the server's journal).
 pub fn queueable_here(runner: &dyn Runner) -> Vec<String> {
     // The machine's profile does not change while a server runs, so notes is asked once.
     static MACHINE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    project_map::Registry::from_path(&map_path())
-        .map(|reg| queueable(&reg, MACHINE.get_or_init(|| machine_profile(runner))))
-        .unwrap_or_default()
+    match project_map::Registry::from_path(&map_path()) {
+        Some(reg) => queueable(&reg, MACHINE.get_or_init(|| machine_profile(runner))),
+        None => {
+            eprintln!("queueable projects: cannot read {}", map_path().display());
+            Vec::new()
+        }
+    }
 }
 
 /// One project's card.

@@ -2,9 +2,9 @@
 //! `releases`. The list is filtered and sorted here by `hub_core::table`, so the page only draws.
 //! No read cache for the snapshot: it is one small file, and a new snapshot pushes the `releases`
 //! event. The apps' build runs come from the builds read and its cache; their CHECKS cell from
-//! `app_status::badges`, two VictoriaMetrics calls kept `CHECKS_SECS` per set of groups, since the
-//! page re-reads every minute while it shows (Prometheus has no push); a project page's checks
-//! line reads through the same keep.
+//! `app_status::badges`, two VictoriaMetrics calls kept `CHECKS_SECS`, since the page re-reads
+//! every minute while it shows (Prometheus has no push); a project page's checks line keeps its
+//! own read, so opening a project does not evict the tab's.
 
 use crate::cache::{failed, ReadCache};
 use axum::extract::Query as UrlQuery;
@@ -22,15 +22,26 @@ use std::sync::Arc;
 const CHECKS_SECS: u64 = 30;
 type Groups = Vec<(String, Vec<String>)>;
 type Checks = Result<HashMap<String, releases::Badge>, String>;
-/// The last read, for the set of groups it was asked for (every app's for the tab, one app's for
-/// its project page).
-static CHECKS: ReadCache<HashMap<String, releases::Badge>, CHECKS_SECS, Groups> =
-    ReadCache::new("releases-checks");
+type ChecksCache = ReadCache<HashMap<String, releases::Badge>, CHECKS_SECS, Groups>;
+/// The tab's last read (every app's groups).
+static TAB_CHECKS: ChecksCache = ReadCache::new("releases-checks");
+/// A project page's last read (one app's groups).
+static PROJECT_CHECKS: ChecksCache = ReadCache::new("project-checks");
 
-/// The checks of `groups` (`hub_core::app_status::badges`), from the last read of the same groups
-/// while it is under `CHECKS_SECS` old, refreshed behind once it is older. Called from a blocking
-/// task, so it waits on the runtime it runs beside.
+/// The Releases tab's checks, through `TAB_CHECKS`.
+fn tab_checks(groups: &[(String, Vec<String>)]) -> Checks {
+    checks_in(&TAB_CHECKS, groups)
+}
+
+/// A project page's checks line, through `PROJECT_CHECKS`.
 pub fn checks(groups: &[(String, Vec<String>)]) -> Checks {
+    checks_in(&PROJECT_CHECKS, groups)
+}
+
+/// The checks of `groups` (`hub_core::app_status::badges`), from `cache`'s last read of the same
+/// groups while it is under `CHECKS_SECS` old, refreshed behind once it is older. Called from a
+/// blocking task, so it waits on the runtime it runs beside.
+fn checks_in(cache: &ChecksCache, groups: &[(String, Vec<String>)]) -> Checks {
     let asked = groups.to_vec();
     let read = {
         let asked = asked.clone();
@@ -43,7 +54,7 @@ pub fn checks(groups: &[(String, Vec<String>)]) -> Checks {
         }
     };
     tokio::runtime::Handle::current()
-        .block_on(CHECKS.get(asked, read))
+        .block_on(cache.get(asked, read))
         .map(|kept| (*kept).clone())
 }
 
@@ -117,7 +128,7 @@ pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) ->
     let read = move || {
         let mut r = releases::read(&System, &items);
         r.errors.extend(queue_error);
-        r.with_checks(&checks(&r.check_groups()));
+        r.with_checks(&tab_checks(&r.check_groups()));
         match runs {
             Ok(b) => r.with_builds(&b.rows),
             Err(e) => r.errors.push(format!("build runs: {e}")),

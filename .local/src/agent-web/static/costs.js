@@ -328,7 +328,8 @@ function costsConsumers(d) {
 
 function costsBurn(d) {
   const b = d.burn;
-  if (!b || !b.accounts.length) return secHead("burn", "Burn") + `<div class="panel muted">${esc(b.no_data)}</div>`;
+  if (!b) return "";
+  if (!b.accounts.length) return secHead("burn", "Burn") + `<div class="panel muted">${esc(b.no_data)}</div>`;
   const cls = b.level === "bad" ? "bad" : b.level === "warn" ? "warn" : "ok";
   const held = b.drip.held ? ` <a class="warn" href="#sessions" title="${esc(b.drip.held)}">dispatch held -> Sessions</a>` : "";
   const key = isPhone() ? "burn-phone" : "burn", open = isPhone() ? !!cost.open[key] : secOpen(cost.open, key);
@@ -375,7 +376,7 @@ function costsAllowance(d) {
   const a = p.allowance;
   if (!a) return secHead("allowance", "Allowance") + paceErr(p.error || "no pace config");
   const lag = a.lagging ? `<span class="warn">claude-acct's figures are for the allowance before this one (wrote them ${when(a.as_of)}); they catch up on its next run</span>`
-    : a.as_of ? esc(`claude-acct wrote the figures ${when(a.as_of)}; a change shows there on its next run`) : esc(d.burn.no_data);
+    : a.as_of ? esc(`claude-acct wrote the figures ${when(a.as_of)}; a change shows there on its next run`) : esc(d.burn?.no_data || "");
   const over = a.level;
   const lines = `<div class="panel"><div><span class="muted">ALLOWANCE</span> ${esc(a.in_force)} (${esc(a.source)}), default ${esc(a.default)}</div>` +
     `<div><span class="muted">LETS THROUGH</span> <span class="burn ${over}">${paceRate(a.burn)}/h now</span> against ${paceRate(a.sustain)}/h sustainable and ${paceRate(a.allowed)}/h allowed` +
