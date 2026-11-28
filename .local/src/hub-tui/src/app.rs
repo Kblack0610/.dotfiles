@@ -56,7 +56,7 @@ pub const REDS_REFRESH: Duration = Duration::from_secs(300);
 /// VictoriaMetrics has no push and a check runs every one to five minutes, so the tick re-reads
 /// the open app's checks this often, the web page's cadence.
 pub const APP_STATUS_REFRESH: Duration = Duration::from_secs(60);
-/// One `fleet-bench epics` read takes about 10s and an epic moves in hours, so the tick re-reads
+/// One `fleet-bench epics` read takes about 6s and an epic moves in hours, so the tick re-reads
 /// Deliverables only this often; entering Projects and `r` still read it at once.
 pub const DELIVERABLES_REFRESH: Duration = Duration::from_secs(300);
 /// A Schedules read shells out to systemd and Prometheus for seconds, and a schedule changes by
@@ -2073,16 +2073,17 @@ impl App {
     }
 
     /// The open card's name and stage; None on the list or with All open.
-    fn open_card(&self) -> Option<(String, String)> {
-        if !self.pv.open {
-            return None;
-        }
-        let (profile, name) = self.tv.project.as_ref()?;
-        self.cards()
-            .cards
-            .into_iter()
-            .find(|c| c.profile == *profile && c.name == *name)
-            .map(|c| (c.name, c.stage))
+    pub fn open_card(&self) -> Option<(String, String)> {
+        opened(&self.pv, &self.tv, self.cards().cards)
+    }
+
+    /// The card `hub tab projects <q>` would open, resolved over scratch views: the real open
+    /// waits for the queue, which orders the cards and lists the sprint windows (ar-1140).
+    pub fn card_for(&self, q: &str) -> Option<(String, String)> {
+        let cards = self.cards().cards;
+        let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
+        pv.go(&mut tv, &cards, q.trim());
+        opened(&pv, &tv, cards)
     }
 
     /// Read the open card's page in a worker; it comes back as Msg::ProjPage.
@@ -2103,14 +2104,16 @@ impl App {
         }
     }
 
-    /// Read the open card's page here and now, for `--once`.
-    pub fn read_proj_page_now(&mut self, runner: &(dyn Runner + Sync)) {
-        if let Some((name, stage)) = self.open_card() {
-            let now = jobs::now();
-            let mut pg = hub_core::page::read(runner, &name, &stage, now);
-            pg.read_checks(runner, now);
-            self.proj_page = Some(pg);
-        }
+    /// One card's page read here and now, for `--once`, which runs it beside its other reads.
+    pub fn proj_page_now(
+        runner: &(dyn Runner + Sync),
+        name: &str,
+        stage: &str,
+    ) -> hub_core::page::Page {
+        let now = jobs::now();
+        let mut pg = hub_core::page::read(runner, name, stage, now);
+        pg.read_checks(runner, now);
+        pg
     }
 
     /// Read the page when the open card is not the one last asked for.
@@ -3056,7 +3059,7 @@ impl App {
                     self.infra_open = None;
                     self.scroll = 0;
                 } else if let Some((table, chip)) = hub_core::layout::moved_chip("infra", &q) {
-                    // `hub --tab 'infra governor'`: the table it moved into, under its chip.
+                    // `hub --tab 'infra cloud'`: the table it moved into, under its chip.
                     if let Some(t) = self.itab.view(table) {
                         t.clear();
                         t.view.state = chip.into();
@@ -4296,8 +4299,7 @@ impl App {
         self.runs().selected(self.builds.as_ref()?)
     }
 
-    /// Enter on a run: its detail and failed-job log, read now and never before. The detail is
-    /// priced with the rates the Infra board last read; before its first read, nothing is priced.
+    /// Enter on a run: its detail and failed-job log, read now and never before.
     fn open_build_log(&mut self) {
         let Some(r) = self.selected_build() else {
             return;
@@ -4317,19 +4319,12 @@ impl App {
             read: None,
             top: 0,
         });
-        let rates = self.infra.as_ref().map_or_else(
-            || hub_core::run_detail::Rates {
-                error: Some("the infra board has not been read yet".into()),
-                ..Default::default()
-            },
-            Infra::rates,
-        );
         let (tx, paths, dkey) = (self.tx.clone(), self.files.builds.clone(), key.clone());
         let (joined, cache) = (self.builds.clone(), self.paths.cache.clone());
         std::thread::spawn(move || {
             let d = joined
                 .ok_or_else(|| "the runs table has not been read yet".to_string())
-                .and_then(|b| builds::open_detail(&b, &paths, &cache, &rates, &dkey, jobs::now()));
+                .and_then(|b| builds::open_detail(&b, &paths, &cache, &dkey, jobs::now()));
             let _ = tx.send(Msg::BuildDetail(gen, Box::new(d)));
         });
         let (tx, paths, jobs_paths) = (
@@ -5795,6 +5790,22 @@ fn audited<T>(e: hub_core::audit::Entry, r: &Result<T, String>) {
         return;
     }
     hub_core::audit::record(&e);
+}
+
+/// The card the views have open, by name and stage; None on the list or with All open.
+fn opened(
+    pv: &ProjView,
+    tv: &TaskView,
+    cards: Vec<hub_core::projects::Card>,
+) -> Option<(String, String)> {
+    if !pv.open {
+        return None;
+    }
+    let (profile, name) = tv.project.as_ref()?;
+    cards
+        .into_iter()
+        .find(|c| c.profile == *profile && c.name == *name)
+        .map(|c| (c.name, c.stage))
 }
 
 #[cfg(test)]
@@ -9324,7 +9335,8 @@ mod tests {
             "MACHINES  all",
             "JOB KINDS  all",
             "CI RUNNERS",
-            "RUNNERS  all",
+            "CI MACHINES  all",
+            "RUNNERS  3 jobs running",
             "WAITING  all",
             "LOCAL UNITY",
             "PIPELINES",
@@ -9355,12 +9367,11 @@ mod tests {
             !s.contains("HEALTH") && !s.contains("RED NOW") && !s.contains("RED FIXES"),
             "{s}"
         );
-        // Machines holds the machines and the pools, in that order; CI is its own. The governor
-        // and cloud power are machine columns.
+        // Machines holds the machines and the pools, in that order; CI is its own.
         assert_eq!(a.infra_inner, "machines");
         let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
         assert!(at(&s, "MACHINES  all") < at(&s, "JOB KINDS  all"), "{s}");
-        assert!(at(&s, "GOVERNOR") < at(&s, "JOB KINDS  all"), "{s}");
+        assert!(!s.contains("GOVERNOR") && !s.contains("POWER"), "{s}");
         assert!(!s.contains("CI RUNNERS"), "{s}");
         let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(right());
@@ -9447,14 +9458,14 @@ mod tests {
             a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         }
         assert!(a.itab.views[1].is_default());
-        // The old Governor and Cloud names open Machines under their chips.
-        for (word, chip) in [("infra governor", "governed"), ("infra cloud", "cloud")] {
+        // The old Cloud name opens Machines under its chip; the old Governor name opens it.
+        for word in ["infra governor", "infra cloud"] {
             let (t, q) = crate::tabreq::parse(word).unwrap();
             a.handle(Msg::Tab(t, q));
             assert_eq!((a.tab, a.infra_inner), (Tab::Infra, "machines"), "{word}");
-            assert_eq!(a.itab.views[0].view.state, chip, "{word}");
-            assert_eq!(a.itab.focus("machines"), Some(0), "{word}");
         }
+        assert_eq!(a.itab.focus("machines"), Some(0));
+        assert_eq!(a.itab.views[0].view.state, "cloud");
     }
 
     #[test]

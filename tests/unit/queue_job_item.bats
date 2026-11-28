@@ -1,8 +1,7 @@
 #!/usr/bin/env bats
 # fleet-dispatch, mode: job items (ar-3040): a queued item whose run: is an agentctl runner starts through agentctl with
 # no model session, keeps every hold, and closes on the runner's own outcome word. agentctl, systemctl and claude are stubs.
-# One of the tests/unit/fleet_dispatch*.bats files, split so CI shards can spread them;
-# the fixtures and setup they share are in fleet_dispatch/common.bash.
+# Not a tests/unit/fleet_dispatch*.bats file: tests/unit/test_pick.bats requires those to be left out by an agentctl change, and this one names it. It loads the fleet_dispatch fixtures.
 
 load 'fleet_dispatch/common'
 

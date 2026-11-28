@@ -31,7 +31,7 @@ Not for what is waiting on the human across the fleet (`fleet-bench`), or moving
 3. One pending ask per Claude session. A second `post` exits 2. Cancel the first with `agent-ask cancel <id> superseded` and fold both decisions into one question.
    A wait on something outside the session that stops others too (account billing, a quota, an outage) names it with `--blocker <owner/repo>:<cause>` (for example `kblack0610/.dotfiles-private:billing`). A pending ask on the same blocker then takes your session instead of a new ask; `post` prints its id, and its answer comes to you too. README "One ask per blocker". An ask saying gh is signed out is refused while `gh auth status` is clean, and answered once it is (README "A gh-login ask is checked against the live login").
 4. End the turn on the card `post` prints. Do not poll. `--wait` exists and polls every 5 seconds, but async is the path.
-5. The judge runs inside `post` (30 second limit, `AGENT_ASK_JUDGE_TIMEOUT`). If it answers, the text goes to your stderr: "Answered by the judge ... Proceed; the human can override". Read it and proceed. Only the types in `DELAY_RULES` (in `~/.config/agentctl/agents/ask-judge.conf`), at or under the impact level each row names, are answered live, a `--kind gate` too; a `--kind approval` never is, so post one only when the human must decide (money, a public post, a plan sign-off, legal); a queue item waiting on the answer is no reason, since any answer releases it. If the judge is over its day budget the ask simply stays with the human.
+5. The judge runs inside `post` (30 second limit, `AGENT_ASK_JUDGE_TIMEOUT`). If it answers, the text goes to your stderr: "Answered by the judge ... Proceed; the human can override". Read it and proceed. Only the types in `DELAY_RULES` (in `~/.config/agentctl/agents/ask-judge.conf`), at or under the impact level each row names, are answered live, a `--kind gate` too; a `--kind approval` never is, so post one only when the human must decide (money, a public post, a plan sign-off, legal), and `post` makes one of an ask that could cancel or drop work the human asked for (`agent-queue human-work`); a queue item waiting on the answer is no reason, since any answer releases it. If the judge is over its day budget the ask simply stays with the human.
 
 ## Read an answer
 
@@ -64,6 +64,7 @@ A proposal is a decision an analysis stream or dream filed with `agent-propose`:
 3. Pending with the session gone: nothing expires an ask. `agent-ask target --reopen <id>` points it at a live session; or `agent-ask cancel <id> '<reason>'` if the question is dead.
 4. The judge answered wrongly: tell the human, who overrides with `agent-ask answer <id> ...`. A policy or `DELAY_RULES` change is re-applied to the pending queue by `agent-ask sweep --all`.
 5. `ask-judge` or `ask-resume` calls failing on a cap: `fleet-runners`, "budget".
+6. An agent answered an ask only the human answers (an approval, a human-only ask, `judge: human`), so its session reads STALLED instead of NEEDS: `agent-ask return --refused --dry-run` lists them, and `agent-ask return <id>` puts one back to pending, the agent's answer kept as `agent_answer`. `answer` refuses such an answer since ar-5156.
 
 ## The Stop check
 

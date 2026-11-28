@@ -309,6 +309,92 @@ load 'fleet_dispatch/common'
   [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "queued an item"
 }
 
+# 2026-11-20: a row whose item closed cancelled was left started, a start of it was refused as "no longer
+# open", and agent-11 filed its own item with --repeat to land it (ar-225, ar-5932).
+@test "start --brief of a row left started by a cancelled item files a fresh item under its id and starts it, open, in the launch env" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [ ] tidy the loader <!-- id:gm-1 -->'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "%s\n" "$WT_NEW_CMD" > "$NOTES_FIXTURE/cmd"; echo "game-agent-1"'
+  stub tmux-close 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_success
+  agent-queue cancel gm-1 --why 'superseded' >/dev/null 2>&1
+  grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "the row is not left started"
+  rm -f "$NOTES_FIXTURE/cmd"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_output --partial 'started game-agent-1: game: gm-1'
+  grep -qF 'AGENT_QUEUE_ITEM=gm-1' "$NOTES_FIXTURE/cmd" || fail "the session does not know its item"
+  f=$(qitem running gm-1)
+  [ -n "$f" ] || fail "no fresh running item for the row"
+  assert_equal "$(qfield "$f" from)" 'board:game:gm-1'
+  assert_equal "$(agent-queue show gm-1 --json | jq -r .state)" running
+  assert_equal "$(ls "$AGENT_QUEUE_DIR"/done/*/*-gm-1.md | wc -l)" 1
+  grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "the row is not started"
+}
+
+@test "start --brief of a started row whose cancelled item a live item replaced is refused naming both, and files nothing" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [/] tidy the loader <!-- id:gm-1 -->'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  agent-queue add --project game --slug gm-1 --from board:game:gm-1 'tidy the loader' >/dev/null
+  agent-queue cancel gm-1 --why 'superseded' >/dev/null 2>&1
+  agent-queue add --project game --slug other --from board:game:gm-1 'tidy the loader again' >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'row gm-1 is started, its queue item gm-1 is done cancelled, and queue item other works it'
+  assert_not_called 'wt new'
+  [ -z "$(qitem queued gm-1)$(qitem running gm-1)" ] || fail "filed a fresh item beside the live one"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/running/ 2>/dev/null)" ] || fail "an item is running"
+}
+
+@test "a row left started by a failed item restarts only by start --brief: the board's Start still refuses it, and a queued item of the row is refused by name" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [/] tidy the loader <!-- id:gm-1 -->'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "%s\n" "$WT_NEW_CMD" > "$NOTES_FIXTURE/cmd"; echo "game-agent-1"'
+  agent-queue add --project game --slug gm-1 --from board:game:gm-1 'tidy the loader' >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'row gm-1 is started and its queue item gm-1 is queued, so no fresh item is filed'
+  agent-queue move gm-1 done --status failed >/dev/null 2>&1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --agent --raw '- [/] tidy the loader <!-- id:gm-1 -->'
+  assert_failure
+  assert_output --partial 'row no longer open: gm-1'
+  [ -z "$(qitem queued gm-1)" ] || fail "the board's Start filed an item for a started row"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_success
+  grep -qF 'AGENT_QUEUE_ITEM=gm-1' "$NOTES_FIXTURE/cmd" || fail "the session does not know its item"
+  assert_equal "$(agent-queue show gm-1 --json | jq -r .state)" running
+}
+
+# 2026-11-22 (ar-4654): a red's row whose item closed ok with no PR sat started 72h with no owner.
+@test "promote --restart files a fresh item for a row its item closed ok with no PR; one with a PR, or without --restart, is refused" {
+  project game beta "$SANDBOX/repos/game"
+  # the ok close closes its row (close_row_on_item); the row is written after it, as one whose close failed
+  agent-queue add --project game --slug gm-1 --from board:game:gm-1 'tidy the loader' >/dev/null
+  agent-queue move gm-1 done --status ok >/dev/null 2>&1
+  row game agent gm-1 '- [/] tidy the loader <!-- id:gm-1 -->'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --agent --raw '- [/] tidy the loader <!-- id:gm-1 -->'
+  assert_failure
+  assert_output --partial 'row no longer open: gm-1'
+  [ -z "$(qitem queued gm-1)" ] || fail "a promote without --restart filed an item for a started row"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --agent --restart --raw '- [/] tidy the loader <!-- id:gm-1 -->'
+  assert_success
+  [ -n "$(qitem queued gm-1)" ] || fail "no fresh item for the row"
+  grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "the row is not left started"
+  # negative control: an ok item that records a PR is the orphan pass's (land_orphan), never restarted
+  agent-queue add --project game --slug gm-2 --from board:game:gm-2 'fix the saver' >/dev/null
+  agent-queue move gm-2 done --status ok >/dev/null 2>&1
+  agent-queue set gm-2 pr=o/r#5 >/dev/null
+  row game agent gm-2 '- [/] fix the saver <!-- id:gm-2 -->'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile bnb --agent --restart --raw '- [/] fix the saver <!-- id:gm-2 -->'
+  assert_failure
+  assert_output --partial 'queue item gm-2 is done ok, so no fresh item is filed'
+  [ -z "$(qitem queued gm-2)" ] || fail "restarted a row whose item records a PR"
+}
+
 # 2026-11-19: a start of an open agent row without --agent was told "row no longer open".
 @test "start --brief without --agent finds an agent row on the agent board; a row on neither board is named as missing" {
   project game beta "$SANDBOX/repos/game"
@@ -906,7 +992,7 @@ load 'fleet_dispatch/common'
   [[ "$line" == *":: trap rm\\ -f\\ "*"/srt-ses_eval"*".json EXIT; trap 'exit 129' HUP TERM; fleet-bench canary start c-7 && { timeout 180m env -i "* ]] || fail "no canary start then env -i: $line"
   # Why the session ended is written once to the item, read once the run is over where it ran; the score reads it from the item,
   # and keeps the run's own lines of the harness's log beside its canary log (run-log, ar-4133).
-  [[ "$line" == *"; fleet-dispatch record-end fix-menu paid ses_eval"*"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu BENCH_CANARY_RUN_LOG=fleet-dispatch\\ run-log\\ paid\\ ses_eval"*" fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
+  [[ "$line" == *"; fleet-dispatch record-end fix-menu paid ses_eval"*"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu BENCH_CANARY_RUN_LOG=fleet-dispatch\\ run-log\\ paid\\ ses_eval"*" fleet-bench canary score c-7 && fleet-dispatch canary-close fix-menu; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
   [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu "*"XDG_DATA_HOME=$qr/data "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "opencode is not inside srt: $line"
   # The config is named by its target, which the sandbox re-allows; a link inside a masked dir would not resolve.
   [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json") "* ]] || fail "config not by its target: $line"
@@ -928,7 +1014,7 @@ load 'fleet_dispatch/common'
   printf '#!/usr/bin/env bash\necho "srt ${*: -1} key=${LITELLM_MASTER_KEY:-none} tmp=$TMPDIR" >> %q\n' "$pane/log" > "$pane/srt"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' timeout "$pane/log" > "$pane/timeout"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
-  printf '#!/usr/bin/env bash\n[ "$1" != run-result ] || echo "no queue item"\n[ "$1" != record-end ] || echo "fleet-dispatch $*" >> %q\n' "$pane/log" > "$pane/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ "$1" != run-result ] || echo "no queue item"\n[ "$1" != record-end ] && [ "$1" != canary-close ] || echo "fleet-dispatch $*" >> %q\n' "$pane/log" > "$pane/fleet-dispatch"
   chmod +x "$pane"/*
   run env START_FAILS=1 PATH="$pane:$PATH" bash -c "${line#* :: }"
   assert_failure 1
@@ -937,7 +1023,7 @@ load 'fleet_dispatch/common'
   : > "$pane/log"; PATH="$pane:$PATH" bash -c "${line#* :: }"
   # Then the replay: srt again, on the run's session id (the last argument).
   run cut -d' ' -f1-3 "$pane/log"
-  assert_equal "$(head -n 6 <<<"$output")" "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-dispatch record-end fix-menu' 'fleet-bench canary score' 'srt oracle-cmd key=none' 'agent-queue move fix-menu')"
+  assert_equal "$(head -n 6 <<<"$output")" "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-dispatch record-end fix-menu' 'fleet-bench canary score' 'srt oracle-cmd key=none' 'fleet-dispatch canary-close fix-menu')"
   [[ "$(sed -n 7p <<<"$output")" == "srt ses_eval"*" key=none" ]] || fail "no replay after the score: $output"
   grep -q '^fleet-dispatch record-end fix-menu paid ses_eval' "$pane/log" || fail "the end was not recorded on the item: $(cat "$pane/log")"
   grep -qx 'fleet-bench canary score c-7' "$pane/log" || fail "the score was given more than the task: $(cat "$pane/log")"
@@ -986,7 +1072,7 @@ agy_ready() {
   printf '#!/usr/bin/env bash\nif [ "$1" = --output-format ]; then cat %q; else echo "agy tui $*" >> %q; fi\n' \
     "$REPO_ROOT/tests/fixtures/harness-contract/agy-success.jsonl" "$pane/log" > "$pane/agy"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
-  printf '#!/usr/bin/env bash\n[ "$1" != record-end ] || exec %q "$@"\necho "no queue item"\n' "$REPO_ROOT/.local/bin/fleet-dispatch" > "$pane/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ "$1" != record-end ] || exec %q "$@"\n[ "$1" != canary-close ] || echo "fleet-dispatch $*" >> %q\necho "no queue item"\n' "$REPO_ROOT/.local/bin/fleet-dispatch" "$pane/log" > "$pane/fleet-dispatch"
   chmod +x "$pane"/*
   PATH="$pane:$PATH" bash -c "${line#* :: }" >/dev/null
   run cat "$pane/log"
@@ -994,7 +1080,7 @@ agy_ready() {
   assert_line --index 1 'srt key=none'
   assert_line --index 2 'agent-queue set fix-menu end_reason=stopped'
   assert_line --index 3 'fleet-bench canary score c-7'
-  assert_line --index 4 'agent-queue move fix-menu done --status ok'
+  assert_line --index 4 'fleet-dispatch canary-close fix-menu'
   assert_line --index 6 'agy tui --conversation 8138a473-5239-47fc-afb9-b84f14384328'
   log=$(ls "$runs"/agy_*.jsonl)
   assert_equal "$(jq -r .event "$log" | sed -n '1p;$p' | tr '\n' ' ')" 'start exit '
@@ -1239,6 +1325,7 @@ trainee_start_ready() {
 
 @test "trainee-review: a run with no diff says what ended its session (provider, timeout), and 'left no diff' only when the model finished its turn" {
   trainee_start_ready
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
   m="$SANDBOX/main" && git init -q "$m" && printf 'a\n' > "$m/menu.txt"
   git -C "$m" add menu.txt && git -C "$m" -c user.name=t -c user.email=t@t commit -qm base
   w="$SANDBOX/wt" && git -C "$m" worktree add -q "$w" 2>/dev/null
@@ -1248,13 +1335,30 @@ trainee_start_ready() {
               't-stop|stop|-|60|paid:glm left no diff'; do
     IFS='|' read -r slug finish etype secs want <<<"$spec"
     agent-queue add --project game --slug "$slug" --priority high --tags tier1 "Fix the $slug title #pts/1" >/dev/null
-    agent-queue set "$slug" agent=paid model=glm trainee=paid:glm host=elsewhere >/dev/null; agent-queue move "$slug" running >/dev/null
+    agent-queue set "$slug" agent=paid model=glm trainee=paid:glm host=elsewhere "lane_run=run-$slug" >/dev/null; agent-queue move "$slug" running >/dev/null
     agent-queue claim "$slug" --sid "ses_eval${slug#t-}" >/dev/null
     oc_session "ses_eval${slug#t-}" "$finish|$etype" "$secs"
     run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review $slug"
     assert_success
     assert_output --partial "trainee-reject: $slug is back in the queue, on claude: $want"
   done
+  # An end outside the model is queued again unrated, with that end on the item, and never filed as the trainee's redo.
+  grep -qx 'model-lane outcome run-t-prov unrated --why paid:glm'"'"'s session ended on a provider refusal or error (end provider: a rate limit, budget or provider fault), with no diff --cause provider' "$NOTES_FIXTURE/calls.log" || fail "a provider end filed no unrated run: $(cat "$NOTES_FIXTURE/calls.log")"
+  grep -qx 'model-lane outcome run-t-prov unrated --cause provider' "$NOTES_FIXTURE/calls.log" || fail "a provider end's requeue filed no unrated cause"
+  grep -qx 'model-lane outcome run-t-time unrated --why paid:glm'"'"'s session ran out its harness timeout (end timeout), with no diff --cause timeout' "$NOTES_FIXTURE/calls.log" || fail "a timeout filed no unrated run"
+  grep -qx 'model-lane outcome run-t-time unrated --cause timeout' "$NOTES_FIXTURE/calls.log" || fail "a timeout's requeue filed no unrated cause"
+  ! grep -E 'run-t-(prov|time) redo' "$NOTES_FIXTURE/calls.log" || fail "an end outside the model was filed as a redo"
+  assert_equal "$(agent-queue show t-prov --json | jq -r '[.state, .end_reason] | join(" ")')" 'queued provider'
+  assert_equal "$(agent-queue show t-time --json | jq -r '[.state, .end_reason] | join(" ")')" 'queued timeout'
+  # Negative control: the model finished its turn and left nothing, so that is the trainee's redo.
+  grep -qx 'model-lane outcome run-t-stop redo --why paid:glm left no diff --cause reject' "$NOTES_FIXTURE/calls.log" || fail "a model that gave up is no redo"
+  # --end takes an outside end only.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-stop --end stopped --why x
+  assert_failure 2; assert_output --partial 'trainee-reject: --end is one of'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-stop --end timeout --cause blocked --why x
+  assert_failure 2; assert_output --partial 'give one'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-stop --cause provider --why x
+  assert_failure 2; assert_output --partial '--cause is one of'
 }
 
 @test "trainee-review: a no-diff run that declares already-fixed or blocked files its run unrated with that cause, never a reject; an unknown word, no file, or a real diff beside the file is as before" {
@@ -1292,6 +1396,36 @@ trainee_start_ready() {
   run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-diff"
   assert_success; assert_output --partial 'lanes.yaml names no trainee reviewer'
   refute_output --partial 'no diff'
+}
+
+@test "canary-close: a canary run that ended in the model closes ok; one that ended outside it (provider, timeout) is queued again unrated, once" {
+  trainee_start_ready
+  stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
+  FD="$REPO_ROOT/.local/bin/fleet-dispatch"
+  for spec in "c-stop|stopped" "c-prov|provider" "c-time|timeout"; do
+    IFS='|' read -r slug end <<<"$spec"
+    agent-queue add --project game --slug "$slug" --priority high --tags tier1 "Canary $slug #pts/1" >/dev/null
+    agent-queue set "$slug" "lane_run=run-$slug" >/dev/null; agent-queue move "$slug" running >/dev/null
+    agent-queue set "$slug" "end_reason=$end" >/dev/null
+    run "$FD" canary-close "$slug"
+    assert_success
+  done
+  assert_equal "$(agent-queue show c-stop --json | jq -r '[.state, .status] | join(" ")')" 'done ok'
+  # Outside the model: back in the queue with its end, its run filed unrated (a provider end by itself, a timeout by its cause).
+  assert_equal "$(agent-queue show c-prov --json | jq -r '[.state, .end_reason] | join(" ")')" 'queued provider'
+  assert_equal "$(agent-queue show c-time --json | jq -r '[.state, .end_reason] | join(" ")')" 'queued timeout'
+  grep -qx 'model-lane outcome run-c-prov unrated --cause provider' "$NOTES_FIXTURE/calls.log" || fail "a provider end filed no unrated run: $(cat "$NOTES_FIXTURE/calls.log")"
+  grep -qx 'model-lane outcome run-c-time unrated --cause timeout' "$NOTES_FIXTURE/calls.log" || fail "a timeout filed no unrated run"
+  ! grep -E 'run-c-(prov|time) redo' "$NOTES_FIXTURE/calls.log" || fail "an end outside the model was filed as a redo"
+  # Once: the same item running again and ending outside the model again closes ok (its score row reads not run).
+  agent-queue move c-time running >/dev/null; agent-queue set c-time end_reason=timeout >/dev/null
+  run "$FD" canary-close c-time
+  assert_success
+  assert_equal "$(agent-queue show c-time --json | jq -r '[.state, .status] | join(" ")')" 'done ok'
+  run "$FD" canary-close
+  assert_failure 2
+  run "$FD" canary-close no-such-item
+  assert_failure 1
 }
 
 @test "trainee_waiting fetches the patch a trainee run left on its fleet worker; a run here, or a worker with no patch, fetches nothing" {

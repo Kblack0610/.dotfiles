@@ -6,7 +6,11 @@
 //! copy, a second reader or a gate with no number), or the row is health work as `notes improve --check` judges it (`improve::health_of`,
 //! the one list, which `notes improve` itself refuses). Anything else is an improvement, kept by
 //! `notes improve`, never a row dispatch can pick. A plan's phases come through `agent-queue add --plan`, a direct filer, and a person's
-//! own words are never gated, so neither reaches this check.
+//! own words are never gated, so neither reaches this check. A phase's session that splits its
+//! phase into rows files them as follow-ups, which do: one whose `#from/<id>` names a row a plan
+//! filed and whose reason is a fault or epic work is that phase's pass and is admitted
+//! ([`split_admits`]; ar-5824, where the rest pass of a split phase went to improvements as no
+//! evidenced fault). Polish from the same session is still refused.
 //!
 //! The daily cap (`intake_daily_cap`, [`cap_refusal`]) is a separate test, on every row the gate
 //! admits and every writer the gate never asks, and on every project's agent board, gated or not
@@ -33,6 +37,12 @@ const ASKED: &str = "requested";
 /// pulled forward because it blocks landing or dispatch, answers a live red, or is a small fix;
 /// ar-6307). It is no red or outage: a new row carrying it is refused, and it passes no cap.
 const RANKED: &str = "quick-fault";
+
+/// The high reason fleet-bench triage gives the row it files for one firing fleet alert. It passes
+/// the daily cap like an urgent red, counted but never refused: what fires bounds these rows, each
+/// closes when its alert clears, and one held had no row and no fix (ar-4296, ask 3bydq8: 15 alert
+/// rows were refused on 2026-11-27).
+const FIRING: &str = "firing-alert";
 
 /// The reasons that admit a row at any level: the human's scope for the runtime board, source-of-truth
 /// and efficiency work (delightful-leaf P4, ar-5605).
@@ -72,6 +82,42 @@ fn refusal_in(all: &[Reason], project: &str, row: &str, wanted: bool) -> Option<
         "{project} takes a session's row only as an evidenced fault, source-of-truth work, a plan phase or the person's ask (QUEUE.md \"Admission\"), and {why}: give the reason that names its evidence (--why {}), file a phase with `agent-queue add --plan`, pass the person's ask with --want, or keep it with `notes improve {project} -- \"<text>\"`, so nothing was added",
         admitting.join("|")
     ))
+}
+
+/// The reasons a plan phase's split is admitted at below high: its passes are the phase's own fault
+/// or epic work, never a feature or polish the session thought of on the way (ar-5824 review).
+const SPLIT: [&str; 2] = ["fault", "epic-turn"];
+
+/// Whether `row`, filed for a session's follow-up `line`, is a pass of a plan phase the gate admits:
+/// its reason is one of [`SPLIT`] and `line` is part of a plan phase ([`plan_phase`]).
+pub(crate) fn split_admits(p: &Profile, line: &str, row: &str) -> bool {
+    split_reason(row) && plan_phase(p, line)
+}
+
+/// Whether `row`'s `#why/` is one of [`SPLIT`].
+fn split_reason(row: &str) -> bool {
+    reasons::slug_of(row).is_some_and(|s| SPLIT.contains(&s.as_str()))
+}
+
+/// Whether a session's follow-up `line` is part of a plan phase: its `#from/<id>` names a row a
+/// plan filed (`agent-queue add --plan`, recorded `added` with origin `plan`). A follow-up from any
+/// other item, or with no `#from/`, is not. The tie is the record's, not the phase row's state: the
+/// phase's session often lands before the sweep files its split.
+fn plan_phase(p: &Profile, line: &str) -> bool {
+    let Some(from) = crate::project_tasks::origin_item(line) else {
+        return false;
+    };
+    let mark = format!("\"origin\":\"{}\"", crate::project_tasks::ORIGIN_PLAN);
+    phase_of(&ingest::matching(p, |l| l.contains(&mark)), &from)
+}
+
+/// Whether `events` hold the `added` event of row `id` with origin `plan`.
+fn phase_of(events: &[Event], id: &str) -> bool {
+    events.iter().any(|e| {
+        e.action == "added"
+            && e.origin.as_deref() == Some(crate::project_tasks::ORIGIN_PLAN)
+            && e.id.as_deref().is_some_and(|i| i.eq_ignore_ascii_case(id))
+    })
 }
 
 /// The record's action for a row the cap turned away, which `notes ingest cap` and fleet-bench's
@@ -117,13 +163,15 @@ fn admitted(events: &[Event], project: &str) -> usize {
 }
 
 /// Whether the cap lets `row` through whatever the day's count: the person's want, or a row whose
-/// `#why` is an urgent reason (a red, an outage). `requested` is no reason a session may give itself,
+/// `#why` is an urgent reason (a red, an outage) or [`FIRING`]. `requested` is no reason a session may give itself,
 /// and [`RANKED`] ranks a row already on the board, so neither lets a new one past the cap.
 fn cap_exempt(all: &[Reason], row: &str, wanted: bool) -> bool {
     wanted
         || reasons::slug_of(row).is_some_and(|s| {
             all.iter().any(|r| {
-                r.slug == s && r.slug != ASKED && r.slug != RANKED && r.priority == "urgent"
+                r.slug == s
+                    && (r.slug == FIRING
+                        || (r.slug != ASKED && r.slug != RANKED && r.priority == "urgent"))
             })
         })
 }
@@ -132,7 +180,7 @@ fn cap_exempt(all: &[Reason], row: &str, wanted: bool) -> bool {
 fn cap_why(project: &str, taken: usize, cap: usize) -> Option<String> {
     (taken >= cap).then(|| {
         format!(
-            "{project} has taken its {cap} new agent rows for today ({taken} so far, intake_daily_cap in the notes config, QUEUE.md \"Admission\"): the person's words (--want) and an urgent red (--why with an urgent reason other than quick-fault) are never held, so keep this one with `notes improve {project} -- \"<text>\"` or file it again tomorrow, and nothing was added"
+            "{project} has taken its {cap} new agent rows for today ({taken} so far, intake_daily_cap in the notes config, QUEUE.md \"Admission\"): the person's words (--want), a firing alert (--why firing-alert) and an urgent red (--why with an urgent reason other than quick-fault) are never held, so keep this one with `notes improve {project} -- \"<text>\"` or file it again tomorrow, and nothing was added"
         )
     })
 }
@@ -312,6 +360,56 @@ mod tests {
         assert_eq!(refusal("unity-core-playground", row, false).unwrap(), None);
     }
 
+    #[test]
+    fn a_follow_up_from_a_plan_filed_row_is_a_plan_phase_and_one_from_any_other_is_not() {
+        let added = |id: &str, origin: Option<&str>| {
+            let mut e = Event::new("added", "agent-runtime", "", "feat(x): P3 focus passes");
+            e.id = Some(id.into());
+            e.origin = origin.map(str::to_string);
+            e
+        };
+        let events = [
+            added("ar-5604", Some("plan")),
+            added("ar-5773", Some("agent-queue")),
+            added("ar-9", None),
+        ];
+        assert!(
+            phase_of(&events, "ar-5604"),
+            "the row a plan filed (ar-5824)"
+        );
+        assert!(phase_of(&events, "AR-5604"));
+        // NEGATIVE CONTROLS: a row another writer filed, one with no origin, one not in the record.
+        for id in ["ar-5773", "ar-9", "ar-1"] {
+            assert!(!phase_of(&events, id), "{id}");
+        }
+        // The line's tie is its `#from/`; a line with none ties to no row.
+        assert_eq!(
+            crate::project_tasks::origin_item(
+                "#agent #from/ar-5604 fix(rest): focus pass, views, skills and the rest #normal"
+            )
+            .as_deref(),
+            Some("ar-5604")
+        );
+        assert_eq!(
+            crate::project_tasks::origin_item("fix(rest): focus pass #normal"),
+            None
+        );
+        // A pass of the phase is its fault or epic work; polish or a feature from it is not.
+        assert!(split_reason(
+            "fix(views): focus pass over the 43 views rows #normal #why/fault"
+        ));
+        assert!(split_reason(
+            "feat(x): the next step #normal #why/epic-turn"
+        ));
+        for row in [
+            "chore(ui): a nicer empty state #low #why/upkeep",
+            "feat(ui): a new view #normal #why/feature",
+            "fix(ui): no reason #normal",
+        ] {
+            assert!(!split_reason(row), "{row}");
+        }
+    }
+
     fn ev(action: &str, from: &str, to: &str, text: &str) -> Event {
         let mut e = Event::new(action, from, to, text);
         e.lane = "agent".into();
@@ -384,9 +482,18 @@ mod tests {
     }
 
     #[test]
-    fn the_person_and_an_urgent_red_pass_the_cap_and_a_high_reason_or_requested_does_not() {
+    fn the_person_an_urgent_red_and_a_firing_alert_pass_the_cap_and_a_high_reason_or_requested_does_not(
+    ) {
         let r = list();
         assert!(cap_exempt(&r, "- [ ] fix(a): b #why/outage", false));
+        assert!(
+            cap_exempt(
+                &r,
+                "- [ ] check(alert): NodeQuarantined razer firing #high #why/firing-alert",
+                false
+            ),
+            "a firing alert"
+        );
         assert!(
             cap_exempt(&r, "- [ ] fix(a): b #normal", true),
             "the person's want"
@@ -399,6 +506,8 @@ mod tests {
             "- [ ] fix(a): b #urgent #why/quick-fault",
             "- [ ] fix(a): b #urgent",
             "- [ ] fix(a): b",
+            "- [ ] check(alert): NodeQuarantined razer firing #high #why/runtime-fault",
+            "- [ ] check(alert): NodeQuarantined razer firing #high",
         ] {
             assert!(!cap_exempt(&r, row, false), "{row}");
         }

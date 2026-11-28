@@ -28,7 +28,12 @@ STATE_DIR="${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}
 WATCHES="${WATCH_DIR:-${SENTINEL_WATCHES:-$HOME/.agent/watches}}"
 WSTATE="${WATCH_STATE_DIR:-${SENTINEL_STATE:-$HOME/.local/state/watch-companion}}"
 CACHE="${AGENT_MQTT_CACHE:-$HOME/.local/state/agent-mqtt}"
-BAR_TIMEOUT="${AGENT_MQTT_BAR_TIMEOUT:-20}" # seconds `hub bar --json` may run: it makes agent-queue calls, so a locked store must not hold the publish lock
+# Seconds each slow reader may run (slow_reader). fleet-dispatch stats and the hub readers read the
+# agent-queue store, so a locked store must not hold the publish lock or the --full run past
+# TimeoutStartSec=60 (agent-mqtt-publish.service, private overlay): the lock wait (20s) plus this and
+# its 2s KILL grace leaves 13s for the publishes, which took under 5s on 2026-11-27 (ar-1486).
+READER_TIMEOUT="${AGENT_MQTT_READER_TIMEOUT:-25}"
+[[ "$READER_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || READER_TIMEOUT=25
 READER_TTL=45 # seconds: under fleet-state.timer's minute, so the slow readers render at least once a tick
 # Same staleness rule fleet.sh uses (one lib, so the two never disagree).
 _WATCH_LIB="${SENTINEL_WATCH_LIB:-$HOME/.local/lib/sentinel-watch.sh}"
@@ -155,15 +160,22 @@ hand_fired() {
     ! grep -qE '^(SCHEDULE=["'"'"']?[^"'"'"' ]|AUTOSTART=["'"'"']?yes)' "$1"
 }
 
+# sent_within <file> <secs> -> rc 0 when outside a dry run <file> is a sent payload younger than <secs>.
+sent_within() { [ "$mode" != dry ] && [ -f "$1" ] && (($(date +%s) - $(date -r "$1" +%s) < $2)); }
+
 # slow_reader <fd var> <kind/id> <cmd...> -> sets <fd var> to an fd that yields the command's output,
-# started now and printed only on success; or, outside a dry run, the last payload sent on that topic
-# when it is younger than READER_TTL.
+# started now, cut off after READER_TIMEOUT (then KILLed 2s on) and printed only on success; or, outside
+# a dry run, the last payload sent on that topic when it is younger than READER_TTL. A reader cut off
+# yields that last payload while it is younger than EXPIRE_AFTER, so a slow pass keeps the HA entity
+# instead of deleting it; one that keeps hanging past that drops the topic. A failed reader yields nothing.
 slow_reader() {
     local var="$1" sent fd; sent="$(tfile "agents/$HOST_ID/$2")"; shift 2
-    if [ "$mode" != dry ] && [ -f "$sent" ] && (($(date +%s) - $(date -r "$sent" +%s) < READER_TTL)); then
+    if sent_within "$sent" "$READER_TTL"; then
         exec {fd}< "$sent"
     else
-        exec {fd}< <(out="$("$@" 2>/dev/null)" && printf '%s' "$out")
+        exec {fd}< <(out="$(timeout -k 2 "$READER_TIMEOUT" "$@" 2>/dev/null)"; rc=$?
+            if [ "$rc" = 0 ]; then printf '%s' "$out"
+            elif [ "$rc" -ge 124 ] && sent_within "$sent" "$EXPIRE_AFTER"; then cat "$sent"; fi)
     fi
     printf -v "$var" '%s' "$fd"
 }
@@ -229,14 +241,14 @@ feed_lines() {
 snapshot() {
     local f name st dfd='' ofd='' cfd='' bfd=''
 
-    # The slow readers (fleet-dispatch stats, hub phone, hub bar, hub cards: 2s to 21s at load) start here
-    # and run while the runner and watch loops do, so a run costs the slowest, not the sum (ar-1753). A run
-    # within READER_TTL of a reader's last send repeats that send: hooks fire many times a minute, and
-    # each re-running the readers under the lock starved the --full timer run past its 60s (ar-2310).
+    # The slow readers (fleet-dispatch stats, hub phone, hub bar, hub cards: 2s to 21s at load, each capped
+    # at READER_TIMEOUT) start here and run while the runner and watch loops do, so a run costs the slowest,
+    # not the sum (ar-1753). A run within READER_TTL of a reader's last send repeats that send: hooks fire
+    # many times a minute, and each re-running the readers under the lock starved the --full run (ar-2310).
     dispatch_here && slow_reader dfd summary/dispatch fleet-dispatch stats
     command -v hub >/dev/null 2>&1 && slow_reader ofd summary/overview env PROM_TIMEOUT=3 hub phone --json
-    bar_here && slow_reader bfd summary/bar timeout "$BAR_TIMEOUT" hub bar --json
-    bar_here && slow_reader cfd summary/cards timeout 25 env PROM_TIMEOUT=3 hub cards --json --figures
+    bar_here && slow_reader bfd summary/bar hub bar --json
+    bar_here && slow_reader cfd summary/cards env PROM_TIMEOUT=3 hub cards --json --figures
 
     # Runners: the roster is the conf dir, so a retired runner drops out of HA with its conf.
     for f in "$CONFIG_DIR"/*.conf; do
@@ -285,14 +297,14 @@ snapshot() {
         [ "$paused" = false ] && watch_is_stale "$f" "$lr" && stale=true
         emit watch "$name" mdi:eye "$(jq -cn \
             --arg state "${ws:-NEW}" --argjson paused "$paused" --argjson stale "$stale" \
-            --arg severity "$(watch_severity "$f")" \
+            --arg severity "$(watch_trip_level "$f" "$WSTATE")" \
             --arg since "$(iso "$since")" --argjson since_epoch "$(num "$since")" \
             --arg lastrun "$(iso "$lr")" --argjson quarantined "$quarantined" \
             '{state: $state, paused: $paused,
               since: (if $since == "" then null else $since end),
               last_run: (if $lastrun == "" then null else $lastrun end),
               tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale, since_epoch: $since_epoch,
-              # The manifest severity, ranked because mqtt2prom drops text: the command-center
+              # The level of the trip on (a probe page: line) else the manifest severity, ranked because mqtt2prom drops text: the command-center
               # catch-all reads mqtt_severity_rank to warn on a tripped low watch instead of going red.
               severity: $severity, severity_rank: {low: 1, normal: 2, high: 3, urgent: 4}[$severity],
               # A red its owner took on with an expiry: the rollup counts it a warning, not down.

@@ -122,6 +122,52 @@ load 'agent_land/common'
   [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | head -1 | cut -d: -f1)" ]
 }
 
+@test "behind main before the checks, but the head's own run is pending or green: it is waited on first, and the base merged up only after it (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead" "$NOTES_FIXTURE/head.single"
+  printf '2\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "fetch: the head's own checks are pending or green; waiting on them before any merge of origin/main"
+  assert_line 'landed #42'
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | head -1 | cut -d: -f1)" ]
+  second_wait
+}
+
+@test "a merged-up head whose run is pending, re-run after a checks timeout: that run is the re-check, so the green head lands behind the moved base (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '3\n' >"$NOTES_FIXTURE/behind"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head; landing that green head behind it (no strict checks on main)'
+  assert_line 'landed #42'
+  run grep -c '^git merge -q --no-edit origin/main$' "$LOG"
+  assert_output 0
+}
+
+@test "behind main before the checks with the head's run pending, but the base conflicts: exit 3 before any wait, as before (ar-5865)" {
+  echo live >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '2\n' >"$NOTES_FIXTURE/behind"
+  touch "$NOTES_FIXTURE/tree.conflicts"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'merging it conflicts'
+  run grep -c 'pr checks 42 --watch\|pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "behind main before the checks with a failed check on the head: merged up before the gate, as with no checks (ar-5865)" {
+  echo stale >"$NOTES_FIXTURE/checks.live"
+  touch "$NOTES_FIXTURE/base.ahead"
+  printf '2\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_line --partial "the head's own checks are pending or green"
+  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)" -lt "$(grep -n 'pr checks 42 --watch' "$LOG" | head -1 | cut -d: -f1)" ]
+}
+
 @test "behind main before the checks and the merge conflicts: exit 3, no checks, no merge" {
   printf '2\n' >"$NOTES_FIXTURE/behind"
   touch "$NOTES_FIXTURE/merge.conflicts"
@@ -203,6 +249,57 @@ load 'agent_land/common'
   assert_output 1
 }
 
+@test "no strict checks and the base moves on again by a commit that changes a file the head changes: merged up and re-checked, never landed behind it (#2962, #2963)" {
+  printf '0\n1\n3\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' .local/bin/agent-land tests/unit/agent_land.bats README.md >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land tests/unit/agent_land.bats docs/x.md >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head, but it changes files the head changes (.local/bin/agent-land, tests/unit/agent_land.bats); merging it up and re-checking'
+  refute_output --partial 'landing that green head behind it'
+  moved_again 2 3
+  [ "$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" ]
+  [ "$(grep -n 'pr checks' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "the base moves on again by a commit on the head's files and the re-checked head goes red: never merged" {
+  printf '0\n1\n3\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' green green 'Checks	fail	1m' >"$NOTES_FIXTURE/checks.seq"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'merging it up and re-checking'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 2
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "the base keeps changing the head's files past CATCHUP_OVERLAP_WAITS runs: exits 3, never merged, never behind it" {
+  printf '0\n1\n3\n3\n3\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'agent-land: origin/main moved on by 3 after 3 checks runs, and it changes files the head changes (.local/bin/agent-land): merge it, push and re-run once it settles'
+  refute_output --partial 'landing that green head behind it'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 3
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 4
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "the base moves on again by files the head does not change: the green head still lands behind it" {
+  printf '0\n1\n3\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '%s\n' README.md >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' .local/bin/agent-land >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: origin/main moved on by 3 during the checks on the merged-up head; landing that green head behind it (no strict checks on main)'
+  moved_again 1 2
+}
+
 # pick_fixture: a checkout whose tests/pick.sh answers from files, so the head's pick (mine.<tier>) and
 # the base's new files' pick (theirs.<tier>, read when PICK_CHANGED is set) are named by the case.
 # pick.fail: the picker exits 1; picked.yes: a test file the base added is picked by the head's changes; theirs.full: the base's pick is the whole tier ("(full: ...)" on stderr).
@@ -253,6 +350,17 @@ EOS
   refute_output --partial 'none of it can affect'
   run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
   assert_output 1
+}
+
+@test "main's new files pick no test the head's run picked, but change a file the head changes: merged up and re-run, not landed behind" {
+  pick_fixture
+  printf '%s\n' unit/b.bats >"$PICKDIR/theirs.unit"
+  printf '%s\n' docs/x.md >"$NOTES_FIXTURE/base.files"
+  printf '%s\n' docs/x.md >"$NOTES_FIXTURE/head.files"
+  run "$LAND" 42 --item ship
+  assert_line 'fetch: origin/main moved on by 1 and none of it can affect a test the head'"'"'s own run picked, but it changes files the head changes (docs/x.md); merging it up and re-checking'
+  refute_output --partial 'landing that green head behind it'
+  moved_again 1 2
 }
 
 @test "main's new files pick only the broad set, which every head runs: they do not count as shared" {
@@ -607,6 +715,8 @@ gh pr edit 42 --body-file -
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr  --sha  --why open_pr=o/r#42 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[] | .filename, (.previous_filename // empty)
 git fetch -q origin
+git merge-base --is-ancestor origin/main HEAD
+git fetch -q origin
 git rev-list --count HEAD..origin/main
 git grep -qF shape-grow HEAD -- .github/workflows
 git merge-base HEAD origin/main
@@ -796,7 +906,7 @@ EOF
   assert_output 0
 }
 
-@test "a failing PR check stops before the second fetch and the merge, naming the check" {
+@test "a failing PR check stops before the after-gate fetch and the merge, naming the check" {
   printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
   printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
   run "$LAND" 42 --item ship
@@ -804,8 +914,9 @@ EOF
   assert_output --partial 'checks failed: Checks'
   run grep -c 'pr merge\|^notes' <(not_recorded)
   assert_output 0
+  # head_checks_live's fetch, then catch_up before's; catch_up after's never runs
   run grep -c '^git fetch' "$LOG"
-  assert_output 1
+  assert_output 2
 }
 
 @test "no checks reported: polled a bounded number of times, then it lands" {

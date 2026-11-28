@@ -48,6 +48,8 @@ EOF
   # -w (the anonymous run-page reads) is answered as curl -w "\n%{http_code}" does, from
   # $FJD/<url without https:// as above>: its code is 200 for a file, else 404, or what <file>.code
   # holds; a POST that asks a step's log (a "step" in its body) is served <file>.logs when it exists.
+  # An API path with <file>.forbid holding N > 0 is refused N more times as the bouncer refuses (a
+  # plain-text 403 "Forbidden"); <file>.403 is Forgejo's own JSON 403, served every time.
   cat > "$SANDBOX/bin/curl-stub" <<EOF
 #!/usr/bin/env bash
 url="\${@: -1}"
@@ -60,6 +62,11 @@ case " \$* " in *" -w "*)
   printf '\\n%s' "\$code"; exit 0 ;;
 esac
 f="$FJD/\$(echo "\${url#*/api/v1/}" | tr '/?&=' '____')"
+if [ -f "\$f.forbid" ] && [ "\$(cat "\$f.forbid")" -gt 0 ]; then
+  echo \$((\$(cat "\$f.forbid") - 1)) > "\$f.forbid"; printf Forbidden
+  echo "curl: (22) The requested URL returned error: 403" >&2; exit 22
+fi
+[ -f "\$f.403" ] && { echo '{"message":"user should have a permission"}'; echo "curl: (22) The requested URL returned error: 403" >&2; exit 22; }
 [ -f "\$f" ] && exec cat "\$f"
 echo "curl: (22) The requested URL returned error: 404" >&2; exit 22
 EOF
@@ -300,93 +307,126 @@ fj_list() { echo '[]' > "$KD/repos"; printf '%s\n' "$@" | jq -Rsc 'split("\n") |
   assert_failure 1
 }
 
-# pending: the nightly:<repo> hold's answer, from a hand-written state file. The desk is in
-# Los Angeles; 2026-11-06 is a Friday, PST, so Tests (10:00 UTC) is 02:00 and Multi (12:30 UTC) 04:30.
-# pstate <synced_at> <test.yml runs> <multi.yml runs>
+# pending: the nightly:<repo> hold's answer, from a hand-written state file and run ledger. The
+# desk is in Los Angeles (PST in 2026-11): the night runner starts a pass at 22:00 local, 06:00 UTC
+# the next day. Only the night set counts: drop-closed-gates.yml fires every 10 minutes all day.
+# pstate <synced_at> [<night set JSON>]
 pstate() {
   mkdir -p "$(dirname "$STATE")"
-  jq -n --arg s "$1" --argjson t "$2" --argjson m "$3" '{repos: [{repo: "o/game", synced_at: $s, workflows: [
-    {path: ".github/workflows/multi.yml", crons: ["30 12 * * *"], timeout_min: 300, runs: $m},
-    {path: ".github/workflows/perf.yml", crons: ["30 13 * * 6"], timeout_min: 60, runs: []},
-    {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300, runs: $t}]}]}' > "$STATE"
+  local set_='{"night": {"test.yml": "Tests (all)"}, "wide": {}, "held": {"soak.yml": "Soak (all)"}}'
+  jq -n --arg s "$1" --argjson n "${2:-$set_}" \
+    '{repos: [{repo: "o/game", base: "main", synced_at: $s, night: $n, workflows: [
+    {path: ".github/workflows/drop-closed-gates.yml", crons: ["*/10 * * * *"], timeout_min: 5,
+     runs: [{id: 90, created_at: $s, status: "in_progress"}]}]}]}' > "$STATE"
 }
-prun() { jq -nc --arg c "$1" --arg s "$2" '[{id: 1, created_at: $c, status: $s}]'; }
+# lrun <id> <file> <title> <branch> <created_at> <status> [<ended_at>]: one ledger row
+lrun() {
+  mkdir -p "$(dirname "$LEDGER")"
+  jq -nc --argjson id "$1" --arg p ".github/workflows/$2" --arg w "$3" --arg b "$4" --arg c "$5" --arg st "$6" --arg e "${7:-}" \
+    '{forge: "github", repo: "o/game", id: $id, attempt: 1, workflow: $w, path: $p, title: $w, branch: $b,
+      event: "workflow_dispatch", status: $st, created_at: $c, ended_at: (if $e == "" then null else $e end)}' >> "$LEDGER"
+}
 pnow() { TZ=America/Los_Angeles date -d "$1" +%s; }
 
-@test "pending: a slot still to come today holds, a finished run releases, a running one holds" {
+@test "pending waits on the night set only: a finished night releases while drop-closed-gates.yml fires all day" {
   export TZ=America/Los_Angeles
-  pstate 2026-11-06T08:55:00Z '[]' '[]'
-  SCHEDULES_NOW="$(pnow '2026-11-06 01:00')" run "$SUBJECT" pending game
-  assert_failure 1
-  assert_output 'multi.yml due 04:30, test.yml due 02:00'
-  pstate 2026-11-06T13:00:00Z "$(prun 2026-11-06T10:04:00Z completed)" "$(prun 2026-11-06T12:41:00Z in_progress)"
-  SCHEDULES_NOW="$(pnow '2026-11-06 05:05')" run "$SUBJECT" pending o/game
-  assert_failure 1
-  assert_output 'multi.yml running'
-  pstate 2026-11-06T14:05:00Z "$(prun 2026-11-06T10:04:00Z completed)" "$(prun 2026-11-06T12:41:00Z completed)"
-  SCHEDULES_NOW="$(pnow '2026-11-06 06:10')" run "$SUBJECT" pending game
+  pstate 2026-11-06T21:55:00Z
+  lrun 1 test.yml "Tests (all)" main 2026-11-06T06:00:00Z completed 2026-11-06T07:10:00Z
+  lrun 90 drop-closed-gates.yml "Drop closed gates" main 2026-11-06T21:50:00Z in_progress
+  # A PR's run of the same file, and a full run on another branch, are not the night.
+  lrun 2 test.yml "Tests (affected)" train/x 2026-11-06T08:00:00Z in_progress
+  lrun 3 test.yml "Tests (all)" fix/x 2026-11-06T07:00:00Z in_progress
+  SCHEDULES_NOW="$(pnow '2026-11-06 14:00')" run "$SUBJECT" pending game
   assert_success
   assert_output ''
-  # A run from yesterday is not today's: Tests' slot has passed with no run of its own yet.
-  pstate 2026-11-06T10:30:00Z "$(prun 2026-11-05T10:04:00Z completed)" '[]'
-  SCHEDULES_NOW="$(pnow '2026-11-06 02:35')" run "$SUBJECT" pending game
-  assert_output 'multi.yml due 04:30, test.yml not started'
-}
-
-@test "pending: a run that never came, or never finished, releases at its slot or start plus the timeout" {
-  export TZ=America/Los_Angeles
-  pstate 2026-11-06T17:25:00Z "$(prun 2026-11-06T10:04:00Z completed)" '[]'
-  SCHEDULES_NOW="$(pnow '2026-11-06 09:29')" run "$SUBJECT" pending game
-  assert_output 'multi.yml not started'
-  pstate 2026-11-06T17:25:00Z "$(prun 2026-11-06T10:04:00Z completed)" '[]'
-  SCHEDULES_NOW="$(pnow '2026-11-06 09:30')" run "$SUBJECT" pending game
-  assert_success
-  # A late run that is still going counts its timeout from its own start.
-  pstate 2026-11-06T17:55:00Z "$(prun 2026-11-06T10:04:00Z completed)" "$(prun 2026-11-06T13:00:00Z in_progress)"
-  SCHEDULES_NOW="$(pnow '2026-11-06 09:59')" run "$SUBJECT" pending game
-  assert_output 'multi.yml running'
+  # NEGATIVE CONTROL: the night member still running holds.
+  lrun 1 test.yml "Tests (all)" main 2026-11-06T06:00:00Z in_progress
+  pstate 2026-11-06T17:55:00Z
+  SCHEDULES_NOW="$(pnow '2026-11-06 09:59')" run "$SUBJECT" pending o/game
+  assert_failure 1
+  assert_output 'test.yml running'
+  # A run unfinished NIGHT_TIMEOUT (12 h) after its start is the watch's red, not a hold.
   SCHEDULES_NOW="$(pnow '2026-11-06 10:00')" run "$SUBJECT" pending game
   assert_success
 }
 
-@test "pending: a weekly cron holds only on its day" {
+@test "pending --day judges the full runs created that date, waiting until the day is over for one not started" {
   export TZ=America/Los_Angeles
-  pstate 2026-11-07T14:00:00Z "$(prun 2026-11-07T10:04:00Z completed)" "$(prun 2026-11-07T12:41:00Z completed)"
-  SCHEDULES_NOW="$(pnow '2026-11-07 06:00')" run "$SUBJECT" pending game
-  assert_output 'perf.yml not started'
-  # Friday's release in the first pending test already shows it holds nothing on other days.
-}
-
-@test "pending --day judges that date's slots, so a finished night stays released the next day" {
-  export TZ=America/Los_Angeles
-  pstate 2026-11-07T16:20:00Z "$(prun 2026-11-06T10:04:00Z completed)" "$(prun 2026-11-06T12:41:00Z completed)"
-  SCHEDULES_NOW="$(pnow '2026-11-07 08:20')" run "$SUBJECT" pending game --day 2026-11-06
+  # The 11-05 night (22:00 local, 06:00 UTC on 11-06) is not the 11-06 one.
+  lrun 1 test.yml "Tests (all)" main 2026-11-06T06:00:00Z completed 2026-11-06T07:10:00Z
+  pstate 2026-11-07T03:55:00Z
+  SCHEDULES_NOW="$(pnow '2026-11-06 20:00')" run "$SUBJECT" pending game --day 2026-11-06
+  assert_failure 1
+  assert_output 'test.yml not started'
+  # The 22:00 pass is judged on its own night after midnight too.
+  lrun 4 test.yml "Tests (all)" main 2026-11-07T06:00:00Z in_progress
+  pstate 2026-11-07T08:55:00Z
+  SCHEDULES_NOW="$(pnow '2026-11-07 01:00')" run "$SUBJECT" pending game --day 2026-11-06
+  assert_failure 1
+  assert_output 'test.yml running'
+  lrun 4 test.yml "Tests (all)" main 2026-11-07T06:00:00Z completed 2026-11-07T07:30:00Z
+  SCHEDULES_NOW="$(pnow '2026-11-07 01:00')" run "$SUBJECT" pending game --day 2026-11-06
   assert_success
   assert_output ''
-  # NEGATIVE CONTROL: without --day the same file is judged by 11-07, whose slots have no runs.
-  SCHEDULES_NOW="$(pnow '2026-11-07 08:20')" run "$SUBJECT" pending game
-  assert_failure 1
-  assert_output 'multi.yml not started'
+  # A night with no run (night.sh skipped it: already passed) releases once its day is over.
+  SCHEDULES_NOW="$(pnow '2026-11-07 01:00')" run "$SUBJECT" pending game --day 2026-11-04
+  assert_success
   run "$SUBJECT" pending game --day 11-06
   assert_failure 2
   run "$SUBJECT" pending game --when 2026-11-06
   assert_failure 2
 }
 
-@test "pending fails closed: no file, a repo not in it, a stale sync, an unreadable cron" {
+@test "pending: a wide member waits for the core step, then its own run, and a skipped one releases after WIDE_START" {
+  export TZ=America/Los_Angeles
+  set_='{"night": {"test.yml": "Tests (all)"}, "wide": {"multi.yml": "Multi (all)"}, "held": {}}'
+  lrun 5 multi.yml "Multi (all)" main 2026-11-06T07:30:00Z completed 2026-11-06T08:00:00Z
+  lrun 6 test.yml "Tests (all)" main 2026-11-07T06:00:00Z in_progress
+  pstate 2026-11-07T07:00:00Z "$set_"
+  SCHEDULES_NOW="$(pnow '2026-11-06 23:05')" run "$SUBJECT" pending game
+  assert_output 'test.yml running'
+  # Core done at 23:10; last night's Multi run is not this pass's.
+  lrun 6 test.yml "Tests (all)" main 2026-11-07T06:00:00Z completed 2026-11-07T07:10:00Z
+  pstate 2026-11-07T07:15:00Z "$set_"
+  SCHEDULES_NOW="$(pnow '2026-11-06 23:20')" run "$SUBJECT" pending game
+  assert_failure 1
+  assert_output 'multi.yml not started'
+  pstate 2026-11-07T07:35:00Z "$set_"
+  SCHEDULES_NOW="$(pnow '2026-11-06 23:40')" run "$SUBJECT" pending game
+  assert_success
+  lrun 7 multi.yml "Multi (all)" main 2026-11-07T07:12:00Z in_progress
+  SCHEDULES_NOW="$(pnow '2026-11-06 23:40')" run "$SUBJECT" pending game
+  assert_failure 1
+  assert_output 'multi.yml running'
+}
+
+@test "pending fails closed: no file, a repo not in it, a stale sync, no night set, no full run, no ledger" {
   export TZ=America/Los_Angeles
   SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
   assert_failure 1; assert_output 'no schedules state'
-  pstate 2026-11-06T19:40:00Z "$(prun 2026-11-06T10:04:00Z completed)" "$(prun 2026-11-06T12:41:00Z completed)"
+  pstate 2026-11-06T19:40:00Z
+  SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
+  assert_failure 1; assert_output --partial 'no run ledger at'
+  lrun 1 test.yml "Tests (all)" main 2026-11-06T06:00:00Z completed 2026-11-06T07:10:00Z
   SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending other
   assert_failure 1; assert_output 'other not in the schedules state'
   SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
   assert_success
   SCHEDULES_NOW="$(pnow '2026-11-06 12:11')" run "$SUBJECT" pending game
   assert_failure 1; assert_output 'schedules state for game stale since 2026-11-06T19:40:00Z'
-  jq '.repos[0].workflows[0].crons = ["bad"]' "$STATE" > "$STATE.x" && mv "$STATE.x" "$STATE"
+  # No night set never falls back to the crons, and never releases.
+  jq '.repos[0] |= (del(.night) | .night_absent = "2026-11-06T00:00:00Z")' "$STATE" > "$STATE.x" && mv "$STATE.x" "$STATE"
   SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
-  assert_failure 1; assert_output 'multi.yml cron unreadable'
+  assert_failure 1; assert_output 'no night set for game (no config/ci/nightly.json)'
+  pstate 2026-11-06T19:40:00Z '{"night": {}, "wide": {}, "held": {}, "sha": "s", "error": "config/ci/nightly.json: not a JSON object"}'
+  SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
+  assert_failure 1; assert_output 'no night set for game: config/ci/nightly.json unreadable (not a JSON object)'
+  pstate 2026-11-06T19:40:00Z '{"night": {}, "wide": {}, "held": {"soak.yml": "Soak (all)"}}'
+  SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
+  assert_failure 1; assert_output 'no night set for game (config/ci/nightly.json names no night workflow)'
+  pstate 2026-11-06T19:40:00Z '{"night": {"hd.yml": "HD tests (main)"}, "wide": {}, "held": {}}'
+  SCHEDULES_NOW="$(pnow '2026-11-06 12:00')" run "$SUBJECT" pending game
+  assert_failure 1; assert_output 'hd.yml has no full run (HD tests (main)) in the ledger'
   run "$SUBJECT" pending
   assert_failure 2
 }
@@ -571,6 +611,37 @@ fj_run() {
   assert_success
   run grep -c 'stdin: header = "Authorization: token worker-tok"' "$FJD/calls"
   refute_output 0
+}
+
+@test "forgejo: a read the bouncer refuses (a plain Forbidden) is sent again; out of tries it names the proxy; Forgejo's own 403 is not sent again" {
+  fj_list o/fj
+  fj_page "$(fj_task 7 4 success 2025-11-06T11:00:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T11:00:00Z
+  tasks="$FJD/$(echo 'repos/o/fj/actions/tasks?limit=50&page=1' | tr '/?&=' '____')"
+  echo 2 > "$tasks.forbid"
+  SCHEDULES_FJ_GATE_WAIT=0 run "$SUBJECT"
+  assert_success
+  run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
+  assert_output 3
+  run jq -sc 'map([.repo, .id])' "$LEDGER"
+  assert_output '[["o/fj",4]]'
+  : > "$FJD/calls"; echo 9 > "$tasks.forbid"
+  echo 9 > "$FJD/$(echo 'repos/o/fj/pulls?state=all&sort=recentupdate&limit=50&page=1' | tr '/?&=' '____').forbid"
+  SCHEDULES_FJ_GATE_WAIT=0 run "$SUBJECT"
+  assert_failure 1
+  assert_output --partial 'the proxy in front of Forgejo refused it 4 time(s)'
+  run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
+  assert_output 4
+  run grep -c 'pulls?state=all&sort=recentupdate&limit=50&page=1 |' "$FJD/calls"
+  assert_output 1  # the bouncer is known down for the rest of the pass: one try, not four
+  rm "$FJD"/*pulls*.forbid
+  : > "$FJD/calls"; rm "$tasks.forbid"; touch "$tasks.403"
+  SCHEDULES_FJ_GATE_WAIT=0 run "$SUBJECT"
+  assert_failure 1
+  assert_output --partial 'error: 403'
+  refute_output --partial 'proxy'
+  run grep -c 'actions/tasks?limit=50&page=1 |' "$FJD/calls"
+  assert_output 1
 }
 
 @test "forgejo: paging stops at the last sync, leaving out the run the page edge may cut" {
@@ -1418,6 +1489,12 @@ night_file() {
   assert_success
   run jq -c '.repos[0] | [.error, .night.night, .night.sha, .night.error]' "$STATE"
   assert_output '[null,{"test.yml":"Tests (all)"},"n1","HTTP 502"]'
+  # The next good read (a 304) clears it: a kept error held every nightly: item on the repo for good.
+  rm "$GHD/repos_o_game_contents_config_ci_nightly.json_ref_main.fail"
+  run "$SUBJECT"
+  assert_success
+  run jq -c '.repos[0].night | [.night, .sha, has("error")]' "$STATE"
+  assert_output '[{"test.yml":"Tests (all)"},"n1",false]'
 }
 
 @test "negative control: a nightly.json that is not a JSON object is kept with its error, never read as an empty night" {
@@ -1427,6 +1504,10 @@ night_file() {
   assert_success
   run jq -c '.repos[0].night | [.night, .held, .sha, .error]' "$STATE"
   assert_output '[{},{},"n3","config/ci/nightly.json: not a JSON object"]'
+  # Unchanged on the next pass, it stays broken.
+  run "$SUBJECT"
+  run jq -c '.repos[0].night.error' "$STATE"
+  assert_output '"config/ci/nightly.json: not a JSON object"'
 }
 
 # ---- PR store ----
@@ -1686,6 +1767,34 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_output 'o/game: a pass holds the PR store'
 }
 
+@test "sync-prs runs on a python without PyYAML; only a pass that reads workflow files needs it (tr-469)" {
+  # A yaml package first on PYTHONPATH that fails as a missing PyYAML does (the mac-mini's python).
+  mkdir -p "$SANDBOX/noyaml/yaml"
+  echo "raise ModuleNotFoundError(\"No module named 'yaml'\", name='yaml')" > "$SANDBOX/noyaml/yaml/__init__.py"
+  mkdir -p "$XDG_STATE_HOME/ci"; echo '{"exporter":{"repos":["o/game"]}}' > "$XDG_STATE_HOME/ci/sync.json"
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  PYTHONPATH="$SANDBOX/noyaml" run "$SUBJECT" sync-prs o/game
+  assert_success
+  run "$SUBJECT" prs o/game
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[7]'
+  # NEGATIVE CONTROL: the shim really hides PyYAML, so a pass that parses a workflow file fails on it.
+  game_files
+  runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
+  PYTHONPATH="$SANDBOX/noyaml" run "$SUBJECT"
+  assert_failure
+  assert_output --partial "No module named 'yaml'"
+  # With PyYAML, an unparseable file is unscheduled, not a failed pass.
+  serve 'repos/o/game/contents/.github/workflows?ref=main' <<'EOF'
+[{"name":"test.yml","path":".github/workflows/test.yml","sha":"s1","type":"file"},
+ {"name":"broken.yml","path":".github/workflows/broken.yml","sha":"s4","type":"file"}]
+EOF
+  blob o/game s4 'on: {schedule: [unclosed'
+  run "$SUBJECT"
+  assert_success
+  run jq -c '[(.repos[0].workflows | map(.path)), (.repos[0].unscheduled | keys)]' "$STATE"
+  assert_output '[[".github/workflows/test.yml"],[".github/workflows/broken.yml"]]'
+}
+
 @test "sync-prs: a lagging page's row updated before the stored one, or one read earlier in the pass, is dropped, so a merged PR never reads OPEN again (ar-3413)" {
   # NEGATIVE CONTROL: without newest_prs in sync_prs, #7's OPEN row from the lagging page is appended
   # after its MERGED row, `prs` reads it OPEN, and no later window re-reads a PR nothing updates;
@@ -1705,6 +1814,29 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_equal "$(jq -c 'map([.number, .state, .head_sha])' <<<"$output")" '[[9,"MERGED","h9"],[8,"OPEN","h8"],[7,"MERGED","h7"]]'
   run wc -l < "$PRS/o__game.jsonl"
   assert_output 3
+}
+
+@test "PR store: an older OPEN row a store-sync merge put after the MERGED one never wins, and the next sync rewrites the file (ar-5949)" {
+  # NEGATIVE CONTROL: with read_ledger keeping each PR's last line, `prs` reads #7 OPEN; and with no
+  # rewrite, the unchanged page appends nothing, so the file keeps the OPEN line last (dotfiles#3387).
+  mkdir -p "$XDG_STATE_HOME/ci"; echo '{"exporter":{"repos":["o/game"]}}' > "$XDG_STATE_HOME/ci/sync.json"
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  run "$SUBJECT" sync-prs o/game
+  assert_success
+  # the union merge appends a peer's rows, read before the merge, after ours
+  gh_pr 7 open null feat-x | jq -c '{forge: "github", repo: "o/game", number, state: "OPEN", updated_at: "2025-11-06T06:30:00Z"}' >> "$PRS/o__game.jsonl"
+  # and an OPEN copy of the MERGED row's own time (Forgejo's CLOSED on a 404 keeps the OPEN row's time)
+  gh_pr 7 open null feat-x | jq -c '{forge: "github", repo: "o/game", number, state: "OPEN", updated_at: "2025-11-06T07:00:00Z"}' >> "$PRS/o__game.jsonl"
+  run "$SUBJECT" prs o/game
+  assert_success
+  assert_equal "$(jq -c 'map([.number, .state])' <<<"$output")" '[[7,"MERGED"]]'
+  run "$SUBJECT" sync-prs o/game
+  assert_success
+  assert_output --partial 'o/game: #7: an older row after the newest (a store-sync merge): rewritten'
+  run jq -sc 'map([.number, .state])' "$PRS/o__game.jsonl"
+  assert_output '[[7,"MERGED"]]'
+  run "$SUBJECT" sync-prs o/game
+  refute_output --partial 'rewritten'
 }
 
 @test "sync-prs --wait waits out a pass that holds the store, and refreshes it once the pass lets go" {

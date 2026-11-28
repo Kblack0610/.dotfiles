@@ -3,7 +3,7 @@
 #
 #   add [--project p] [--mode oneshot|plan|job [--run "<runner> [args]"]] [--priority urgent|high|normal|low] [--tags "t1 t2"]
 #       [--weight heavy|light] [--after slug|row-id[,...]] [--from human|session|shepherd|canary|trainee|research:<facet>|auto:<filer>|item:<slug>|ask:<id>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
-#       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
+#       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--checked <id>[,...]] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --running with no --from or --want is from item:<$AGENT_QUEUE_ITEM> in a queue item's session, from session in any
 #       other Claude session, and from human only at a terminal; a hand session records the human's own want with --want human.
 #       A --running add (or a session's own claim) from a worktree session on a machine that is not the fleet lease holder records `host:` too, so the holder's reap checks that worker's tmux (hand_host).
@@ -22,12 +22,14 @@
 #       A queue item's session adding a task that says land, from an item with a PR recorded, with no --after is gated on that item's own live `after:` blockers (landing_after).
 #       A plan phase or validate item (stack_dependent) after a slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: it is stacked on it
 #       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
-#       head, and agent-land refuses it (exit 4) until that slug closed ok. A dependency closed unmerged stays a dead hold. Any other --after holds until that slug closed ok, open PR or not.
+#       head, and agent-land refuses it (exit 4) until that slug closed ok. A PR in another project's repo is no base (its checkout lacks the commit): that after: holds until the close (stack_same_checkout). A dependency closed unmerged stays a dead hold. Any other --after holds until that slug closed ok, open PR or not.
 #       --mode job --run "<runner> [args]" queues no session: a dispatch pass runs `agentctl start <runner> -- <args>` (no model) once no hold stands
 #       (at:, night, after:, hold:), and reap closes the item on that run's own outcome word (fleet-dispatch reap_jobs, QUEUE.md "Job items"). --run is required with --mode job and refused without it.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
-#       Any other item not from the board files its own story row: see file_story. A slug that already
+#       Any other item not from the board files its own story row: see file_story. When notes refuses that row for
+#       similar open rows (a hand session's check), nothing is queued (exit AQ_EX_SIMILAR): join one with --row <id>, or
+#       rerun with --checked <the ids it listed> when none is this work, which notes then files. A slug that already
 #       finished ok is refused unless --repeat says this is new work under it: see finished_ok.
 #       An add over the cap (AGENT_QUEUE_CAP runnable items) is not queued: its board row is left un-started, brief and all (exit AQ_EX_HELD); see admit.
 #   add --plan <plan.md> [--dry-run | --check] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
@@ -91,6 +93,9 @@
 #   start <slug>   start a queued item's session now, through add's start guards (a low one, a desk wait or the dispatch hold keep it queued)
 #   ask-holds [<id>]   `<slug or row id><TAB><ask id><TAB><releasing options>` per active item, and per open board row gated
 #       #ask/<id>, held on an ask (that ask only, given one)
+#   human-work <ask id>   each active item the human asked for (from: human, or #requested) that the ask, once answered, could
+#       take off the queue: its resume cancels it or returns it with --drop or with no board row, or the ask names it and offers a
+#       cancel or drop option. agent-ask makes such an ask an approval, so only the human answers it (ar-5962)
 #   reopen <slug> [--to running|waiting] [--why text] [--unland <owner>/<repo>#<N>]   a falsely-done item back to running (or waiting),
 #       its row started again. A failed close reopens as it is; an ok close only with --unland naming the PR it
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
@@ -108,8 +113,8 @@
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
 # Holds: `after <slug>...` (until every slug named closed ok), and the tags at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
-# pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until the scheduled runs of that repo on its at: date, else today,
-# have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until that agent-ask is answered, by the human, the judge or an agent,
+# pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until that repo's night set, the night and wide workflows of its
+# config/ci/nightly.json, has finished its full runs on its at: date, else its newest ones; never a cron; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until that agent-ask is answered, by the human, the judge or an agent,
 # with one of those options when named, or in free text; see ask_pending) and hold:<resource> (while agent-hold holds it; see
 # hold_pending) and rbw:<folder>/<name> (until rbw lists that entry; see rbw_pending). A start on a later day is the dated form, never a held session.
 # A queued item whose body's last Blocked heading has no Unblocked one after it holds too (ITEM_JQ).
@@ -148,7 +153,7 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
-# A `nightly:<repo>` item waits on the scheduled-run facts schedules-sync writes, through its `pending` verb.
+# A `nightly:<repo>` item waits on the night set's runs schedules-sync records, through its `pending` verb.
 AQ_SCHEDULES="$AQ_BIN/schedules-sync"
 # An `ask:<id>[=<option>]` item waits on that agent-ask's answer, read from its file here.
 # shellcheck source=../lib/ask-store.sh
@@ -556,7 +561,9 @@ phases_landed_by() {
 # Only the board's pull and the human add at all (pull_ok, below); of those, never held: --running, a
 # hand start (AGENT_QUEUE_PULL=hand), a gated add (it queues nothing), dispatch's trainee, canary
 # and auto:epics verify adds (its board fill stops at the cap, queue_headroom), agent-land's
-# auto:validate add (one per critical PR head, which no merge passes without), a --plan (an approved
+# auto:validate add (one per critical PR head, which no merge passes without), its merge-owed steps
+# (AGENT_QUEUE_PULL=land: an after-merge step, one per step while one is queued, and an After deploy:
+# line, one per line a merged PR's body names), a --plan (an approved
 # plan) and the pull of a phase it filed on its board row (plan_phase_task), cap 0. Urgent and `red`
 # respect the cap too (the human, 2026-11-18): at it, make_room first returns the last-ranked item
 # that has a row to its board, so they go in without the queue growing; so does pull-after's pull of a
@@ -567,6 +574,9 @@ phases_landed_by() {
 # Re-measure from the queued row of `fleet-bench pipeline`: the tail rate is 0.9 x wip / age p90.
 # Revisit when queued age p90 stays over it at the cap.
 AQ_EX_HELD=5
+# An add whose own story row notes refused for similar open rows (its exit 5, a hand session's check): no
+# item is written, since a rowless item lands a PR no board row records (ar-4657, release-links).
+AQ_EX_SIMILAR=7
 AQ_CAP="${AGENT_QUEUE_CAP:-30}"
 # Minutes a queued item waits before it ranks one tier higher (ORDER's tier, ar-4554); 0 turns it off.
 # Provisional, confidence low (rules.jsonl): 120 takes a low item to high at 240m, inside the 420m
@@ -597,7 +607,8 @@ admission_now() {
 # waited for a pass, and a pass then never took the backlog tier, retired by ar-4626; 2026-11-20, chain-after-stuck), returns
 # the last-ranked runnable item to its board row (cmd_return: lossless, the row is un-started and dispatch promotes it
 # again), so the add goes in under the cap. Never chosen: urgent or red work, the human's (human_work),
-# an item with no row to return to, a chain's head, a plan's phase (plan_phase_item), whatever the add's
+# an item with no row to return to, one with a PR, pushed work or a handoff (open_pr:, pr:, salvage:, handoff:;
+# the return drops them, ar-6119), a chain's head, a plan's phase (plan_phase_item), whatever the add's
 # priority: its phases go in past the cap (a --plan, a phase pull), and a returned one waits on its row behind
 # dispatch's fill, which stops at the cap, so its chain stops there; a held urgent add's row ranks first and
 # goes in at the next free place (ar-5357). No such item: nothing moves, and admit holds the add
@@ -619,6 +630,7 @@ make_room() {
     | [.[] | select(.priority != "urgent" and (.row // "") != "")
         | select((" " + (.tags // "") + " ") | test(" (red|requested|#requested) ") | not)
         | select(.from != "human")
+        | select(((.open_pr // "") + (.pr // "") + (.salvage // "") + (.handoff // "")) == "")
         | select(({"urgent":0,"high":1,"normal":2,"low":3}[.priority] // 1) >= $pr)
         | select(.slug as $s | $keep | contains(" \($s) ") | not)
         | select(.slug as $s | $heads | index($s) | not)] | reverse[] | "\(.slug)\t\(.file)"')" || return 0
@@ -702,7 +714,8 @@ admission_log() {
 
 # Only the board fills the queue (the human, 2026-11-18, after three filers' 225 `night` items took the
 # runnable count from 205 to 362 when the night window opened): dispatch's pull (AGENT_QUEUE_PULL=dispatch,
-# set by fleet-dispatch on its promote, trainee and epic-verify adds), a session's own --running record,
+# set by fleet-dispatch on its promote, trainee and epic-verify adds), agent-land's merge-owed steps
+# (AGENT_QUEUE_PULL=land, ar-5865), a session's own --running record,
 # and the human, at a terminal or in a session they started (hand_caller). Any other add, a
 # dispatch-run agent's or a filer's, is filed on the board instead and exits AQ_EX_HELD.
 # Provisional (rules.jsonl, anchor "Only the board fills the queue"): hand sessions add straight in;
@@ -830,6 +843,21 @@ stack_pr() {
   done
 }
 
+# stack_same_checkout <PR ref> <project> -- rc 1 when the PR lives in a repo whose checkout is not the
+# project's own: the dependent's worktree is cut in its project's checkout, which holds no commit of
+# that PR, so dispatch's start failed on it every pass and the kick runner read red (ar-5124: hc-956
+# after hc-955's PR in .dotfiles). The project is the item's, or the add under way's (AQ_ADD_PROJECT); a
+# board-row gate (cmd_gate after/<row>) knows none, and the item it promotes is held by this check. Unresolved
+# on either side counts as the same: the old behaviour.
+stack_same_checkout() {
+  local repo proj pdir odir
+  [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] && [ -n "${2-}" ] || return 0
+  repo="${BASH_REMATCH[1]}"
+  proj="$(project_of_repos_json "$repo" | jq -r '.[]' 2>/dev/null)" && [ -n "$proj" ] || return 0
+  pdir="$(project_repo_path "$proj")"; odir="$(project_repo_path "$2")"
+  [ -z "$pdir" ] || [ -z "$odir" ] || [ "$pdir" = "$odir" ]
+}
+
 # stack_dependent [<item file>] -- the item waiting may stack on its after: item's open PR (hold_for,
 # cmd_gate): a plan phase, which builds on its dependency's code (ar-3852), or a `validate` item, which
 # reviews its author's open PR before it lands (fleet-dispatch validate, ar-1689). An item file: its
@@ -868,6 +896,7 @@ hold_for() {
       ok) ;;
       "") stack_pr "$s"
         [ -z "$STK" ] || stack_dependent "$dep" || STK=""
+        [ -z "$STK" ] || stack_same_checkout "$STK" "$([ -z "$dep" ] && echo "${AQ_ADD_PROJECT-}" || fm_get "$dep" project)" || STK=""
         if [ -n "$STK" ]; then HOLD_STACK="$HOLD_STACK${HOLD_STACK:+ }$s=$STK"; else live="$live${live:+ }$s"; fi ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
@@ -889,7 +918,7 @@ hold_for() {
   [ -n "$stamp" ] || printf -v stamp '%(%Y-%m-%dT%H:%M)T' -1
   [[ "$stamp" == *T* ]] || { printf -v now '%(%Y-%m-%d)T' -1; stamp="${now}T$stamp"; }
   now="${stamp#*T}"
-  # A nightly: hold judges the night of the item's at: date (nightly_pending), else today's.
+  # A nightly: hold judges the night of the item's at: date (nightly_pending), else the newest night.
   nday=""
   for tag in $tags; do [[ "$tag" =~ ^at:([0-9]{4}-[0-9]{2}-[0-9]{2})T ]] && nday="${BASH_REMATCH[1]}"; done
   for tag in $tags; do
@@ -1337,7 +1366,7 @@ ask_pending() {
   st="$(sed -n '/^status: /{s///p;q;}' "$f")"
   [ "$st" = answered ] || { echo "${st:-unreadable}"; return; }
   # Any answer releases: the human's, the judge's or an agent's. Who may answer is agent-ask's call
-  # (an approval, a judge human-only ask or one at the human floor takes only the human's), so the
+  # (its agent_refused: an agent answers only what the judge would not send to the human), so the
   # gate does not ask again. 2026-11-23: routine retry and drop asks held 40+ rows on the human.
   [ -n "$want" ] || return 0
   ans="$(sed -n '/^answer: /{s///p;q;}' "$f")"; ans="${ans%% *}"; ans="${ans%[.,;:!]}"
@@ -1357,10 +1386,11 @@ ask_options() {
   sed -n '/^options: */{s///p;q;}' "$f" | tr '|' '\n'
 }
 
-# nightly_pending <repo> <local stamp> [<day>] -> what that day's scheduled runs of that repo still wait
-# for (day: the item's at: date, else the stamp's), or nothing when every one has finished or passed its
-# slot plus timeout (a missing run is the triage's red). A missing or stale state file, or schedules-sync
-# failing, holds. The day is the at: date so a finished night stays released after midnight.
+# nightly_pending <repo> <local stamp> [<day>] -> what that repo's night set (config/ci/nightly.json night
+# and wide, never a cron) still waits for: the full runs created on <day> (the item's at: date), else each
+# member's newest; nothing when they finished (a night with no run releases once its day is over: the
+# nightly watch's red). A missing or stale state file, no night set, or schedules-sync failing, holds.
+# The day is the at: date so a finished night stays released after midnight.
 nightly_pending() {
   local out
   out="$(SCHEDULES_NOW="$(date -d "${2/T/ }" +%s)" "$AQ_SCHEDULES" pending "$1" ${3:+--day "$3"} 2>/dev/null)" && return 0
@@ -2020,14 +2050,17 @@ overflow_row() {
 # and so does the row of an item being worked (<keep> empty:
 # its own record, not a follow-up). A kept row from a queue item or runner is its follow-up: notes sends
 # it to the outbox (exit 4), and this prints `inbox` instead of a row; from a session the human opened,
-# notes checks it first and a shortlist of similar rows (exit 5) is reported on stderr, with no row. `--origin agent-queue` is notes-cli's
+# notes checks it first and a shortlist of similar rows (exit 5) is reported on stderr, with no row, and an
+# item's own row (<keep> empty) prints `similar`, which cmd_add refuses; cmd_add's --checked ids
+# (AQ_ADD_CHECKED) go to notes as the ones the session read. `--origin agent-queue` is notes-cli's
 # ORIGIN_STORY (ingest.rs): the ingest record marks the row a story, which `notes log --steps` leaves
 # out of backlog intake; a want or a plan phase is intake, so its row keeps its own origin.
 file_story() {
-  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt="" untouched="" rt=() tg=()
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt="" untouched="" rt=() tg=() checked=()
   ! interrupt_tag "${9:-}" || gates+="${gates:+ }interrupt"
   for g in $gates; do gt+=" #$g"; done
   [ -z "${5:-}" ] || want=(--want "$5")
+  [ -n "$keep" ] || [ -z "${AQ_ADD_CHECKED:-}" ] || checked=("--checked=$AQ_ADD_CHECKED")
   if [ -n "${5:-}" ]; then :
   elif [ -n "${AQ_ITEM_PLAN:-}" ]; then origin=(--origin plan)
   elif [ -z "$keep" ]; then origin=(--origin agent-queue); fi
@@ -2048,15 +2081,17 @@ file_story() {
   # `--detail=`: a brief that opens with a dash is its value, not a flag.
   brief="$(row_brief "$row" "${6:-}")"
   [ -z "$brief" ] || detail=("--detail=$brief")
-  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" "${origin[@]}" -- "$row${prio:+ #$prio}$of$gt" 2>&1)" || rc=$?
+  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" "${origin[@]}" "${checked[@]}" -- "$row${prio:+ #$prio}$of$gt" 2>&1)" || rc=$?
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   case "$rc" in
     4) if [ -n "$keep" ]; then printf 'inbox\n'
        elif [ -n "${5:-}" ]; then echo "agent-queue: no story row filed on $project: a session's want goes to the outbox for triage, so the item has no row" >&2
        else echo "agent-queue: no story row filed on $project: it went to the outbox, so the item has no row: add agent-queue to agent_direct_filers in the notes config" >&2; fi
        return 0 ;;
-    5) echo "agent-queue: no story row filed on $project: notes lists similar open rows; join the one that is this work, or file it with notes ptask $project --agent add --checked <their ids>:" >&2
-       printf '%s\n' "$out" >&2; return 0 ;;
+    5) printf '%s\n' "$out" >&2
+       [ -n "$keep" ] || { printf 'similar\n'; return 0; }
+       echo "agent-queue: no story row filed on $project: notes lists similar open rows (above); join the one that is this work, or file it with notes ptask $project --agent add --checked <their ids>" >&2
+       return 0 ;;
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
        [ -n "$keep" ] || notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1 ||
          echo "agent-queue: story row $id on $project could not be started" >&2 ;;
@@ -2366,12 +2401,22 @@ client_set_guard() {
   done
 }
 
+# story_refused <story> <slug> <project>: an add whose own story row was refused queues nothing and exits:
+# 6 for the daily cap or a gate (file_story's `gated`), AQ_EX_SIMILAR for notes' similar-rows shortlist (`similar`).
+story_refused() {
+  case "$1" in
+    gated) echo "agent-queue: $2 is not queued: its board row was refused by the daily cap or the gate (the reason is above)" >&2; exit 6 ;;
+    similar) echo "agent-queue: $2 is not queued: notes lists similar open rows on $3 (above). Join the one that is this work with agent-queue add --row <id>, or rerun this add with --checked <the ids listed> when none is" >&2
+      exit "$AQ_EX_SIMILAR" ;;
+  esac
+}
+
 # cmd_add: an add over the admission cap that already has its row (--row, or a board pull from
 # promote) leaves that row where it is. Only one with no row gets an overflow row: a board pull's
 # overflow row was a twin that dispatch skipped to the human sheet beside the first (2026-11-25).
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
-  local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given="" job_run=""
+  local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given="" AQ_ADD_CHECKED="" job_run=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:?}"; shift 2 ;;
@@ -2388,6 +2433,7 @@ cmd_add() {
       --epic) epic="${2:?}"; shift 2 ;;
       --want) want="${2:?}"; ! headless || die "--want names a human's channel; a headless Claude run ($CLAUDE_CODE_ENTRYPOINT) has no human at hand, so its add carries none"; shift 2 ;;
       --row) row="${2:?}"; shift 2 ;;
+      --checked) AQ_ADD_CHECKED="${AQ_ADD_CHECKED:+$AQ_ADD_CHECKED,}$(word_list "${2:?}" | tr ' ' ,)"; shift 2 ;;
       --running) running=1; shift ;;
       --session) session="${2:?}"; shift 2 ;;
       --plan) planf="${2:?}"; shift 2 ;;
@@ -2470,7 +2516,7 @@ cmd_add() {
   # (QUEUE.md "Admission"). A --running record is already started, so it files no gate: an --after it
   # names must already have closed ok, or the add is refused (ar-3260). Dispatch's pull of a board row
   # (promote) judged that row's gates clear the moment before, so none is read twice.
-  local GATES='' AFTER_ITEMS='' AQ_ADD_STACKS="$(add_stacks "$text" "$tags")" AQ_ADD_REPEAT="$repeat"
+  local GATES='' AFTER_ITEMS='' AQ_ADD_STACKS="$(add_stacks "$text" "$tags")" AQ_ADD_REPEAT="$repeat" AQ_ADD_PROJECT="$project"
   if [ -n "$running" ] && [ -n "$after" ]; then
     check_after "$after" "$slug"
     start_gate "$slug" "$after" "" "start --running" "add it without --running, and it starts once that clears"
@@ -2483,7 +2529,7 @@ cmd_add() {
   # (see admit); a queue item's session adding without --from is recorded as from the item.
   local capped=1
   case "$from" in trainee | auto:epics | auto:validate | canary) capped='' ;; esac
-  [ "${AGENT_QUEUE_PULL:-}" != hand ] || capped=''
+  case "${AGENT_QUEUE_PULL:-}" in hand | land) capped='' ;; esac
   [[ "$from" != board:* ]] || ! plan_phase_task "$text" || capped=''
   { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ] && [ "$mode" != job ]; } || capped=''   # a job item runs no session: it holds none of the room the cap protects
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
@@ -2519,15 +2565,14 @@ cmd_add() {
   # every queue reader (ar-5606). Back under the lock, the slug, a cause: owner and the cap are checked
   # again, since another add may have come in meanwhile; a row this add filed stays for dispatch to promote.
   unlock
-  local story='' sboard='' sprof='' srow='' linked_row=''
-  # No story row for work with its own record: a canary (fleet-bench canary), a trainee review (the trainee's row), an ask's resume (the ask).
+  local story='' sboard='' sprof='' srow='' linked_row='' linked
+  # No story row for work with its own record: a canary, a trainee review (the trainee's row), an ask's resume (ask-resume sets its row).
   case "$from" in
     board:* | canary | trainee | ask:*) ;;
     *) if [ -n "$row" ]; then
          # A row moved to another sheet keeps its id, so its code can name the sheet it left; the
          # sheet the caller named is the other one it can be open on (apo-108 on dodginballs,
          # 2026-11-10). Neither: the code sheet's refusal, as before.
-         local linked
          if linked="$(link_row "$row" "$project" 2>&1)"; then
            story="$linked"
          elif [ "$project" != "$resolved" ] && story="$(link_row "$row" "$resolved" 2>/dev/null)"; then
@@ -2545,7 +2590,7 @@ cmd_add() {
          [ -n "$story" ] || { story="$(file_story "$project" "${title:-$(head -1 <<<"$text")}" "$priority" "$epic" "$want" "$text" "" "" "$tags")"; priority_given=''; }
        fi ;;
   esac
-  case "$story" in gated) echo "agent-queue: $slug is not queued: its board row was refused by the daily cap or the gate (the reason is above)" >&2; exit 6 ;; ?*) IFS=$'\t' read -r sboard sprof srow <<<"$story" ;; esac
+  story_refused "$story" "$slug" "$project"; [ -z "$story" ] || IFS=$'\t' read -r sboard sprof srow <<<"$story"
   [ -z "$linked_row" ] || brief_to_row "$sboard" "$sprof" "$srow" "$text"
   # A --running add that named no priority records its row's (ar-4374: a default high made 167 of 641
   # high done items, 11-19..21, session records of normal rows).
@@ -3851,15 +3896,29 @@ cancel_check() {
   case "$1" in *$'\n'*) die "--why is one line" ;; esac
   [ -n "$1" ] || [ -z "$(cancel_who)" ] || die "a cancel from a session or script needs --why \"<reason>\": who cancelled it and why stay on the item"
 }
+# ask_offers_cancel <id> -> whether the ask offers a cancel or drop option (AQ_CANCEL_ANSWERS), the only
+# answer that takes the human's work off the queue (cancel_guard, human-work).
+ask_offers_cancel() {
+  local opts
+  opts="$(ask_options "$1" | sed 's/[=[:space:]].*//; s/[.,;:!]$//' | tr '[:upper:]' '[:lower:]')"
+  grep -qxE "$AQ_CANCEL_ANSWERS" <<<"$opts"
+}
+# ask_names <ask file> <slug> -> whether the ask names the item's whole slug: grep -w took fix-ci from an
+# ask about fix-ci-2 (ar-2717). A period ends it only at a sentence end, so mkt-17.2 is not mkt-17.
+ask_names() {
+  local sl; sl="$(printf '%s' "$2" | sed 's/[.+]/\\&/g')"
+  grep -qE -- "(^|[^A-Za-z0-9_.-])$sl([^A-Za-z0-9_.-]|\$|\.([^A-Za-z0-9_-]|\$))" "$1"
+}
 # cancel_guard <file> <ask> -> die when a session or script cancels work the human asked for (human_work)
 # without an answered ask that names the item: an answer about other work is not one about this. Any
-# --ask is checked so, since the item records it as the decision. The judge answers such an ask like
-# any other, and its policy sends a bulk one (10 or more records) to the human (ar-4765); a session's
-# or shepherd's own answer is no ruling, so only the judge's or the human's counts. The human at
+# --ask is checked so, since the item records it as the decision. The judge never answers such an ask:
+# agent-ask reads `human-work` and makes it an approval for the human (ar-5962). A judge answer stays
+# accepted (ar-4765), since an ask answered before that is a ruling already given; a session's or
+# shepherd's own answer is no ruling, so only the judge's or the human's counts. The human at
 # a terminal or the Queue tab's button is not held. 2026-11-12: two cleanups cancelled 220 from: human
 # items, one by looping a dead chain.
 cancel_guard() {
-  local slug pend f by opts ans names sl
+  local slug pend f by ans names
   slug="$(fm_get "$1" slug)"
   if [ -n "$2" ]; then
     [[ "$2" =~ ^[A-Za-z0-9_-]+$ ]] || die "--ask takes an ask id, not $2"
@@ -3867,8 +3926,7 @@ cancel_guard() {
     [ -n "$f" ] || die "$slug: ask $2: no such ask"
     # Only an answer of cancel or drop authorizes it, never one the caller names: when any answer did,
     # "keep" cancelled the item (ar-2717). The ask offers one of them, so a free-text ask authorizes nothing.
-    opts="$(ask_options "$2" | sed 's/[=[:space:]].*//; s/[.,;:!]$//' | tr '[:upper:]' '[:lower:]')"
-    grep -qxE "$AQ_CANCEL_ANSWERS" <<<"$opts" \
+    ask_offers_cancel "$2" \
       || die "$slug: ask $2 offers no cancel or drop option: post one with them (agent-ask post --options 'drop|keep')"
     pend="$(ask_pending "$2")"
     # gate: aq-cancel-guard
@@ -3883,11 +3941,8 @@ cancel_guard() {
     # An empty by is legacy (before answered_by), when every answer was the human's.
     by="$(sed -n '/^answered_by: */{s///p;q;}' "$f")"
     case "$by" in '' | human | judge) ;; *) die "$slug: ask $2 is answered by $by: --ask names an ask the judge or the human answered" ;; esac
-    # The whole slug: grep -w took fix-ci from an ask about fix-ci-2 (ar-2717). A period ends it only
-    # at a sentence end, so mkt-17.2 is not mkt-17.
-    sl="$(printf '%s' "$slug" | sed 's/[.+]/\\&/g')"
-    grep -qE -- "(^|[^A-Za-z0-9_.-])$sl([^A-Za-z0-9_.-]|\$|\.([^A-Za-z0-9_-]|\$))" "$f" \
-      || die "$slug: ask $2 does not name $slug: --ask names the answer about this item"
+    # gate: aq-cancel-guard
+    ask_names "$f" "$slug" || die "$slug: ask $2 does not name $slug: --ask names the answer about this item"
     return 0
   fi
   # gate: aq-cancel-guard
@@ -4201,6 +4256,7 @@ check_tags() {
       hold:*) hold_resource "${tag#hold:}" || die "a hold tag is hold:<resource>, an agent-hold name (letters, digits, . _ -), not $tag" ;;
       desk:*) "$AQ_HOLD" classes | cut -f1 | grep -qx -- "${tag#desk:}" ||
         die "a desk tag is desk:<class>, one of: $("$AQ_HOLD" classes | cut -f1 | paste -sd' '), not $tag" ;;
+      needs:*) [ "$tag" = needs:cluster ] || die "a needs tag is needs:cluster (an item that needs the cluster login stays on the workstation), not $tag" ;;
       rbw:*) [[ "$tag" =~ ^rbw:[^/[:space:]]*/[^[:space:]]+$ ]] || die "an rbw tag is rbw:<folder>/<name>: a top-level folder (empty for an entry in no folder: rbw:/<name>), then the entry name after the first /, no spaces in either, not $tag" ;;
     esac
   done
@@ -4375,6 +4431,81 @@ cmd_ask_holds() {
     /^slug: / { slug = substr($0, 7) }
     /^tags: / { tags = substr($0, 7) }
     END { flush() }' "${FILES[@]}"
+}
+
+# resume_takes <command line> [inner] -> "<verb><TAB><slug><TAB><flag>" for each agent-queue cancel, return
+# or move the line runs, flag `drop` for a return --drop and `cancelled` for a move --status cancelled; the
+# slug is the first word after the verb that is not a flag. Its words are read as a shell reads them
+# (xargs: quotes, never an expansion), else split on blanks when its quotes do not pair (a prompt's
+# "don't"); &&, || and ; end one command, spaced or not, and | does when spaced. A quoted word that runs
+# agent-queue (bash -c '...') is read once more, so the command inside it counts.
+resume_takes() {
+  local line out i j verb slug flag w2
+  local -a w=()
+  line="$(sed 's/&&/ \&\& /g; s/||/ || /g; s/;/ ; /g' <<<"$1")"
+  out="$(xargs printf '%s\n' <<<"$line" 2>/dev/null)" || out="$(tr -s '[:space:]' '\n' <<<"$line")"
+  while IFS= read -r w2; do
+    if [ -z "${2:-}" ] && [[ "$w2" == *agent-queue*[[:space:]]* ]]; then resume_takes "$w2" inner; else w+=("$w2"); fi
+  done <<<"$out"
+  for ((i = 0; i < ${#w[@]}; i++)); do
+    [ "${w[i]##*/}" = agent-queue ] || continue
+    verb="${w[i + 1]-}" slug="" flag=""
+    case "$verb" in cancel | return | move) ;; *) continue ;; esac
+    for ((j = i + 2; j < ${#w[@]}; j++)); do
+      case "${w[j]}" in
+        '&&' | '||' | '|' | ';') break ;;
+        --drop) flag=drop ;;
+        --status=cancelled) flag=cancelled ;;
+        --status) [ "${w[j + 1]-}" != cancelled ] || flag=cancelled ;;
+        -*) ;;
+        *) [ -n "$slug" ] || slug="${w[j]}" ;;
+      esac
+    done
+    [ -z "$slug" ] || printf '%s\t%s\t%s\n' "$verb" "$slug" "$flag"
+  done
+}
+
+# human-work <ask id> -- each active item the human asked for (human_work) that the ask, once answered,
+# could take off the queue past cancel_guard, one slug per line: one its resume command cancels (cancel,
+# move --status cancelled), returns with --drop or returns with no board row (the chain a return takes
+# included), and one the ask names while it offers a cancel or drop option, the answer cancel_guard
+# reads. agent-ask makes such an ask an approval and the judge holds an older one, since only the human
+# drops their own work (ar-5962: the judge answered PVqj0D, whose resume cancelled hc-820, a row the
+# human had requested). The tests are human_work's and cancel_guard's own, so the two cannot drift.
+cmd_human_work() {
+  local id="${1:-}" f verb slug flag g s FILES=()
+  # gate: none
+  [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || die "usage: agent-queue human-work <ask id>"
+  f="$(compgen -G "$AQ_ASKS/*/$id.md" | awk 'NR == 1')"
+  [ -n "$f" ] || die "ask $id: no such ask"
+  lock_read
+  {
+    while IFS=$'\t' read -r verb slug flag; do
+      g="$(find_item "$slug")" || continue
+      case "$verb:$flag" in
+        cancel:* | move:cancelled) printf '%s\t%s\n' "$slug" "$g" ;;
+        return:drop) chain_of "$slug" "$g" ;;
+        return:*) chain_of "$slug" "$g" | while IFS=$'\t' read -r s g; do [ -n "$(item_row "$g")" ] || printf '%s\t%s\n' "$s" "$g"; done ;;
+      esac
+    done < <(resume_takes "$(sed -n '/^resume: */{s///p;q;}' "$f")") |
+      while IFS=$'\t' read -r s g; do human_work "$(fm_get "$g" from)" "$(fm_get "$g" tags)" && printf '%s\n' "$s"; done
+    ask_offers_cancel "$id" && list_files waiting review running queued
+    if ((${#FILES[@]})); then
+      # The header's slug, from and tags lines alone, in one pass, as ask-holds reads them. A tab is IFS
+      # whitespace, so an empty from would hand the tags to read as from.
+      awk -v OFS='\t' '
+        function flush() { if (slug != "") print slug, (from == "" ? "-" : from), tags }
+        FNR == 1 { flush(); slug = ""; from = ""; tags = ""; head = 1 }
+        !head { next }
+        $0 == "---" { head = 0; next }
+        /^slug: / { slug = substr($0, 7) }
+        /^from: / { from = substr($0, 7) }
+        /^tags: / { tags = substr($0, 7) }
+        END { flush() }' "${FILES[@]}" |
+        while IFS=$'\t' read -r s g flag; do human_work "$g" "$flag" && ask_names "$f" "$s" && printf '%s\n' "$s"; done
+    fi
+  } | sort -u
+  return 0
 }
 
 # reopen <slug> [--to running|waiting] [--why <text>] -- put back an item a false close finished,
@@ -4705,7 +4836,10 @@ cmd_stats() {
 # one. A body is cut at the dispatch template (`Promoted by fleet-dispatch`: the run's instructions,
 # not the task's), its markers are stripped, and a first line that is the row's own words is dropped.
 # A body that adds 20 characters or fewer to the row is skipped: measured 2026-11-18, each such body
-# was the row's earlier wording before the triager re-typed it, not a brief. An open item with no row
+# was the row's earlier wording before the triager re-typed it, not a brief. Only a body's new lines
+# count, and they must add more than 20 characters: a line already on the row (its words, a `was:` or
+# `full:` detail) or any `was:`/`full:` line is the row's own history, as in a dispatch promotion's body,
+# which copies the row (ar-5817), and is never written to it again. An open item with no row
 # (canary and trainee items excepted: their config is their brief) gets a story row and its brief. A
 # row with `brief: ` lines (keep_brief's format, retired by #2406) gets them back without the prefix.
 # Rows are written through `notes ptask` alone, matched by their exact line, so a row that changed
@@ -4713,6 +4847,9 @@ cmd_stats() {
 # line and fails when any row would be written, which after P2 is a writer losing a brief again.
 BRIEF_JQ='def norm: gsub("<!--.*?-->"; "") | gsub("<!--.*$"; "") | gsub("(^|\\s)#[A-Za-z][A-Za-z0-9_/:.-]*"; " ")
     | gsub("^\\s*- \\[.\\]\\s*"; "") | gsub("\\s+"; " ") | ascii_downcase | ltrimstr(" ") | rtrimstr(" ");
+  def held: norm | sub("^(full|was): ?"; "");
+  def novel($on): map(select((norm | test("^(full|was):")) or (held as $l | any($on[]; . == $l)) | not))
+    | until(length == 0 or (.[0] | test("\\S")); .[1:]) | until(length == 0 or (.[-1] | test("\\S")); .[:-1]);
   def body: .task | split("\n") | (map(startswith("Promoted by fleet-dispatch")) | index(true)) as $c
     | (if $c then .[:$c] else . end) | map(gsub("\\s*<!--.*?-->"; "") | gsub("\\s*<!--.*$"; "")) | until(length == 0 or (.[-1] | test("\\S")); .[:-1]);
   def stamp: "(\(.state), queued \((.queued // "-") | split("T")[0]))";
@@ -4721,12 +4858,13 @@ BRIEF_JQ='def norm: gsub("<!--.*?-->"; "") | gsub("<!--.*$"; "") | gsub("(^|\\s)
   ($items | map(select(.row) | (body) as $b | . + {open: (.state != "done"), lines: $b, n: ($b | join("\n") | norm)})
     | group_by(.row) | map({key: .[0].row, value: .}) | from_entries) as $by
   | (($board.rows[] | select(.lane == "agent" and all(.details[]; test("^(full|was):"))))
-      | (.raw | norm) as $t | (.project + ":" + .id) as $key | ($by[$key] // []) as $all
-      | ($all | map(select(.n != $t and (. as $i | $t | contains($i.n) | not) and (.n | length) > ($t | length) + 20))
+      | (.raw | norm) as $t | ([.raw, .details[]] | map(held | select(. != ""))) as $on | (.project + ":" + .id) as $key | ($by[$key] // []) as $all
+      | ($all | map(select(.n != $t and (. as $i | $t | contains($i.n) | not) and (.n | length) > ($t | length) + 20
+            and (.lines | novel($on) | join("\n") | norm | length) > 20))
           | sort_by(if .open then 0 else 1 end, (.queued // "0" | explode | map(-.)))) as $good
       | if $good[0] then {kind: "row", key: $key, prof: .profile, proj: .project, text: .raw, slug: $good[0].slug,
             stamp: ($good[0] | stamp), brief: (.details + ["from item \($good[0].slug) \($good[0] | stamp)"]
-              + ($good[0].lines | if (.[0] | norm) == $t then .[1:] else . end) | join("\n"))}
+              + ($good[0].lines | novel($on)) | join("\n"))}
         else {kind: (if $all[0] then "bare" else "none" end), key: $key} end),
     ($board.rows[] | select(.lane == "agent" and any(.details[]; startswith("brief: ")))
       | {kind: "prefix", key: (.project + ":" + .id), prof: .profile, proj: .project, text: .raw,
@@ -4860,6 +4998,7 @@ case "${1:-}" in
   lock-miss) shift; cmd_lock_miss "$@" ;;
   credit-of) shift; cmd_credit_of "$@" ;;
   ask-holds) shift; cmd_ask_holds "$@" ;;
+  human-work) shift; cmd_human_work "$@" ;;
   backfill-briefs) shift; cmd_backfill_briefs "$@" ;;
   backfill-outcome) shift; cmd_backfill_outcome "$@" ;;
   -h | --help | '') sed -n '2,/^set -uo/p' "$0" | sed '$d; s/^# \{0,1\}//' ;;

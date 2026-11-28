@@ -477,7 +477,7 @@ pub(crate) fn add_via(
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
-    if refuse_twin(&path, &content, text) {
+    if refuse_twin(&path, &content, text, writer.key.as_deref()) {
         // A human's want that joins an open row must still mark it, and the ingest record must say whose
         // words it is: dropped here the row counted against the project share (ar-6060).
         if want.is_some_and(crate::projects::human_channel) && lane == Lane::Agent {
@@ -569,13 +569,14 @@ pub(crate) fn add_via(
 /// The id of the open row on `content` that `text` twins (the same words, a near twin, or the
 /// row that already lands the PR it names): what [`refuse_twin`] refuses, as the row to join.
 /// None for an epic (`epic_new` has its own twin check); a twin with no id yet is skipped for the next kind.
-fn twin_id(content: &str, text: &str) -> Option<String> {
+/// `from` is the session line `text` was written for: its [`sibling`] rows are no near twins.
+fn twin_id(content: &str, text: &str, from: Option<&str>) -> Option<String> {
     if text.trim_start().starts_with("epic(") {
         return None;
     }
     open_twin(content, text)
         .and_then(md::row_id)
-        .or_else(|| near_twin(content, text).and_then(md::row_id))
+        .or_else(|| near_twin(content, text, from).and_then(md::row_id))
         .or_else(|| pr_twin(content, text).and_then(|(l, _)| md::row_id(l)))
 }
 
@@ -592,7 +593,7 @@ fn stamp_twin_requested(
     lane: Lane,
     want: Option<&str>,
 ) -> Result<()> {
-    let Some(id) = twin_id(content, text) else {
+    let Some(id) = twin_id(content, text, Some(text)) else {
         return Ok(());
     };
     let mut twin = None;
@@ -622,11 +623,23 @@ fn stamp_twin_requested(
 }
 
 /// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
-/// row that already lands the PR it names. Each says which row on stderr; the add exits 3.
-fn refuse_twin(path: &Path, content: &str, text: &str) -> bool {
+/// row that already lands the PR it names. Each says which row on stderr; the add exits 3. A filer
+/// that keys its rows (`--key`, [`Writer::key`]) finds its own row by that key, so a near twin is
+/// only one under the same key: fleet-bench's rows for two alerts, or one alert on two hosts, share
+/// every word but the alert and host, and the second was refused and never filed (ar-4296).
+fn refuse_twin(path: &Path, content: &str, text: &str, key: Option<&str>) -> bool {
+    let near = || {
+        near_twin(content, text, Some(text)).filter(|l| {
+            key.is_none_or(|k| {
+                md::task_text(l)
+                    .to_lowercase()
+                    .starts_with(&k.to_lowercase())
+            })
+        })
+    };
     if let Some(open) = open_twin(content, text) {
         eprintln!("already open on {}: {}", path.display(), open.trim());
-    } else if let Some(near) = near_twin(content, text) {
+    } else if let Some(near) = near() {
         eprintln!(
             "near-duplicate of an open row on {}: {}",
             path.display(),
@@ -935,24 +948,58 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
 /// area does not count: inbox-triage rewrites a filed row's area, so a filer that files the same
 /// words again would miss its own row (research-pick's `research(roster):` row, re-scoped to
 /// `research(notes):`, filed nightly). Deterministic, and strict on purpose: a refused near-dup
-/// exits 3, which callers read as already filed, so a false twin would drop a row.
-fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
+/// exits 3, which callers read as already filed, so a false twin would drop a row. A [`sibling`]
+/// of the session line `from` is never one: one session's follow-ups that differ only in a short
+/// group word (`CI` against `notes`) share 87% of their words (ar-5824).
+fn near_twin<'a>(content: &'a str, text: &str, from: Option<&str>) -> Option<&'a str> {
     let line = format!("- [ ] {text}");
     let (kind, want) = title_words(&line);
     if want.len() < 3 {
         return None;
     }
     let own = names(&line);
+    let lines: Vec<&str> = content.lines().collect();
     sheet::open_rows(content)
         .into_iter()
-        .map(|(_, l)| l)
-        .find(|l| {
+        .find(|&(n, l)| {
             let (k, have) = title_words(l);
             row_type(&k) == row_type(&kind)
                 && have.len() >= 3
                 && share(&want, &have) >= NEAR_DUP
                 && names(l) == own
+                && !from.is_some_and(|f| sibling(&lines, n - 1, f))
         })
+        .map(|(_, l)| l)
+}
+
+/// The item a session's follow-up came from: its `#from/<item>`, lower-cased.
+pub(crate) fn origin_item(text: &str) -> Option<String> {
+    md::find_hashtags(text)
+        .into_iter()
+        .find_map(|t| t.strip_prefix("from/").map(str::to_lowercase))
+        .filter(|o| !o.is_empty())
+}
+
+/// Whether the row at index `i` of `lines` is a sibling of the session line `from`: it came from
+/// the same `#from/` item (on the row or a `was:` line under it), and from other words, since no
+/// `was:` line is `from` again, tags aside. One session wrote both as separate lines (a plan
+/// phase split into its passes), so they are never near twins. A line sent again is no sibling:
+/// a filer re-sending its words still finds the row triage re-scoped. An exact twin
+/// ([`open_twin`]) and a near one from any other item are twins as before.
+fn sibling(lines: &[&str], i: usize, from: &str) -> bool {
+    let Some(item) = origin_item(from) else {
+        return false;
+    };
+    let was: Vec<String> = md::row_details(lines, i)
+        .into_iter()
+        .filter_map(|d| d.strip_prefix("was: ").map(str::to_string))
+        .collect();
+    let words = |t: &str| crate::propose::bare_words(t).to_lowercase();
+    let said = words(from);
+    std::iter::once(lines[i])
+        .chain(was.iter().map(String::as_str))
+        .any(|l| origin_item(l).as_deref() == Some(item.as_str()))
+        && !was.iter().any(|w| words(w) == said)
 }
 
 /// A row title's name-like tokens, lower-cased with edge punctuation trimmed: a word led by a
@@ -1013,7 +1060,7 @@ fn share(a: &Words, b: &Words) -> usize {
 /// [`share`] (under [`MIN_SIMILAR`] is no match: one shared `the` makes none). A tie goes to the row of the
 /// same `type(area)`, then to the one higher on the sheet. The same share as [`near_twin`], so
 /// every row the writer would refuse is listed; the writer also needs the same [`names`], and only
-/// this tie-break reads the area.
+/// this tie-break reads the area. A [`sibling`] of the line's own `#from/` item is not listed.
 fn similar<'a>(content: &'a str, text: &str, top: usize) -> Vec<(usize, &'a str)> {
     similar_where(content, text, top, MIN_SIMILAR, |_| true)
 }
@@ -1027,13 +1074,15 @@ fn similar_where<'a>(
     keep: impl Fn(&str) -> bool,
 ) -> Vec<(usize, &'a str)> {
     let (kind, want) = title_words(&format!("- [ ] {text}"));
-    let mut hits: Vec<(usize, bool, &str)> = content
-        .lines()
-        .filter(|l| md::is_open_task(l) && keep(l))
-        .filter_map(|l| {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut hits: Vec<(usize, bool, &str)> = lines
+        .iter()
+        .enumerate()
+        .filter(|&(_, l)| md::is_open_task(l) && keep(l))
+        .filter_map(|(i, &l)| {
             let (k, have) = title_words(l);
             let pct = share(&want, &have);
-            (pct >= floor).then_some((pct, k == kind, l))
+            (pct >= floor && !sibling(&lines, i, text)).then_some((pct, k == kind, l))
         })
         .collect();
     hits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
@@ -1220,7 +1269,7 @@ const WANT_TAG: &str = "#requested";
 pub const EXIT_INBOXED: i32 = 4;
 
 /// The `--origin` of a plan's phases: a row its plan already approved, written directly.
-const ORIGIN_PLAN: &str = "plan";
+pub(crate) const ORIGIN_PLAN: &str = "plan";
 
 /// The triage runner: its new epics, like a hand session's, must name a listed system.
 const TRIAGE: &str = "inbox-triage";
@@ -1246,6 +1295,9 @@ pub struct Writer {
     hand: bool,
     /// The shortlist ids a hand session says it read and found to be other work (`--checked`).
     pub checked: Vec<String>,
+    /// The title prefix a filer keys this row by and dedupes on itself (`--key`): a near twin
+    /// under another key is no twin ([`refuse_twin`]).
+    pub key: Option<String>,
     /// The vouched `--origin`, else the runner's own name; a session or queue item has none, so
     /// a runner name a session inherited can never make it a direct filer.
     name: Option<String>,
@@ -1314,10 +1366,19 @@ impl Writer {
             automated,
             hand: automated && !unattended,
             checked: Vec::new(),
+            key: None,
             person: !automated && origin.is_none(),
             name,
             refused,
             filers,
+        }
+    }
+
+    /// This writer, keying its row by `key` (`ptask add --key`).
+    pub fn keyed(self, key: Option<String>) -> Writer {
+        Writer {
+            key: key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
+            ..self
         }
     }
 
@@ -1328,6 +1389,7 @@ impl Writer {
             automated: false,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: false,
             name: None,
             refused: None,
@@ -1504,8 +1566,11 @@ fn followup_refusal(
     let canon = dest.file_name().unwrap_or_default().to_string_lossy();
     let rows = block.iter().filter(|l| md::is_open_task(l));
     for (i, row) in rows.enumerate() {
+        // A plan phase's pass is admitted as the phase is (gate::split_admits); read only on a refusal.
         if let Some(why) = crate::gate::refusal(&canon, row, how.want.is_some())? {
-            return Ok(Some(why));
+            if !crate::gate::split_admits(p, &line.text, row) {
+                return Ok(Some(why));
+            }
         }
         // The rows this filing already wrote count against the day too.
         if let Some(why) = crate::gate::cap_refusal(p, &canon, row, how.want.is_some(), i)? {
@@ -1853,7 +1918,7 @@ fn file_via(
     };
     // A model-written row that twins an open row of the board joins that row, as `--dup` does.
     let joined = match &how.how {
-        How::Rows { texts, .. } if !as_is && linked.is_none() => joined_twin(&base, texts),
+        How::Rows { texts, .. } if !as_is && linked.is_none() => joined_twin(&base, texts, &line),
         _ => None,
     };
     let dup_id = match &how.how {
@@ -1960,11 +2025,11 @@ fn file_via(
 
 /// The open row every text of a model-written filing twins ([`twin_id`]), when it is one and the
 /// same row: a mixed line files as the model wrote it, so no row's words are dropped with no row
-/// to hold them.
-fn joined_twin(base: &str, texts: &[String]) -> Option<String> {
+/// to hold them. A sibling of the inbox `line`'s own `#from/` item is no twin.
+fn joined_twin(base: &str, texts: &[String], line: &sheet::InboxLine) -> Option<String> {
     let twins: Vec<Option<String>> = texts
         .iter()
-        .map(|t| twin_id(base, &md::without_agent_tag(t)))
+        .map(|t| twin_id(base, &md::without_agent_tag(t), Some(&line.text)))
         .collect();
     twins
         .first()
@@ -4582,6 +4647,11 @@ fn refuse_rewrite(
 mod tests {
     use super::*;
 
+    /// [`super::near_twin`] for a line from no session (no `#from/` item to have siblings of).
+    fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
+        super::near_twin(content, text, None)
+    }
+
     /// A words pick, as `ptask <verb> <query>` builds one.
     fn w(q: &str) -> Pick {
         Pick::new(q, false).unwrap()
@@ -5637,6 +5707,40 @@ Version: v1.2.0
         );
     }
 
+    #[test]
+    fn a_keyed_add_is_a_near_twin_only_of_a_row_under_its_own_key() {
+        let route = "firing, alertmanager-fleet tripped since 2026-11-26, expected: no fleet=fix alert, evidence: watch-companion-loop list --long alertmanager-fleet #size/s #high";
+        let board = format!("## Tasks\n- [ ] check(alert): NodeQuarantined razer {route}\n");
+        let path = Path::new("board.md");
+        let asus = format!("check(alert): NodeQuarantined asus {route}");
+        // NEGATIVE CONTROL: unkeyed, the same alert on another host is the razer row's near twin
+        assert!(refuse_twin(path, &board, &asus, None));
+        assert!(
+            !refuse_twin(
+                path,
+                &board,
+                &asus,
+                Some("check(alert): NodeQuarantined asus firing")
+            ),
+            "another key's row is no twin"
+        );
+        let moved = format!("check(alert): NodeQuarantined razer still {route}");
+        assert!(
+            refuse_twin(
+                path,
+                &board,
+                &moved,
+                Some("Check(alert): NodeQuarantined razer firing")
+            ),
+            "a near twin under the same key, in any case, is still refused"
+        );
+        assert_eq!(
+            Writer::human().keyed(Some("  ".into())).key,
+            None,
+            "a blank --key keys nothing"
+        );
+    }
+
     // Ids never come back after the row that held the highest one leaves the project.
     #[test]
     fn the_id_high_water_outlives_the_row_that_set_it() {
@@ -5929,6 +6033,94 @@ Version: v0.0.1
         let _ = fs::remove_dir_all(&root);
     }
 
+    // ar-5902: a version note holds copies of a row's id (the sprint snapshot under `## Committed`,
+    // an earlier close under `## Done rows`). `done <id>` reads the board's `## Tasks` only, so it
+    // closes the open `[/]` row there and leaves the note's copies as they were.
+    #[test]
+    fn done_closes_the_started_board_row_not_its_copy_in_a_version_note() {
+        let root = std::env::temp_dir().join(format!("ptask-done-copy-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(dir.join("agent/versions")).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo - agent board\n\n## Tasks\n- [/] fix(a): started #size/s <!-- id:dm-1 run:1124 -->\n",
+        )
+        .unwrap();
+        let note = "# demo v0.1.0\n\n## Committed\n<!-- window: opened=2026-11-18 due=- -->\n- fix(a): started, as committed #size/s <!-- id:dm-1 -->\n<!-- /window -->\n\n## Done rows\n- [x] fix(a): an earlier close #size/s <!-- id:dm-1 done:2026-11-20 pr:9 -->\n";
+        fs::write(dir.join("agent/versions/v0.1.0.md"), note).unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+
+        let pick = Pick::new("dm-1", false).unwrap();
+        assert_eq!(
+            done(
+                &p,
+                &log,
+                "demo",
+                &pick,
+                None,
+                Some("test"),
+                None,
+                Lane::Agent,
+                None
+            )
+            .unwrap(),
+            0
+        );
+        let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
+        assert!(
+            !board.contains("- [/]") && board.contains("- [x] fix(a): started"),
+            "the started row closed: {board}"
+        );
+        assert!(
+            board.contains("id:dm-1 done:") && board.contains("unverified: test"),
+            "the close keeps the id and stamps its evidence: {board}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap(),
+            note,
+            "the note's copies are history, never the row the close acts on"
+        );
+        // Negative control: with no open board row, the note's copies are all there is, and
+        // `done` finds nothing to close.
+        fs::write(
+            dir.join("agent/README.md"),
+            "# demo - agent board\n\n## Tasks\n",
+        )
+        .unwrap();
+        assert_eq!(
+            done(
+                &p,
+                &log,
+                "demo",
+                &pick,
+                None,
+                Some("test"),
+                None,
+                Lane::Agent,
+                None
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap(),
+            note
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // An id is never reused: the max is taken over both lanes and the archive, and a dropped
     // row keeps its id on the sheet.
     #[test]
@@ -6060,6 +6252,11 @@ Version: v0.0.1
 #[cfg(test)]
 mod inbox_tests {
     use super::*;
+
+    /// [`super::near_twin`] for a line from no session (no `#from/` item to have siblings of).
+    fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
+        super::near_twin(content, text, None)
+    }
 
     struct Vault {
         root: PathBuf,
@@ -6708,6 +6905,7 @@ mod inbox_tests {
             automated: true,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: false,
             name: Some("dispatch".into()),
             refused: None,
@@ -6718,6 +6916,7 @@ mod inbox_tests {
             automated: false,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: true,
             name: None,
             refused: None,
@@ -7090,6 +7289,72 @@ mod inbox_tests {
         );
     }
 
+    /// The 2026-11-25 02:23 pair (ar-5824): two focus passes one session (ar-5604) split its plan
+    /// phase into. Their titles differ only in the group word, and `CI` is under 3 letters, so the
+    /// CI title's words are all the notes title's (7 of 8, 87%).
+    const SIBLINGS: &str = "## Tasks\n\
+- [ ] fix(notes): focus pass over the 32 notes rows, reds first #high #why/runtime-fault <!-- id:ar-5776 -->\n\
+\x20 was: #agent #from/ar-5604 fix(notes): focus pass, notes: 32 rows, reds first #high\n\
+- [ ] fix(views): focus pass over the 43 views rows, reds first #normal <!-- id:ar-5813 -->\n\
+\x20 was: #agent #from/ar-5604 fix(rest): focus pass, views, skills and the rest: 43 rows, reds first #normal\n";
+
+    #[test]
+    fn a_sibling_of_the_same_session_is_no_near_twin_but_a_real_twin_still_is() {
+        let ci = "fix(ci): focus pass over the 65 CI rows, reds first #high";
+        let notes =
+            "fix(notes): focus pass over the 32 notes rows, reds first #high #why/runtime-fault";
+        assert_eq!(
+            super::near_twin(SIBLINGS, ci, None)
+                .and_then(md::row_id)
+                .as_deref(),
+            Some("ar-5776"),
+            "the fold ar-5824 saw: from no origin the CI pass reads as the notes pass's twin"
+        );
+        let line = "#agent #from/ar-5604 fix(ci): focus pass, CI: 65 rows, reds first #high";
+        assert!(
+            super::near_twin(SIBLINGS, ci, Some(line)).is_none(),
+            "a sibling from the same item is its own row"
+        );
+        assert!(twin_id(SIBLINGS, ci, Some(line)).is_none());
+        // NEGATIVE CONTROLS: a near copy from another item still folds; so does the same row
+        // filed twice by the same session (an exact twin), and a line the session sent again in
+        // the same words, whatever the row was re-scoped to.
+        let other = "#agent #from/ar-9999 fix(ci): focus pass, CI: 65 rows, reds first #high";
+        let again =
+            "#agent #from/ar-5604 fix(notes): focus pass, notes: 32 rows, reds first #normal";
+        let id = |text: &str, from: &str| twin_id(SIBLINGS, text, Some(from));
+        assert_eq!(id(ci, other).as_deref(), Some("ar-5776"));
+        assert_eq!(id(notes, line).as_deref(), Some("ar-5776"));
+        assert_eq!(
+            id(
+                "fix(docs): reds first, focus pass over the 32 notes rows",
+                again
+            )
+            .as_deref(),
+            Some("ar-5776")
+        );
+    }
+
+    #[test]
+    fn similar_lists_no_sibling_of_the_lines_own_item() {
+        let ids = |text: &str| -> Vec<String> {
+            similar(SIBLINGS, text, 10)
+                .into_iter()
+                .filter_map(|(_, l)| md::row_id(l))
+                .collect()
+        };
+        assert!(
+            ids("#agent #from/ar-5604 fix(ci): focus pass, CI: 65 rows, reds first #high")
+                .is_empty(),
+            "the model is shown no sibling to call a dup"
+        );
+        assert_eq!(
+            ids("#agent #from/ar-1 fix(ci): focus pass, CI: 65 rows, reds first #high"),
+            ["ar-5776", "ar-5813"],
+            "another session's line still sees both"
+        );
+    }
+
     #[test]
     fn similar_ranks_open_rows_by_shared_title_words_and_skips_closed_and_unrelated_ones() {
         let board = "## Tasks\n\
@@ -7398,6 +7663,7 @@ mod inbox_tests {
             automated: false,
             hand: false,
             checked: Vec::new(),
+            key: None,
             person: false,
             name: Some(crate::ingest::ORIGIN_STORY.into()),
             refused: None,

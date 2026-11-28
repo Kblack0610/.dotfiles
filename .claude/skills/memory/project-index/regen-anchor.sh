@@ -5,7 +5,7 @@
 #
 #   regen-anchor.sh [project]           # project defaults to name resolved from $PWD
 #   regen-anchor.sh [project] --rotate  # also age old decisions out to a sidecar
-#   regen-anchor.sh --all               # every key project_anchor_keys lists (lab-sync)
+#   regen-anchor.sh --all               # every key project_anchor_keys lists (agentctl-project-index, daily)
 #
 # Deterministic + idempotent: same inputs -> same AUTO block. No network. The one input
 # that is not a file is today's date, which flips a beta/prod project's status to stale
@@ -114,13 +114,37 @@ case "$TRACKER" in
 esac
 # newest outcomes month (agentctl-session-outcomes, nightly). Names sort by date.
 LATEST_OUTCOMES=$(ls "$OUTCOMES_DIR" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}\.jsonl$' | tail -1 || true)
-# Lab facts: ONE call, `notes projects --stats --json` (every profile, about 8 ms), kept
-# to the lab projects this key owns: itself, plus each project whose `repo` is this key
-# (project_lab_names), so the dotfiles anchor carries notes-cockpit and agent-runtime and
-# bnb-platform carries its apps. The lab-roots scan this replaces found a project's dir by
-# name and said nothing of its state: no stage, version, open work or status.
-LAB_JSON=""
-command -v notes >/dev/null 2>&1 && LAB_JSON="$(notes projects --stats --json 2>/dev/null || true)"
+# Lab facts: each lab project this key owns (itself, plus each project whose `repo` is this key,
+# project_lab_names, so the dotfiles anchor carries notes-cockpit and agent-runtime and
+# bnb-platform carries its apps) is read as its project page, `notes projects <name> --json`:
+# the one JSON the web and hub project pages draw (notes-cli README, "The project page"). A
+# name with no lab project fails the call and is left out.
+LAB_NAMES="$PROJECT"
+if declare -F project_lab_names >/dev/null 2>&1; then
+  LAB_NAMES="$(project_lab_names "$PROJECT")"
+  [ -n "$LAB_NAMES" ] || LAB_NAMES="$PROJECT"
+fi
+LAB_JSON="" LAB_TYPES='{}'
+if command -v notes >/dev/null 2>&1; then
+  pages="" canon=""
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    # </dev/null: the names arrive on this loop's stdin, which nothing the CLI runs may read.
+    page="$(notes projects "$name" --json 2>&1 </dev/null)" || {
+      # A tracker key that is no lab project fails quietly; a name two orgs hold is a fault to say.
+      case "$page" in *"exists in"*) echo "regen-anchor: $name: $page" >&2 ;; esac
+      continue
+    }
+    jq -e 'type == "object"' <<<"$page" >/dev/null 2>&1 || continue
+    pages="$pages$page"$'\n'
+    # The page names the canonical project, which an alias in LAB_NAMES is not.
+    canon="$(jq -r '.project // empty' <<<"$page")"
+    if [ -n "$canon" ] && declare -F project_inherited >/dev/null 2>&1; then
+      LAB_TYPES="$(jq -c --arg n "$canon" --arg t "$(project_inherited "$canon" type)" '.[$n] = $t' <<<"$LAB_TYPES")"
+    fi
+  done <<<"$LAB_NAMES"
+  [ -z "$pages" ] || LAB_JSON="$(printf '%s' "$pages" | jq -s -c '.' 2>/dev/null || true)"
+fi
 # Each project's state and window are its card's (`hub projects --json`, about 1 s): the words
 # every project surface says (stages.md, "Project state"). The sheet's own open and done counts
 # were a third number that disagreed with the card, so the line prints neither.
@@ -128,11 +152,6 @@ HUB="${HUB:-hub}"
 HUB_JSON=""
 [ -n "$LAB_JSON" ] && command -v "$HUB" >/dev/null 2>&1 && HUB_JSON="$("$HUB" projects --json 2>/dev/null || true)"
 jq -e '.cards | type == "array"' <<<"$HUB_JSON" >/dev/null 2>&1 || HUB_JSON='{"cards": []}'
-LAB_NAMES="$PROJECT"
-if declare -F project_lab_names >/dev/null 2>&1; then
-  LAB_NAMES="$(project_lab_names "$PROJECT")"
-  [ -n "$LAB_NAMES" ] || LAB_NAMES="$PROJECT"
-fi
 # repo docs, and the newest three architecture decision records. Two homes are read
 # because bnb-platform keeps its ADRs under docs/architecture/; a template is not one.
 REPO_DOCS="_(none)_"
@@ -152,47 +171,50 @@ fi
 # project with a month-old "where we are" reads as current to every session.
 lab_section() {
   echo "## Lab"
-  if [ -z "$LAB_JSON" ]; then
+  if ! command -v notes >/dev/null 2>&1; then
     echo "- _(notes CLI unavailable; lab facts not read)_"
     return
   fi
-  local rows types='{}' name
-  if declare -F project_inherited >/dev/null 2>&1; then
-    while IFS= read -r name; do
-      types="$(jq -c --arg n "$name" --arg t "$(project_inherited "$name" type)" '.[$n] = $t' <<<"$types")"
-    done <<<"$LAB_NAMES"
+  local rows
+  if [ -z "$LAB_JSON" ]; then
+    echo "- _(no lab project; \`project-map add\` scaffolds one)_"
+    return
   fi
-  rows="$(jq -r --arg names "$LAB_NAMES" --arg today "$(date +%F)" --arg home "$HOME" --argjson types "$types" \
+  rows="$(jq -r --arg today "$(date +%F)" --arg home "$HOME" --argjson types "$LAB_TYPES" \
     --slurpfile hub <(printf '%s' "$HUB_JSON") '
     def day: strptime("%Y-%m-%d") | mktime;
     def tilde: if startswith($home) then "~" + ltrimstr($home) else . end;
     # The card words: its state, then its window (`state_says`, hub_core::projects).
     def where: . as $r
-      | [$hub[0].cards[] | select(.name == $r.name and .profile == $r.profile)][0]
+      | [$hub[0].cards[] | select(.name == $r.project and .profile == $r.profile)][0]
       | .state_says // "state not read";
-    ($names | split("\n")) as $want
-    | [.[] | select(.name as $n | $want | index($n))] as $rows
+    . as $rows
     | $rows[]
+    | (.status.date // "") as $sdate
     | ((.stage == "beta" or .stage == "prod")
-       and (.status_date == "" or (($today | day) - (.status_date | day)) > 14 * 86400)) as $stale
-    | "- **\(.name)** (\([.profile, ($types[.name] // ""), .stage] | map(select(. != "")) | join(", ")))"
+       and ($sdate == "" or (($today | day) - ($sdate | day)) > 14 * 86400)) as $stale
+    | "- **\(.project)** (\([.profile, ($types[.project] // ""), .stage] | map(select(. != "")) | join(", ")))"
       + (if .version != "" then " \(.version)" else "" end)
-      + ": \(where), \(.agent) on the agent board"
-      + (if .status_date != "" then "; status \(.status_date)" else "; no status" end)
+      + ": \(where), \(.counts.agent // 0) on the agent board"
+      + (if $sdate != "" then "; status \($sdate)" else "; no status" end)
       + (if $stale then " (STALE, over 14 days at \(.stage))" else "" end)
-      + "; `\(.dir | tilde)/`"
-      + (if ($rows | length) == 1 and .status != ""
-         then "\n  - Status: " + (if (.status | length) > 200 then .status[:197] + "..." else .status end)
+      + (if .cadence.measured_days != null
+         then "; cuts every \(.cadence.measured_days)d against a \(.cadence.target_days)d target" else "" end)
+      + (if ((.knowledge // []) | length) > 0 then "; knowledge: \(.knowledge | length)\(if (.knowledge | length) >= 60 then "+" else "" end) notes" else "" end)
+      + "; `\((.lab.dir // "") | tilde)/`"
+      + (if ($rows | length) == 1 and (.status.headline // "") != ""
+         then "\n  - Status: " + (if (.status.headline | length) > 200 then .status.headline[:197] + "..." else .status.headline end)
          else "" end)
   ' <<<"$LAB_JSON" 2>/dev/null || true)"
   if [ -n "$rows" ]; then
     printf '%s\n' "$rows"
     # What each step and stage must meet. A link is written only when its target exists.
+    echo "- Project page: \`notes projects <name> --json\` (docs, plans, lessons, queue, asks and knowledge notes in one place)"
     if [ -f "$HOME/.local/src/docs/lifecycle.md" ] && [ -f "$HOME/.local/src/docs/stages.md" ]; then
       echo "- Standards: \`~/.local/src/docs/lifecycle.md\` (each step), \`~/.local/src/docs/stages.md\` (each stage, by type)"
     fi
   else
-    echo "- _(no lab project; \`project-map add\` scaffolds one)_"
+    echo "- _(lab pages read but not rendered; \`notes projects <name> --json\` shows them)_"
   fi
 }
 

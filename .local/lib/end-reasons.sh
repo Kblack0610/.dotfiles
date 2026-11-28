@@ -14,8 +14,17 @@
 END_REASONS="refused limit provider cut handoff timeout stopped"
 UNRATED_ENDS="refused limit provider cut handoff"
 
+# OUTSIDE_ENDS: UNRATED_ENDS and a timeout, the ends of a canary or trainee run that say nothing about the model
+# (a timeout rates as before for a Claude run, but a ladder run's pass rate grades the diff a finished session left
+# and its minutes already show a slow model): the canary scores it not run (pass null), and the run is queued again, never
+# closed ok or filed as a model redo (fleet-dispatch canary-close, trainee-reject --end).
+OUTSIDE_ENDS="$UNRATED_ENDS timeout"
+
 # unrated_end <end_reason> -- 0 when that end says nothing about the model.
 unrated_end() { case " $UNRATED_ENDS " in *" ${1:-none} "*) return 0 ;; *) return 1 ;; esac; }
+
+# outside_end <end_reason> -- 0 when a ladder run that ended so is queued again, not scored.
+outside_end() { case " $OUTSIDE_ENDS " in *" ${1:-none} "*) return 0 ;; *) return 1 ;; esac; }
 
 # unrated_json -- UNRATED_ENDS as a JSON array, for jq (--argjson, or spliced into a def).
 unrated_json() { local s; printf -v s '"%s",' $UNRATED_ENDS; printf '[%s]' "${s%,}"; }
@@ -32,9 +41,10 @@ unrated_json() { local s; printf -v s '"%s",' $UNRATED_ENDS; printf '[%s]' "${s%
 # an already-fixed or blocked no-diff run (no model's miss), a lost
 # host (the run went with the machine, as a cut does), and a land handoff: the lander merges the same green
 # diff unchanged, so nothing was redone (a headless tier-3 run's --pr-only ends there by design); a pair that
-# stops short of landing still shows as unrated/land in `model-lane report`'s causes.
-MOVE_CAUSES="fix-ci conflict land takeover lost reject already-fixed blocked"
-UNRATED_CAUSES="cancel land lost already-fixed blocked"
+# stops short of landing still shows as unrated/land in `model-lane report`'s causes. A ladder run that timed out is
+# queued again with cause timeout (an OUTSIDE_ENDS end that is not in UNRATED_ENDS, so lane_outcome would file a redo).
+MOVE_CAUSES="fix-ci conflict land takeover lost reject already-fixed blocked timeout"
+UNRATED_CAUSES="cancel land lost already-fixed blocked timeout"
 
 # unrated_cause <cause> -- 0 when a run with that cause is counted and never scored.
 unrated_cause() { case " $UNRATED_CAUSES " in *" ${1:-none} "*) return 0 ;; *) return 1 ;; esac; }

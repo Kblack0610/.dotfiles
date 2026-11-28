@@ -41,6 +41,7 @@ mod meeting;
 mod migrate_rows;
 mod outbox;
 mod playtest;
+mod project_space;
 mod project_sweep;
 mod project_tasks;
 mod projects;
@@ -434,7 +435,7 @@ enum Cmd {
         /// is the rows aimed at a later release, agent is the agent board's)
         #[arg(long)]
         stats: bool,
-        /// With --stats, --roadmap or --sprints: one JSON array instead. For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
+        /// With --stats, --roadmap or --sprints: one JSON array instead; with a project NAME alone: its page, one object (README "The project page"). For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
         #[arg(long)]
         json: bool,
         /// Print a project's maturity stage; with --set, declare it (a move up runs project-stage-check first).
@@ -566,7 +567,10 @@ enum Cmd {
         #[arg(long)]
         item: Option<String>,
         /// The whole record replayed into the chain's steps, inbox to done: per step what it
-        /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes
+        /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes. An intake
+        /// line is keyed by its words without tags, so a line filed with other tags still closes;
+        /// inbox open also counts a worker's outbox lines whose add event reached this record, which
+        /// `fleet-bench chain` sets against the live inbox as chain_inbox_drift
         #[arg(long, conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item"])]
         steps: bool,
         /// One line's whole path, from the record's 30 days: the events whose words hold WORDS
@@ -741,6 +745,10 @@ enum PtaskCmd {
         /// and, when the text names no priority, the reason's own
         #[arg(long, value_name = "SLUG")]
         why: Option<String>,
+        /// The title prefix the filer keys this row by and dedupes on itself (fleet-bench's
+        /// board_upsert): a near twin is then only a row under the same key
+        #[arg(long, value_name = "PREFIX")]
+        key: Option<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -1366,6 +1374,7 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             origin: None,
             checked,
             why: None,
+            key: None,
             text,
         }) if detail.is_empty() && checked.is_empty() => playtest::Op::Add {
             game,
@@ -1605,6 +1614,43 @@ fn ptask_tag(
 }
 
 /// All of stdin as text, for the commands that take their body there.
+/// `notes ptask <name> add ...`: the row as its flags give it, written by this process's writer.
+fn ptask_add(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    name: &str,
+    lane: Lane,
+    add: PtaskCmd,
+) -> Result<i32> {
+    let PtaskCmd::Add {
+        to,
+        game,
+        pr,
+        detail,
+        want,
+        origin,
+        checked,
+        why,
+        key,
+        text,
+    } = add
+    else {
+        unreachable!("ptask_add takes the add verb only");
+    };
+    refuse_playtest_flags(game.as_ref(), pr.as_ref())?;
+    project_tasks::add(
+        prof,
+        log,
+        name,
+        &reasons::add_text(&text, why.as_deref())?,
+        &detail,
+        to.as_deref(),
+        want.as_deref(),
+        lane,
+        &project_tasks::Writer::from_env(origin.as_deref(), checked).keyed(key),
+    )
+}
+
 /// `notes ptask <name> move <query> (--to vX.Y.Z | --project <dest> [--to vX.Y.Z])`.
 #[allow(clippy::too_many_arguments)]
 fn ptask_move(
@@ -1819,30 +1865,7 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::List { version, all }) => {
                     project_tasks::list(&prof, &name, version.as_deref(), all, lane)?
                 }
-                Some(PtaskCmd::Add {
-                    to,
-                    game,
-                    pr,
-                    detail,
-                    want,
-                    origin,
-                    checked,
-                    why,
-                    text,
-                }) => {
-                    refuse_playtest_flags(game.as_ref(), pr.as_ref())?;
-                    project_tasks::add(
-                        &prof,
-                        &log,
-                        &name,
-                        &reasons::add_text(&text, why.as_deref())?,
-                        &detail,
-                        to.as_deref(),
-                        want.as_deref(),
-                        lane,
-                        &project_tasks::Writer::from_env(origin.as_deref(), checked),
-                    )?
-                }
+                Some(add @ PtaskCmd::Add { .. }) => ptask_add(&prof, &log, &name, lane, add)?,
                 Some(PtaskCmd::Move { to, project, query }) => ptask_move(
                     &prof,
                     &log,
@@ -2205,7 +2228,7 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if json && !stats && roadmap.is_none() && sprints.is_none() {
-                anyhow::bail!("--json goes with --stats, --roadmap or --sprints");
+                return project_space::print_or_bail(&prof, name.as_deref());
             }
             if projects::print_view(&prof, stats, sprints.as_deref(), version.as_deref(), json)? {
                 std::process::exit(0);

@@ -445,6 +445,43 @@ load 'agent_queue/common'
   assert_success
 }
 
+@test "human-work names the human's items an ask could take off the queue, and no other (ar-5962)" {
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  # ask <id> <options> <resume> [<question>]
+  ask() { printf 'id: %s\nstatus: pending\noptions: %s\nresume: %s\nquestion: %s\n' "$1" "$2" "$3" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
+  hw() { run "$AQ" human-work "$1"; assert_success; assert_output "$2"; }
+  "$AQ" add --project game --slug mine "the human's own add" >/dev/null
+  "$AQ" add --project game --from board:game:g2-9 --tags requested --slug asked "row the human asked for" >/dev/null
+  "$AQ" add --project game --from shepherd --slug chore "chore" >/dev/null
+  # A resume that cancels the human's work, its words read as a shell reads them.
+  ask r1 'a|b' "run: agent-queue cancel mine --why \"it's moot\" --ask <id>"
+  hw r1 mine
+  ask r2 'a|b' 'run: agent-queue cancel chore --why moot'
+  hw r2 ''
+  ask r3 'a|b' 'run: ~/.local/bin/agent-queue return asked --why moot --drop && agent-queue cancel chore'
+  hw r3 asked
+  ask r4 'a|b' 'run: agent-queue move mine done --status cancelled --why moot'
+  hw r4 mine
+  # A plain return puts an item with a board row back on it, so only the one with no row counts.
+  ask r5 'a|b' 'run: agent-queue return asked --why later; agent-queue return mine --why later'
+  hw r5 mine
+  # A later command's --drop is not this one's.
+  ask r6 'a|b' 'run: agent-queue return asked --why later && agent-queue return chore --why x --drop'
+  hw r6 ''
+  # A flag before the slug, a command quoted for bash -c, and ; with no spaces are read too.
+  ask r7 'a|b' 'run: agent-queue return --drop asked --why moot'
+  hw r7 asked
+  ask r8 'a|b' "run: bash -c 'cd /tmp;agent-queue cancel mine --why moot'"
+  hw r8 mine
+  # A cancel or drop option on an ask naming the item, the answer cancel_guard reads; a sibling slug is other work.
+  ask o1 'drop|keep' '' 'drop asked and chore, not mine-2?'
+  hw o1 asked
+  ask o2 'a|b' '' 'drop asked?'
+  hw o2 ''
+  run "$AQ" human-work nope
+  assert_failure; assert_output --partial "no such ask"
+}
+
 @test "cancel keeps a backslash in --why as typed, refuses a multi-line one before touching the item, and carries why to a record-only cancel" {
   "$AQ" add --project game --slug b1 "b1"
   run "$AQ" cancel b1 --why $'two\nlines'
@@ -1069,6 +1106,16 @@ EOF
   assert_output --partial "skipped open sub-phase(s) 1b"
   assert_line --regexp '^would queue sub-p2	phases 2	after -$'
   refute_output --partial "sub-p1b"
+  # A `P3a` / `P3b` label is a sub-phase too (ar-4970): by position the open P3b was 4, the same as
+  # the P4 after it, and the add refused the whole plan with "two phases carry the same number".
+  # NEGATIVE CONTROL: before the fix this list read [1,2,3,4,4] and the add below failed.
+  printf '## Phases\n\n- [x] P1 One (#1)\n- [ ] P2 Two\n- [x] P3a Three A (#2)\n- [ ] P3b Three B\n- [ ] P4 Four\n' > "$SANDBOX/letter.md"
+  [ "$(plan_phase_list "$SANDBOX/letter.md" | jq -c 'map(.n)')" = '[1,2,"3a","3b",4]' ]
+  run "$AQ" add --plan "$SANDBOX/letter.md" --project game --slug letter --dry-run
+  assert_success
+  assert_output --partial "skipped open sub-phase(s) 3b"
+  assert_line --regexp '^would queue letter-p2	phases 2	after -$'
+  assert_line --regexp '^would queue letter-p4	phases 4	after letter-p2$'
   # A stub's phase N is the line numbered N, not the Nth line.
   printf 'Phase 2 of %s/my-plan.md\n' "$SANDBOX" > "$SANDBOX/stub.md"
   [ "$(plan_session_phases "$SANDBOX/stub.md" | jq -c 'map(.name)')" = '["2. Second thing: details"]' ]
@@ -2127,6 +2174,28 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   assert_output "p2,p3,u1"
 }
 
+@test "at the cap an urgent or red add never returns an item with an open PR, a recorded PR, pushed work or a handoff; the plain item goes" {
+  # 2026-11-25 (ar-6119): a red low add returned an item with open_pr .dotfiles#3611 and a handoff
+  # to its row, and the return dropped the handoff.
+  "$AQ" add --project game --from shepherd --slug a "a" >/dev/null
+  legacy op "open_pr: Org/game#8" --project game --from shepherd --priority low "open pr"
+  legacy rp "pr: Org/game#9" --project game --from shepherd --priority low "recorded pr"
+  legacy sv "salvage: agent-7-261125-101500" --project game --from shepherd --priority low "salvaged"
+  legacy ho "handoff: pushed to the branch, the tests are next" --project game --from shepherd --priority low "handed off"
+  for s in a op rp sv ho; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
+  export AGENT_QUEUE_CAP=5
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority low --tags red --slug r1 "red one"
+  assert_success
+  assert_output --partial "returned a to its board row to make room for low r1 under the cap of 5"
+  # Negative control: what is left is the four with a PR, pushed work or a handoff and the red add, so the next is held.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_failure 5
+  refute_output --partial "returned"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "ho,op,r1,rp,sv"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/queued/*-ho.md)" handoff)" = "pushed to the branch, the tests are next" ]
+}
+
 @test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {
   "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
   legacy n "tags: at:23:59" --project game --from shepherd --priority low "tonight"
@@ -2173,6 +2242,20 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
   assert_output "canary,gm-3,mine,one,verify-e-1"
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 5 ]
+}
+
+# ar-5865: agent-land's after-merge apply, added from a dispatched session as item:<landed>, went board-only to
+# the outbox 17 times and never ran, so ConvergenceDrift fired on 8 hosts.
+@test "agent-land's merge-owed step (AGENT_QUEUE_PULL=land) goes in past the cap from an item's session; without the pull it is board-only" {
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project game --slug one "one" >/dev/null
+  # NEGATIVE CONTROL: the same add with no pull is an item's follow-up, and the queue does not take it
+  run env -u AGENT_QUEUE_PULL AGENT_QUEUE_ITEM='' "$AQ" add --project game --priority high --from item:ship --slug after-merge-a-1-game "chore(after-merge): apply (left by o/game#1)"
+  assert_failure
+  assert_output --partial "only the board fills the queue"
+  run env AGENT_QUEUE_PULL=land AGENT_QUEUE_ITEM='' "$AQ" add --project game --priority high --from item:ship --slug after-merge-a-2-game "chore(after-merge): apply (left by o/game#2)"
+  assert_success
+  [ "$(field "$(item queued after-merge-a-2-game)" from)" = item:ship ]
 }
 
 @test "the cap passes dispatch's pull of a plan phase filed on its board row, as it passes the --plan; another board pull it holds" {
@@ -2733,6 +2816,30 @@ already"
   assert_output 0
 }
 
+# ar-4657: the item's own story row refused with a shortlist (exit 5) queues nothing: a rowless item lands a
+# PR no board row records (release-links). The session joins a row, or reruns with --checked, which notes takes.
+@test "an add whose own story row notes answers with a shortlist (exit 5) queues nothing; --checked files it" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  echo 5 > "$NOTES_FIXTURE/story.rc"
+  printf 'dm-4\t62\tagent\tfix(menu): the work already filed\n' > "$NOTES_FIXTURE/story.out"
+  rc=0; "$AQ" add --project level --running --want human --slug mine "fix(menu): the session's own work" 2>"$SANDBOX/err" || rc=$?
+  assert_equal "$rc" 7
+  grep -qF "dm-4" "$SANDBOX/err"
+  grep -qF "mine is not queued" "$SANDBOX/err"
+  grep -qF -- "--checked" "$SANDBOX/err"
+  run "$AQ" show mine
+  assert_failure
+  rm "$NOTES_FIXTURE/story.rc"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --running --want human --checked dm-4 --slug mine "fix(menu): the session's own work"
+  assert_success
+  run grep -F -- "--agent add" "$NOTES_FIXTURE/calls.log"
+  assert_output --partial " --checked=dm-4 -- "
+  run grep -x 'row: level:lv-9' "$(item running mine)"
+  assert_success
+}
+
 @test "the item's own story row and a plan's rows name their origin, a want names none" {
   story_notes
   unset AGENT_QUEUE_PULL
@@ -2805,6 +2912,24 @@ already"
   run "$AQ" gate --json after/ar-2
   assert_failure 3
   assert_equal "$(st)" "pending|after ar-2 (open)|"
+}
+
+@test "a plan phase is not stacked on an open PR in another project's repo: its worktree has no such commit, so it holds for the close (ar-5124)" {
+  stack_gh
+  printf '# P\n' > "$SANDBOX/p.md"
+  "$AQ" add --project game --slug base --running "a"
+  "$AQ" set base open_pr=Org/app#7
+  legacy second "after: base" --project game "Phase 2 of the plan $SANDBOX/p.md: b"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
+  assert_output "after base none"
+  # The add under way has no file yet: the same rule holds it.
+  run "$AQ" add --project game --slug third --running --after base "Phase 3 of the plan $SANDBOX/p.md: c"
+  assert_failure
+  assert_output --partial "waits on after base"
+  # NEGATIVE CONTROL: the same PR number in the project's own repo stacks.
+  "$AQ" set base open_pr=Org/game#7
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"[\\(.hold // \"\")] \\(.stacked_on)\"'"
+  assert_output "[] base=Org/game#7"
 }
 
 @test "an after: on two items that each have an open PR stays held: one worktree has one base (ar-3852)" {
