@@ -115,6 +115,9 @@
 #                                       times running (project, kind, shape, answer, count, ids; TSV);
 #                                       --propose files each as one agent-propose, which on accept
 #                                       queues the standing-orders.conf row. assume-due runs it hourly
+#   agent-ask batch [--take]            the daily Decisions batch: park what the last batch listed and nobody
+#                                       answered, list today's, or with --take answer it with its recommendations
+#                                       (cmd_batch; README, "The daily Decisions batch")
 #   agent-ask trace <id> [--json]       the ask's Full log: its timeline, the judge's call line
 #                                       (model, time, cost, prompt sha, raw) and Langfuse link
 #
@@ -252,6 +255,8 @@ ASKS_ROOT="$(ask_root)"
 : "${AGENT_ASK_STANDING_FILE:=${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/standing-orders.conf}"
 : "${AGENT_ASK_PROPOSE_CMD:=agent-propose}"
 : "${AGENT_ASK_STANDING_STAMP:=$HOME/.local/state/agent-ask/standing-pass}"
+# The asks the last daily batch listed, one `<day>\t<id>\t<project>\t<recommend>\t<question>` row each (cmd_batch).
+: "${AGENT_ASK_BATCH:=$HOME/.local/state/agent-ask/batch}"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
@@ -967,7 +972,7 @@ cmd_list() {
   #      resumed_at, recommend, created, session, closed_at, closed_reason, claude_session,
   #      judge, answered_by, option_notes, context, recommend_why, judge_rule, judge_reason,
   #      answer_note, assume_at, resume, parked_until, delivery, delivery_note, answer,
-  #      delivery_answer, previews, audit_of  (append new columns at the end only; parked_until is filled only while
+  #      delivery_answer, previews, audit_of, judge_level  (append new columns at the end only; parked_until is filled only while
   #      the ask is parked, so no reader compares it with the clock)
   # --undelivered adds the answered asks whose delivery has not gone out (queued, delivering) or
   # failed unread, to the rows another filter picks, or alone lists just those.
@@ -978,7 +983,7 @@ cmd_list() {
   [ "${#files[@]}" -gt 0 ] || return 0
   awk -v want="$want" -v undelivered="$undelivered" -v cutoff="$cutoff" -v now="$(now_utc)" '
     BEGIN {
-      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until delivery delivery_note answer delivery_answer previews audit_of", K, " ")
+      n = split("id project profile status kind question options task answered_at resumed_at recommend created session closed_at closed_reason claude_session judge answered_by option_notes context recommend_why judge_rule judge_reason answer_note assume_at resume parked_until delivery delivery_note answer delivery_answer previews audit_of judge_level", K, " ")
     }
     function flush(   i, d, p, row, parked, und) {
       if (cur == "") return
@@ -3323,6 +3328,56 @@ standing_pass() {
   cmd_standing --propose || true
 }
 
+# cmd_batch [--take]: the daily Decisions batch, the asks the briefing lists once a day with the
+# recommendation picked (hub-core briefing.rs `decisions`). A batchable ask is a pending question or
+# gate the judge levelled below critical (self, repo or fleet): an ask with no level, an approval and
+# a critical one stay in Needs you and page, since nothing proves they can wait a day.
+#   agent-ask batch           the once-a-day pass (agentctl-briefing, before its reader): park each ask
+#                             the last batch listed that is still pending, for its PARK_DAYS (the days
+#                             park.conf gives for its item's priority), never answering it, then list
+#                             today's batch and keep it. A second call the same day prints the same batch.
+#   agent-ask batch --take    answer each ask of the batch still pending with its recommendation, as the
+#                             one reply the human gives; one with no recommendation is left for its card.
+#                             An agent session answers as agent, so what only the human may answer stays pending.
+# Output: the batch, one `<id>\t<project>\t<recommend>\t<question>` row each.
+cmd_batch() {
+  local today id rec f tmp
+  today="$(date +%F)"
+  case "${1:-}" in
+    --take)
+      while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        f="$(find_ask "$id")"
+        [ -n "$f" ] && [ "$(field "$f" status)" = pending ] || continue
+        rec="$(field "$f" recommend)"
+        if [ -z "$rec" ]; then echo "agent-ask batch: $id has no recommendation; left for its card" >&2; continue; fi
+        cmd_answer_cli "$id" "$rec" </dev/null
+      done < <(cut -f2 "$AGENT_ASK_BATCH" 2>/dev/null)
+      echo "agent-ask batch: took the recommendation on each pending pick" >&2
+      return 0 ;;
+    '') ;;
+    *) echo "usage: agent-ask batch [--take]" >&2; return 2 ;;
+  esac
+  if [ "$(awk -F'\t' 'NR == 1 { print $1 }' "$AGENT_ASK_BATCH" 2>/dev/null)" = "$today" ]; then
+    cut -f2- "$AGENT_ASK_BATCH"; return 0
+  fi
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    f="$(find_ask "$id")"
+    [ -n "$f" ] && [ "$(field "$f" status)" = pending ] || continue
+    [[ "$(field "$f" parked_until)" > "$(now_utc)" ]] && continue
+    cmd_park "$id" </dev/null 2>/dev/null || true
+  done < <(cut -f2 "$AGENT_ASK_BATCH" 2>/dev/null)
+  mkdir -p "$(dirname "$AGENT_ASK_BATCH")" || return 1
+  tmp="$(mktemp "$AGENT_ASK_BATCH.XXXXXX")" || return 1
+  cmd_list --all --pending | awk -F'\t' -v day="$today" '
+    $33 == "" && $5 != "approval" && ($34 == "self" || $34 == "repo" || $34 == "fleet") {
+      q = $6; gsub(/[\t\n]/, " ", q); print day "\t" $1 "\t" $2 "\t" $11 "\t" substr(q, 1, 300) }' > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$AGENT_ASK_BATCH"
+  echo "agent-ask batch: cut today's batch, parked what the last one left open" >&2
+  cut -f2- "$AGENT_ASK_BATCH"
+}
+
 # older_asks <file>: the pending asks posted before this one that another can join (settle_by_verdict),
 # `- <id> (<project>): <question>`, newest first, at most 30.
 older_asks() {
@@ -3541,6 +3596,7 @@ case "$sub" in
   judge)        cmd_judge "$@" ;;
   precedents)   cmd_precedents "$@" ;;
   standing)     cmd_standing "$@" ;;
+  batch)        cmd_batch "$@" ;;
   sweep)        cmd_sweep "$@" ;;
   assume-due)   cmd_assume_due ;;
   expire)       cmd_expire "$@" ;;
