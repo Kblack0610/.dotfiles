@@ -265,6 +265,15 @@ fn repo_export_dead(root: &Path, target: &str) -> Option<bool> {
     Some(!(root.join(target).is_file() || root.join(format!("{target}.md")).is_file()))
 }
 
+/// Whether a `journal/refs/<date>/..` link names a file that `notes report archive` or `migrate`
+/// moved (the refs archive, the inbox): the scan skips `journal/`, so it cannot place the link,
+/// but the resolver `notes show` follows it, so it is not dead.
+fn moved_on_disk(p: &Profile, target: &str) -> bool {
+    crate::report::moved_targets(p, target)
+        .iter()
+        .any(|t| p.root.join(format!("{t}.md")).is_file() || p.root.join(t).is_file())
+}
+
 pub fn scan(p: &Profile) -> Result<Scan> {
     let mut raw: Vec<(Kind, PathBuf, String)> = Vec::new();
     for (path, content) in collect(&p.zettel, false)? {
@@ -322,6 +331,7 @@ pub fn scan(p: &Profile) -> Result<Scan> {
                     .or_default()
                     .push(note.link.clone()),
                 None if repo_export_dead(&p.root, target) == Some(false) => {}
+                None if moved_on_disk(p, target) => {}
                 None => dead.push((note.link.clone(), target.clone())),
             }
         }
@@ -487,6 +497,33 @@ mod tests {
         write(&root, "knowledge/brightsign/Players.md", "# players\n");
         let s = scan(&crate::config::test_profile(root.to_str().unwrap())).unwrap();
         assert!(s.dead.is_empty(), "{:?}", s.dead);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A link written before `archive_past` moved its refs day keeps resolving where the file went.
+    #[test]
+    fn a_link_to_an_archived_or_migrated_ref_is_not_dead() {
+        let root = vault("moved");
+        write(
+            &root,
+            "knowledge/a.md",
+            "[[journal/refs/2026-11-19/kept]] [[journal/refs/2026-11-25/report]] [[journal/refs/2026-11-19/gone]]\n",
+        );
+        write(
+            &root,
+            "journal/refs/archive/2026/2026-11/2026-11-19/kept.md",
+            "# k\n",
+        );
+        write(&root, "inbox/archive/2026-11/2026-11-25/report.md", "# r\n");
+        let s = scan(&crate::config::test_profile(root.to_str().unwrap())).unwrap();
+        // negative control: a ref that exists nowhere still counts
+        assert_eq!(
+            s.dead,
+            vec![(
+                "knowledge/a".to_string(),
+                "journal/refs/2026-11-19/gone".to_string()
+            )]
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
