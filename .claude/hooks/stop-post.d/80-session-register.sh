@@ -7,7 +7,7 @@
 #     never the human ~/.notes/captures (low-noise, agent-facing by design).
 #   - Registered: every interactive session (transcript entrypoint `cli`, a hand or a dispatched
 #     tmux session, read-only or editing through Bash: agentctl-session-outcomes, fleet-bench and
-#     `sessions` read their sessions from here), and a headless `claude -p` call only when it made
+#     `sessions` read their sessions from here), and a headless call only when it made
 #     an edit call, left a dirty git tree, or is an agentctl runner (AGENTCTL_NAME, which the runner
 #     wrapper exports): a read-only runner still spends, and its row carries the runner's name in
 #     `agentctl` (outcome rows already use `runner` as a boolean). A read-only headless call (a judge,
