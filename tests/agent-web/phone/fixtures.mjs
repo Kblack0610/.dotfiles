@@ -235,7 +235,7 @@ const runner = (i) => ({ labels: { name: `runner-${i}`, host: pick(["asus-laptop
 const infra = {
   ok: true, at: NOW, grafana: home.grafana, down: [],
   instant: { cc: [{ labels: { __name__: "cc:overall_status" }, value: 0 }, { labels: { __name__: "cc:asks_open" }, value: 2 },
-    ...["workstation", "asus-laptop"].flatMap((host, i) => [["cc:host_cores", 24], ["cc:host_cpu_busy_ratio", 0.7 - i / 2], ["cc:host_mem_used_ratio", 0.5], ["cc:host_load1", 12], ["cc:host_temp_c", 71]].map(([__name__, value]) => ({ labels: { __name__, host }, value })))], red: [], runners: rows(4, runner), waiting: [], gates: [], hourly: [], local_hourly: [], failed: [], local_failed: [], recent: [], recent_dur: [], power: [], governor: [], cores: [], runner_use: [], withheld: [] },
+    ...["workstation", "asus-laptop"].flatMap((host, i) => [["cc:host_cores", 24], ["cc:host_cpu_busy_ratio", 0.7 - i / 2], ["cc:host_mem_used_ratio", 0.5], ["cc:host_load1", 12], ["cc:host_temp_c", 71]].map(([__name__, value]) => ({ labels: { __name__, host }, value })))], red: [], runners: rows(4, runner), waiting: [], gates: [], hourly: [], local_hourly: [], failed: [], local_failed: [], recent: [], recent_dur: [], cores: [], runner_use: [] },
 };
 const jobs = {
   table: table(7, ["state", "source", "name", "started", "took", "result", "host", "detail"], ["all", "running", "queued", "done", "failed"], { source: ["forgejo", "github", "local"], result: ["ok", "failed"] }),
@@ -246,8 +246,8 @@ const jobs = {
 const localFail = (i) => ({ repo: "game-core-playground", branch: `feat/${SLUGS[i]}`, platform: pick(["android", "windows", "ios"], i), result: pick(["failure", "cancelled"], i), n: 3 - i, last: ago(30 + i * 90) });
 infra.ci = { hosts: 3, slots: 6, busy: 4, queued: 1, oldest: ago(25), red: [], day: { runs: 40, pass: 0.9, failed_main: 1, failed_branch: 3, cancelled: 2, local: 5, local_pass: 0.8, read: true } };
 infra.tables = {
-  machines: { rows: [], table: table(0, ["machine", "state", "booked", "cpu", "6h", "load", "mem", "temp", "disk", "running", "next", "governor", "power", "up"]) },
-  pools: { rows: [], table: table(0, ["pool", "weight", "running", "waiting", "oldest", "done_1h", "done_5h", "done", "usual", "pass", "machines"]) },
+  machines: { rows: [], table: table(0, ["machine", "state", "booked", "cpu", "6h", "load", "mem", "temp", "disk", "running", "next", "up"]) },
+  pools: { rows: [], table: table(0, ["pool", "running", "waiting", "oldest", "done_1h", "done_5h", "done", "usual", "pass", "machines"]) },
   runners: { rows: [], table: table(0, ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"]) },
   queued: { rows: [], table: table(0, ["job", "pool", "ref", "n", "wait", "needs", "can"]) },
   local: { rows: rows(3, localFail), table: table(3, ["last", "repo", "branch", "platform", "result", "failed"], ["all"], { repo: ["game-core-playground"], platform: ["android", "windows", "ios"] }) },
@@ -391,7 +391,7 @@ const stackAll = {
   rows: rows(STACK_SKILLS, (i) => ({ name: `${pick(SLUGS, i)}-${i}`, category: pick(["ops", "workstreams", "monitoring"], i), description: TEXT[i % TEXT.length], repo: pick(["public", "private"], i), paths: i % 9 ? [] : ["**/*.unity"], calls: i * 7, runners: i % 4 ? [] : [`fleet-${pick(SLUGS, i)}`], drift: i % 5 ? [] : [{ kind: "deadpath", item: "~/gone", detail: "path does not exist" }] })),
   agents: { table: table(12, ["agent", "model", "tools", "repo"], ["all"], { model: ["sonnet", "inherit"] }), rows: rows(12, (i) => ({ name: `${pick(SLUGS, i)}-agent`, model: i % 2 ? "sonnet" : "", tools: "Read, Grep, Glob, Bash, WebSearch, WebFetch", repo: "public", description: TEXT[i % TEXT.length] })) },
   hooks: { table: table(STACK_HOOKS, ["harness", "event", "matcher", "script", "from", "rules"], ["all", "missing"], { harness: ["claude", "codex"], event: ["PreToolUse", "Stop"] }), rows: rows(STACK_HOOKS, (i) => ({ harness: pick(["claude", "codex"], i), event: pick(["PreToolUse", "Stop", "SessionStart"], i), matcher: i % 3 ? "Bash|Read|Edit|Write|MultiEdit" : "", script: `${pick(SLUGS, i)}.sh`, command: `~/.claude/hooks/${pick(SLUGS, i)}.sh`, from: "settings.json", found: i !== 3, rules: i % 4 ? 0 : 2, source: `~/.dotfiles/.claude/hooks/${pick(SLUGS, i)}.sh` })) },
-  rules: { table: table(STACK_RULES, ["rule", "kind", "number", "confidence", "state", "source"], ["rules", "mechanisms", "all", "stale", "moved", "restates", "dead", "absent"], { kind: ["invariant", "provisional"], state: ["ok", "moved"] }), rows: rows(STACK_RULES, (i) => ({ rule: TEXT[i % TEXT.length], kind: pick(["provisional", "invariant"], i), number: String(i * 3), confidence: pick(["high", "medium", "low"], i), form: "rule", state: i % 7 ? "ok" : "moved", source: "~/.local/src/docs/standards.md", today: "", revisit: "", why: TEXT[(i + 1) % TEXT.length] })) },
+  rules: { table: table(STACK_RULES, ["rule", "kind", "number", "confidence", "state", "source"], ["rules", "mechanisms", "all", "stale", "moved", "restates", "layer", "dead", "absent"], { kind: ["invariant", "provisional"], state: ["ok", "moved"] }), rows: rows(STACK_RULES, (i) => ({ rule: TEXT[i % TEXT.length], kind: pick(["provisional", "invariant"], i), number: String(i * 3), confidence: pick(["high", "medium", "low"], i), form: "rule", state: i % 7 ? "ok" : "moved", source: "~/.local/src/docs/standards.md", today: "", revisit: "", why: TEXT[(i + 1) % TEXT.length] })) },
   rule_files: [{ name: "agent-runtime.md", paths: [".local/bin/agentctl*", ".local/bin/fleet-*"] }, { name: "skill-corpus.md", paths: [".claude/skills/**"] }],
 };
 // The read with Rules on page `rp`: what /api/stack and /api/stack?rpg=N answer.

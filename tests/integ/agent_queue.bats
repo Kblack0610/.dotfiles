@@ -1789,27 +1789,37 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -z "$("$AQ" next --json)" ] || fail "a closed PR released its hold"
 }
 
-@test "a nightly: tag holds while today's scheduled runs go, and releases when they finish" {
-  # The desk is in Los Angeles: Tests fires 02:00 and Multi 04:30 on 2026-11-06 (PST).
-  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json"
-  # state <synced_at> <multi.yml status>: Tests finished, Multi's run in the given status.
-  state() {
-    jq -n --arg s "$1" --arg m "$2" '{repos: [{repo: "Org/game", synced_at: $s, workflows: [
-      {path: ".github/workflows/multi.yml", crons: ["30 12 * * *"], timeout_min: 300,
-       runs: [{id: 2, created_at: "2026-11-06T12:41:00Z", status: $m}]},
-      {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
-       runs: [{id: 1, created_at: "2026-11-06T10:04:00Z", status: "completed"}]}]}]}' > "$SCHEDULES_STATE"
-  }
+# nightly: holds read schedules-sync pending over a hand-written state file and run ledger. The desk
+# is in Los Angeles: the night runner starts a pass at 22:00 local, 06:00 UTC the next day (PST).
+# nstate <synced_at> [<night set JSON>]: Org/game with an every-10-minutes drop-closed-gates.yml
+# whose run is going, which never holds a nightly: item.
+nstate() {
+  local set_='{"night": {"test.yml": "Tests (all)"}, "wide": {}, "held": {"soak.yml": "Soak (all)"}}'
+  jq -n --arg s "$1" --argjson n "${2:-$set_}" '{repos: [{repo: "Org/game", base: "main", synced_at: $s, night: $n,
+    workflows: [{path: ".github/workflows/drop-closed-gates.yml", crons: ["*/10 * * * *"], timeout_min: 5,
+                 runs: [{id: 90, created_at: $s, status: "in_progress"}]}]}]}' > "$SCHEDULES_STATE"
+}
+# nrun <id> <created_at> <status>: a full run of test.yml on main, the night member
+nrun() {
+  jq -nc --argjson id "$1" --arg c "$2" --arg st "$3" '{forge: "github", repo: "Org/game", id: $id, attempt: 1,
+    workflow: "Tests (all)", path: ".github/workflows/test.yml", branch: "main", event: "workflow_dispatch",
+    status: $st, created_at: $c, ended_at: null}' >> "$SCHEDULES_RUNS_LEDGER"
+}
+
+@test "a nightly: tag holds while the night set's runs go, and releases when they finish" {
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json" SCHEDULES_RUNS_LEDGER="$SANDBOX/runs.jsonl"
   legacy triage "tags: nightly:game" --project game --priority urgent "a"
   "$AQ" add --project game --slug other "b"
   # No state file yet: held, never released on a guess.
   AGENT_QUEUE_NOW=2026-11-06T05:00 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"triage\") | .hold'"
   assert_output "nightly:game (no schedules state)"
-  state 2026-11-06T12:55:00Z in_progress
+  nstate 2026-11-06T12:55:00Z
+  nrun 1 2026-11-06T06:00:00Z in_progress
   AGENT_QUEUE_NOW=2026-11-06T05:00 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"triage\") | .hold'"
-  assert_output "nightly:game (multi.yml running)"
+  assert_output "nightly:game (test.yml running)"
   [ "$(AGENT_QUEUE_NOW=2026-11-06T05:00 "$AQ" next --json | jq -r .slug)" = other ]
-  state 2026-11-06T14:05:00Z completed
+  nstate 2026-11-06T14:05:00Z
+  nrun 1 2026-11-06T06:00:00Z completed
   [ "$(AGENT_QUEUE_NOW=2026-11-06T06:10 "$AQ" next --json | jq -r .slug)" = triage ]
   # The same finished file read 40 minutes later is stale, and holds.
   AGENT_QUEUE_NOW=2026-11-06T06:50 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"triage\") | .hold'"
@@ -1820,35 +1830,56 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_failure; assert_output --partial "nightly:<repo>"
 }
 
-@test "a dated at: tag with a nightly: tag waits for the next night's runs, not today's" {
-  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json"
-  jq -n '{repos: [{repo: "Org/game", synced_at: "2026-11-07T09:05:00Z", workflows: [
-    {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
-     runs: [{id: 1, created_at: "2026-11-06T10:04:00Z", status: "completed"}]}]}]}' > "$SCHEDULES_STATE"
+# ar-1585: a nightly:unity-core-playground hold printed "drop-closed-gates.yml due HH:MM" all day.
+@test "a nightly: hold releases once the night member finished while drop-closed-gates.yml still has runs due" {
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json" SCHEDULES_RUNS_LEDGER="$SANDBOX/runs.jsonl"
+  legacy day "tags: nightly:game" --project game "a"
+  nstate 2026-11-06T21:55:00Z
+  nrun 1 2026-11-06T06:00:00Z completed
+  [ "$(AGENT_QUEUE_NOW=2026-11-06T14:00 "$AQ" next --json | jq -r .slug)" = day ]
+  # NEGATIVE CONTROL: the same fixture with the night member still running holds.
+  nrun 1 2026-11-06T06:00:00Z in_progress
+  nstate 2026-11-06T17:55:00Z
+  AGENT_QUEUE_NOW=2026-11-06T09:59 run bash -c "'$AQ' list --json | jq -r '.hold'"
+  assert_output "nightly:game (test.yml running)"
+  [ -z "$(AGENT_QUEUE_NOW=2026-11-06T09:59 "$AQ" next --json)" ] || fail "a running night released its hold"
+}
+
+@test "a nightly: hold on a repo with no night set holds and names it, never judging its crons" {
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json" SCHEDULES_RUNS_LEDGER="$SANDBOX/runs.jsonl"
+  legacy bare "tags: nightly:game" --project game "a"
+  nstate 2026-11-06T21:55:00Z
+  jq '.repos[0] |= (del(.night) | .night_absent = "2026-11-06T00:00:00Z")' "$SCHEDULES_STATE" > "$SCHEDULES_STATE.x" && mv "$SCHEDULES_STATE.x" "$SCHEDULES_STATE"
+  nrun 1 2026-11-06T06:00:00Z completed
+  AGENT_QUEUE_NOW=2026-11-06T14:00 run bash -c "'$AQ' list --json | jq -r '.hold'"
+  assert_output "nightly:game (no night set for game (no config/ci/nightly.json))"
+  [ -z "$(AGENT_QUEUE_NOW=2026-11-06T14:00 "$AQ" next --json)" ] || fail "no night set released the hold"
+}
+
+@test "a dated at: tag with a nightly: tag waits for that date's night, not the last one" {
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json" SCHEDULES_RUNS_LEDGER="$SANDBOX/runs.jsonl"
+  nstate 2026-11-07T09:05:00Z
+  nrun 1 2026-11-06T06:00:00Z completed
   legacy validate "tags: at:2026-11-07T00:00 nightly:game" --project game "a"
   AGENT_QUEUE_NOW=2026-11-06T09:00 run bash -c "'$AQ' list --json | jq -r '.hold'"
   assert_output "at:2026-11-07T00:00"
   AGENT_QUEUE_NOW=2026-11-07T01:00 run bash -c "'$AQ' list --json | jq -r '.hold'"
-  assert_output "nightly:game (test.yml due 02:00)"
+  assert_output "nightly:game (test.yml not started)"
 }
 
-@test "a nightly: hold with a dated at: stays released after midnight once that night finished (22:00 slot)" {
-  # 2026-11-08 PST: soak.yml at 06:00 UTC is 22:00 local, the day's last slot; it finished 23:48.
+@test "a nightly: hold with a dated at: stays released after midnight once that night's 22:00 pass finished" {
   # Judged by today, the next morning every slot of 11-09 held again (nightly-validate-20261108).
-  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json"
-  jq -n '{repos: [{repo: "Org/game", synced_at: "2026-11-09T16:15:00Z", workflows: [
-    {path: ".github/workflows/soak.yml", crons: ["0 6 * * *"], timeout_min: 300,
-     runs: [{id: 3, created_at: "2026-11-09T06:21:00Z", status: "completed"}]},
-    {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
-     runs: [{id: 1, created_at: "2026-11-08T10:01:00Z", status: "completed"},
-            {id: 2, created_at: "2026-11-09T10:01:00Z", status: "in_progress"}]}]}]}' > "$SCHEDULES_STATE"
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json" SCHEDULES_RUNS_LEDGER="$SANDBOX/runs.jsonl"
+  nstate 2026-11-09T16:15:00Z
+  nrun 1 2026-11-09T06:00:00Z completed
+  nrun 2 2026-11-09T16:00:00Z in_progress
   legacy validate "tags: at:2026-11-08T00:00 nightly:game" --project game "a"
   [ "$(AGENT_QUEUE_NOW=2026-11-09T08:20 "$AQ" next --json | jq -r .slug)" = validate ]
-  # NEGATIVE CONTROL: with no at: date the same hold reads today (11-09) and still waits on soak.
+  # NEGATIVE CONTROL: with no at: date the same hold reads the newest full run, which is going.
   "$AQ" cancel validate
   legacy today "tags: nightly:game" --project game "b"
   AGENT_QUEUE_NOW=2026-11-09T08:20 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"today\") | .hold'"
-  assert_output "nightly:game (soak.yml due 22:00)"
+  assert_output "nightly:game (test.yml running)"
 }
 
 @test "bump changes priority and with it the order" {

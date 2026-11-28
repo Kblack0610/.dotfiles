@@ -187,6 +187,63 @@ EOF2
   assert_equal "$(field a '[.prs[].number] | join(",")')" 10
 }
 
+@test "pr-link records: a PR the session only viewed or commented on is not claimed, one gh printed or one never named still is" {
+  cat > "$TR/v.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"v1","name":"Bash","input":{"command":"gh pr view 30 -R o/r --json state,title | head -c 500"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"v1","content":"{\"state\":\"OPEN\"}"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"v2","name":"Bash","input":{"command":"gh pr comment https://github.com/o/r/pull/31 --body 'quarantined'"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"v2","content":"https://github.com/o/r/pull/31#issuecomment-1"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"v3","name":"Bash","input":{"command":"gh pr create --title 'feat: v' --body x && gh pr view 32 -R o/r"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"v3","content":"https://github.com/o/r/pull/32"}]}}
+{"type":"pr-link","sessionId":"sess-v","prNumber":30,"prUrl":"https://github.com/o/r/pull/30","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-v","prNumber":31,"prUrl":"https://github.com/o/r/pull/31","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-v","prNumber":32,"prUrl":"https://github.com/o/r/pull/32","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-v","prNumber":33,"prUrl":"https://github.com/o/r/pull/33","prRepository":"o/r"}
+EOF2
+  jq -cn --arg t "$TR/v.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-v", project: "proj", transcript: $t, title: "title v", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$GH_FIXTURE/prs.o-r" <<'EOF2'
+[{"number":10,"state":"MERGED","title":"feat: a","mergedAt":"2026-10-19T01:00:00Z"},
+ {"number":30,"state":"OPEN","title":"feat: theirs 30"},
+ {"number":31,"state":"OPEN","title":"feat: theirs 31"},
+ {"number":32,"state":"MERGED","title":"feat: v","mergedAt":"2026-10-19T03:00:00Z"},
+ {"number":33,"state":"MERGED","title":"feat: subagent","mergedAt":"2026-10-19T04:00:00Z"}]
+EOF2
+  "$SUBJECT" run
+  # 30 and 31 were only looked at; 32 was printed by gh pr create; 33 is a subagent's, never named
+  assert_equal "$(field v '[.prs[].number] | join(",")')" "32,33"
+}
+
+@test "pr-link records: only a command that runs and names the PR first drops it (heredoc, quoted text, a flag value, another repo's PR, checks keep the claim)" {
+  cat > "$TR/w.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w1","name":"Bash","input":{"command":"gh pr comment 40 -R o/r --body 'quarantined 2 tests'"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w2","name":"Bash","input":{"command":"cat >> t.bats <<'X'\ngh pr view 41 -R o/r\nX\nrg 'gh pr view 42' x; gh pr checks 43 --interval 10; gh pr view 44 -R other/repo"}}]}}
+{"type":"pr-link","sessionId":"sess-w","prNumber":2,"prUrl":"https://github.com/o/r/pull/2","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":10,"prUrl":"https://github.com/o/r/pull/10","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":40,"prUrl":"https://github.com/o/r/pull/40","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":41,"prUrl":"https://github.com/o/r/pull/41","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":42,"prUrl":"https://github.com/o/r/pull/42","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":43,"prUrl":"https://github.com/o/r/pull/43","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":44,"prUrl":"https://github.com/o/r/pull/44","prRepository":"o/r"}
+EOF2
+  jq -cn --arg t "$TR/w.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-w", project: "proj", transcript: $t, title: "title w", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$GH_FIXTURE/prs.o-r" <<'EOF2'
+[{"number":2,"state":"MERGED","title":"feat: two","mergedAt":"2026-10-19T01:00:00Z"},
+ {"number":10,"state":"MERGED","title":"feat: a","mergedAt":"2026-10-19T01:30:00Z"},
+ {"number":40,"state":"OPEN","title":"feat: theirs"},
+ {"number":41,"state":"MERGED","title":"feat: 41","mergedAt":"2026-10-19T02:00:00Z"},
+ {"number":42,"state":"MERGED","title":"feat: 42","mergedAt":"2026-10-19T03:00:00Z"},
+ {"number":43,"state":"MERGED","title":"feat: 43","mergedAt":"2026-10-19T04:00:00Z"},
+ {"number":44,"state":"MERGED","title":"feat: 44","mergedAt":"2026-10-19T05:00:00Z"}]
+EOF2
+  "$SUBJECT" run
+  # 40 is the only one a command ran against: 41 and 42 are text, 2 and 10 are a flag value and a body word, 44 is another repo's
+  assert_equal "$(field w '[.prs[].number] | join(",")')" "2,10,41,42,43,44"
+}
+
 @test "a claim in a repo the PR store does not list (a fixture's pr-link, a search's output) is dropped and named, the run still WORKED" {
   cat > "$TR/f.jsonl" <<'EOF2'
 {"type":"assistant","message":{"content":[{"type":"tool_use","id":"g1","name":"Bash","input":{"command":"rg -n 'gh pr create|pull/' tests/unit/x.bats"}}]}}
@@ -1235,10 +1292,18 @@ EOF
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | .edits | tostring')" null
 }
 
-@test "an opencode session in a directory the registry does not know files under _unscoped; a known one keeps its project" {
+# real_resolver -- the shipped project-name.sh over a registry that knows only /w/proj, and an
+# unregistered git clone at $SANDBOX/w/<name>: the reader files by the resolver alone.
+real_resolver() {
+  export SO_PROJECT_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" PROJECT_MAP_FILE="$SANDBOX/map.json"
+  jq -n '{paths: {"/w/proj": "proj"}}' > "$PROJECT_MAP_FILE"
+  git init -q "$SANDBOX/w/$1"
+}
+
+@test "an opencode session in a repo the registry does not know files under _unscoped; a known one keeps its project" {
   oc_db
-  echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
-  sqlite3 "$SO_OPENCODE_DB" "INSERT INTO session_v2 VALUES ('ses_stray', NULL, '/w/bnb-agents', 'smoke', NULL, 0, 0.1, 1, 1, 0, 0, 0, $(( (STOP - 120) * 1000 )), $(( (STOP - 60) * 1000 )));"
+  real_resolver bnb-agents
+  sqlite3 "$SO_OPENCODE_DB" "INSERT INTO session_v2 VALUES ('ses_stray', NULL, '$SANDBOX/w/bnb-agents', 'smoke', NULL, 0, 0.1, 1, 1, 0, 0, 0, $(( (STOP - 120) * 1000 )), $(( (STOP - 60) * 1000 )));"
   run "$SUBJECT" run
   assert_success
   [ ! -e "$SO_OUT/bnb-agents" ]
@@ -1644,11 +1709,11 @@ cx_rollouts() {
 
 @test "a codex session in a repo the registry does not know files under _unscoped, never a stray key the doctor fails" {
   cx_rollouts
-  echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
+  real_resolver qmk_firmware
   local t0
   t0=$(date -u -d "@$((STOP - 60))" +%Y-%m-%dT%H:%M:%S.000Z)
-  jq -cn --arg t0 "$t0" '
-    {timestamp: $t0, type: "session_meta", payload: {id: "cx-stray", cwd: "/w/qmk_firmware", originator: "codex_exec", source: "exec"}},
+  jq -cn --arg t0 "$t0" --arg cwd "$SANDBOX/w/qmk_firmware" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-stray", cwd: $cwd, originator: "codex_exec", source: "exec"}},
     {timestamp: $t0, type: "event_msg", payload: {type: "user_message", message: "trackball speed"}}
   ' > "$SO_CODEX_SESSIONS/2026/10/19/rollout-2026-10-19T00-02-00-cx-stray.jsonl"
   queue_stub

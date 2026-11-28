@@ -1944,12 +1944,12 @@ async fn build_log(Query(key): Query<hub_core::builds::RunKey>) -> ApiResult<Res
     Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
 }
 
-/// The opened run's header, jobs and steps, priced with the Infra answer's rates.
+/// The opened run's header, jobs and steps.
 async fn build_detail(
     State(s): State<Shared>,
     Query(key): Query<hub_core::builds::RunKey>,
 ) -> ApiResult<Response> {
-    let body = builds::detail(key, s.infra.rates().await, s.queue.items().await)
+    let body = builds::detail(key, s.queue.items().await)
         .await
         .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
     Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
