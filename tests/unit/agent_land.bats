@@ -1314,6 +1314,16 @@ GATE_LISTED='[{"name":"gate guard","bucket":"pass","workflow":"gate guard"},{"na
   assert_output 0
 }
 
+@test "a required check unlisted while a run on the head is open: that run is waited on first, without spending the registration tries (ar-6328 review)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  printf '%s\n' '[{"status":"queued","workflowName":"shell tests","attempt":1}]' >"$NOTES_FIXTURE/runs.open"
+  fake_sleep
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=1 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'landed #42'
+}
+
 @test "a green watch whose head lists every required check lands with no extra wait (ar-6328)" {
   echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
   printf '%s\n' "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
