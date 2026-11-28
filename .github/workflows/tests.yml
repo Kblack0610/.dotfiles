@@ -449,10 +449,16 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    # Each draw step has its own 1-minute guard, so a hung API call fails that step, which
+    # continue-on-error absorbs, and the check still runs inside the job's guard.
     steps:
       - uses: actions/checkout@v4
+        id: checkout
+        timeout-minutes: 1
         continue-on-error: true
       - uses: actions/download-artifact@v4
+        id: junit
+        timeout-minutes: 1
         continue-on-error: true
         with:
           pattern: junit-*
@@ -460,6 +466,8 @@ jobs:
       # bats names a suite by its file's basename, and seven basenames exist in two tiers
       # (unit/worktree.bats, integ/worktree.bats). The artifact name carries the tier.
       - name: Name each suite by tier
+        id: tiers
+        timeout-minutes: 1
         continue-on-error: true
         run: |
           for f in junit/junit-*/*/report.xml; do
@@ -468,6 +476,8 @@ jobs:
             sed -i "s#<testsuite name=\"#&$tier/#" "$f"
           done
       - uses: dorny/test-reporter@a43b3a5f7366b97d083190328d2c652e1a8b6aa2 # v3.0.0
+        id: draw
+        timeout-minutes: 1
         continue-on-error: true
         with:
           name: bats results
@@ -476,6 +486,13 @@ jobs:
           list-tests: failed
           fail-on-error: false
           fail-on-empty: false
+      # A draw that failed says so, since the missing table would otherwise read as no results.
+      - name: Say when the table was not drawn
+        if: ${{ steps.checkout.outcome != 'success' || steps.junit.outcome != 'success' || steps.tiers.outcome != 'success' || steps.draw.outcome != 'success' }}
+        run: |
+          msg="bats results not drawn: checkout ${{ steps.checkout.outcome }}, download ${{ steps.junit.outcome }}, naming ${{ steps.tiers.outcome }}, reporter ${{ steps.draw.outcome }}"
+          echo "::warning::$msg"
+          echo "$msg" >>"$GITHUB_STEP_SUMMARY"
       - name: Every gating job passed
         env:
           NEEDS: ${{ toJSON(needs) }}
