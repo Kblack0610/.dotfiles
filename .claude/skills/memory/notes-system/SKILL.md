@@ -70,7 +70,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 
 ## Profiles
 
-`~/.config/notes/config.toml` is the machine's source of truth for paths (copy `config.toml.example` to start one). Profile resolution:
+`~/.config/notes/config.toml` is the machine's source of truth for paths (copy `config.toml.example` to start one); the shared org and job profiles come from `profiles.toml` beside it, linked by `notes-bootstrap` from the private overlay, so never copy one of those tables into `config.toml`. Profile resolution:
 `--profile` flag -> `$NOTES_PROFILE` -> `[hostname_map]` (by `hostname -s`) -> `default_profile`.
 
 - `personal` (default): journal under `~/.notes/journal/`
@@ -183,7 +183,7 @@ not profile-aware; never prefer it when the binary exists.
 ## Related
 
 - CLI source + full docs: `~/.dotfiles/.local/src/notes-cli/README.md`.
-- Profile config: `~/.config/notes/config.toml`, machine-local and git-ignored; `~/.dotfiles/.config/notes/config.toml.example` is the tracked template.
+- Profile config: `~/.config/notes/config.toml`, machine-local and git-ignored; `~/.dotfiles/.config/notes/config.toml.example` is the tracked template. Shared profiles: `~/.config/notes/profiles.toml`, a link to `~/.dotfiles-private/.config/notes/profiles.toml`.
 - Memory index: `~/.claude/projects/-home-kblack0610--dotfiles/memory/user_notes_system.md` (may or may not exist - the MEMORY.md index references it).
 - Systemd units: `~/.config/systemd/user/git-sync-notes.{service,timer}`, `journal-daily-summarize.{service,timer}`, `journal-monthly-archive.{service,timer}`.
 - Core sync logic: `~/.local/bin/store-sync --store notes` (runbook: `~/.local/src/git/NOTES_SYNC_SETUP.md`, "The sync engine").

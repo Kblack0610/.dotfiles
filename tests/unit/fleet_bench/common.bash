@@ -67,6 +67,10 @@ setup() {
   export BENCH_JUDGE_CMD=judge-stub JUDGEKPI="$SANDBOX/judgekpi"
   printf '#!/usr/bin/env bash\n[ "$*" = "kpi --json" ] && cat "%s" 2>/dev/null\n' "$JUDGEKPI" > "$SANDBOX/bin/judge-stub"
   chmod +x "$SANDBOX/bin/judge-stub"
+  # fact-owners count --json, canned: serves $OWNERSKPI when it exists, else fails like a checkout with no Owners table
+  export BENCH_OWNERS_CMD=owners-stub OWNERSKPI="$SANDBOX/ownerskpi"
+  printf '#!/usr/bin/env bash\n[ "$*" = "count --json" ] && cat "%s" 2>/dev/null\n' "$OWNERSKPI" > "$SANDBOX/bin/owners-stub"
+  chmod +x "$SANDBOX/bin/owners-stub"
   # agent-ask list --all, canned: serves $ASKSALL when it exists, else nothing (no asks)
   export BENCH_ASKS_ALL_CMD=asks-all-stub ASKSALL="$SANDBOX/asksall"
   printf '#!/usr/bin/env bash\ncat "%s" 2>/dev/null; exit 0\n' "$ASKSALL" > "$SANDBOX/bin/asks-all-stub"
