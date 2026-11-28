@@ -76,7 +76,7 @@ EOF
 
 # The overview page: every section the briefing channel requires, under a headline.
 overview() { # NEEDS_ITEMS_FILE_CONTENT -> $SANDBOX/b.md
-  printf -- '---\ngenerated: true\n---\n\n# Briefing\n\nAs of Fri 06:45: 3 things need you. Yesterday 246 PRs, 12 urgent, 89 fixes.\n\n## Needs you\n\n%s\n## Landed yesterday\n\n- fix(orb): the login loop (orbit, urgent)\n- Fleet tooling: 144 changes, 4 urgent (see the agents briefing).\n\n## Builds and releases\n\n- orbit prod: v1.19.0 deployed at 06:12.\n\n## Overnight\n\n- Nothing broke overnight.\n\n## Money\n\n- Spent yesterday $846 (7-day avg $1170).\n\n## Agents\n\nAgent systems: all 6 areas ok. Detail: [[agents]].\n' "$1" > "$SANDBOX/b.md"
+  printf -- '---\ngenerated: true\n---\n\n# Briefing\n\nAs of Fri 06:45: 3 things need you. Yesterday 246 PRs, 12 urgent, 89 fixes.\n\n## Needs you\n\n%s\n## Landed yesterday\n\n- fix(orb): the login loop (orbit, urgent)\n- Fleet tooling: 144 changes, 4 urgent (see the agents briefing).\n\n## Projects\n\n- unity-core-playground: 105 merged, nightly Multi red. [[lab/projects/current/unity-core-playground/summary]]\n\n## Builds and releases\n\n- orbit prod: v1.19.0 deployed at 06:12.\n\n## Overnight\n\n- Nothing broke overnight.\n\n## Money\n\n- Spent yesterday $846 (7-day avg $1170).\n\n## Agents\n\nAgent systems: all 6 areas ok. Detail: [[agents]].\n' "$1" > "$SANDBOX/b.md"
 }
 
 @test "a briefing is linted whole, and caps only its Needs you items" {
@@ -108,10 +108,24 @@ overview() { # NEEDS_ITEMS_FILE_CONTENT -> $SANDBOX/b.md
 
 @test "the overview's Landed yesterday is capped at 10 lines" {
   overview $'- Answer ask a1.\n'
-  for k in 1 2 3 4 5 6 7 8 9 10; do sed -i "s/^## Builds and releases$/- Change $k.\n&/" "$SANDBOX/b.md"; done
+  for k in 1 2 3 4 5 6 7 8 9 10; do sed -i "s/^## Projects$/- Change $k.\n&/" "$SANDBOX/b.md"; done
   run "$SUBJECT" --channel briefing "$SANDBOX/b.md"
   assert_failure 1
   assert_output --partial "items: 12 items under '^## Landed yesterday$', budget 10"
+}
+
+@test "the overview's Projects section is required and capped at 9 lines" {
+  overview $'- Answer ask a1.\n'
+  for k in 1 2 3 4 5 6 7 8 9; do sed -i "s/^## Builds and releases$/- project-$k: 1 merged.\n&/" "$SANDBOX/b.md"; done
+  run "$SUBJECT" --channel briefing "$SANDBOX/b.md"
+  assert_failure 1
+  assert_output --partial "items: 10 items under '^## Projects$', budget 9"
+  # Negative control: the briefing from before Projects fails on the missing section.
+  overview $'- Answer ask a1.\n'
+  sed -i '/^## Projects$/,/^## Builds and releases$/{/^## Builds and releases$/!d}' "$SANDBOX/b.md"
+  run "$SUBJECT" --channel briefing "$SANDBOX/b.md"
+  assert_failure 1
+  assert_output --partial "missing: a Projects section"
 }
 
 @test "the agent briefing's Areas are capped at 6 lines of 200 chars, and Details only page-wide" {
