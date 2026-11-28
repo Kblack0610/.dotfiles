@@ -875,11 +875,12 @@ row_off_set() {
 # after the human locked home-config by #hold/ tags on its own rows (2026-11-20, ar-4187).
 declare -gA SCOPE_REPO=()
 scope_off_set() {
-  local res repo path granted t g w b='(^|[^[:alnum:]_-])' e='([^[:alnum:]_-]|$)'
+  local res repo path granted t g w b='(^|[^[:alnum:]_-])' e='([^[:alnum:]_-]|$)' gs
   t=${3%%<!--*}; t=${t,,}
   while IFS=$'\t' read -r res repo path granted; do
     [ -n "$res" ] || continue
-    for g in ${granted//,/ }; do
+    IFS=, read -ra gs <<<"$granted"
+    for g in "${gs[@]}"; do
       [ "$g" = "$2" ] || [[ " $t " == *" #of/${g,,} "* ]] && continue 2
     done
     [ "$path" != - ] || path=''
