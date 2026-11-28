@@ -99,8 +99,10 @@ impl Cache {
         // Fetched inside the kept read, so a table that is fresh touches neither source.
         let s = s.clone();
         let read = async move {
-            let (live, queue) =
-                tokio::join!(s.live.get((), crate::read_live), s.queue.feed_items());
+            let (live, queue) = tokio::join!(
+                s.live.get((), session_table::Live::read),
+                s.queue.feed_items()
+            );
             let live = live?;
             off(move || {
                 let (state, vocab, silent) = session_table::read_state(&boards::fleet_state());
@@ -115,8 +117,10 @@ impl Cache {
                     .zip(live.joined(&active))
                     .collect();
                 let feed = session_table::feed_with(&System, &session_table::registry(), queue);
+                let mut rows = session_table::rows(&state, &vocab, &feed, &agents);
+                session_table::join_agents(&live.sidebar(&active), &mut rows);
                 Read {
-                    rows: session_table::rows(&state, &vocab, &feed, &agents),
+                    rows,
                     state,
                     buckets: vocab.buckets().to_vec(),
                     errors: feed.errors.into_iter().chain(silent).collect(),

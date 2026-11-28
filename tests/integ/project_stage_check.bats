@@ -239,19 +239,28 @@ EOF2
   assert_line --regexp '^FAIL +dev +A doc nowhere$'
   assert_line --regexp '^FAIL +dev +A word only outside the docs$'
   assert_line --regexp '^FAIL +dev +An ignored file$'
-  refute_output --partial 'no origin/HEAD'
+  refute_output --partial 'no default branch fetched'
 }
 
-@test "doc helpers read the working tree with no origin, and warn when origin has no origin/HEAD" {
+@test "doc helpers read origin's default branch with no origin/HEAD, as merge_proof_ref finds it" {
   origin_repo
   git -C "$REPO" remote set-head origin -d
   run "$CHECK" shooter
-  assert_output --partial 'has an origin but no origin/HEAD'
+  refute_output --partial 'no default branch fetched'
+  assert_line --regexp '^PASS +dev +A doc on origin$'
+}
+
+@test "doc helpers read the working tree with no origin, and warn when origin has no default branch fetched" {
+  origin_repo
+  git -C "$REPO" remote set-head origin -d
+  git -C "$REPO" update-ref -d refs/remotes/origin/main
+  run "$CHECK" shooter
+  assert_output --partial 'has an origin but no default branch fetched'
   assert_line --regexp '^FAIL +dev +A doc on origin$'
   git -C "$REPO" remote remove origin
   docs_tree
   run "$CHECK" shooter
-  refute_output --partial 'no origin/HEAD'
+  refute_output --partial 'no default branch fetched'
   assert_line --regexp '^PASS +dev +A doc on origin$'
   assert_line --regexp '^PASS +dev +Its text on origin$'
   assert_line --regexp '^PASS +dev +Its path on origin$'
@@ -279,6 +288,61 @@ EOF2
   rm "$d/README.md"
   run "$CHECK" shooter --system docs
   assert_line --regexp '^FAIL +docs +A docs index'
+}
+
+@test "systems.md: repo-wide rows read origin's default branch, so a clone behind its remote passes and an unpushed file does not" {
+  write_systems_doc
+  { sed -n '1,/^## Criteria/p' "$REPO_ROOT/.local/src/docs/systems.md"; printf '\n| System | Applies | Criterion | Check | Why |\n| --- | --- | --- | --- | --- |\n'
+    for r in 'Dependencies pinned by a lockfile' 'A CI workflow in the repo' 'A secret scan gates' 'Automated tests are in the repo' 'The deploy doc says how to roll back'; do
+      grep -F "$r" "$REPO_ROOT/.local/src/docs/systems.md"; done; } > "$SYSTEMS_DOC.new" && mv "$SYSTEMS_DOC.new" "$SYSTEMS_DOC"
+  mkdir -p "$REPO/.github/workflows" "$REPO/docs/operations" "$REPO/tests"
+  printf 'on: pull_request\n' > "$REPO/.github/workflows/ci.yml"
+  printf '# gitleaks\n' > "$REPO/.github/SECURITY.md"
+  printf '## Rollback\n' > "$REPO/docs/operations/deploy.md"
+  printf 'x\n' > "$REPO/tests/a.txt"
+  git -C "$REPO" init -q -b main
+  git -C "$REPO" add -A && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm repo
+  git clone -q --bare "$REPO" "$HOME/origin.git"
+  git -C "$REPO" remote add origin "$HOME/origin.git"
+  git -C "$REPO" fetch -q origin && git -C "$REPO" remote set-head origin -a >/dev/null
+  # NEGATIVE CONTROL: a lockfile only in the working tree is not on origin.
+  printf '{}\n' > "$REPO/Cargo.lock"
+  run "$CHECK" shooter --systems
+  assert_line --regexp '^FAIL +security +Dependencies pinned by a lockfile'
+  assert_line --regexp '^PASS +ci +A CI workflow in the repo'
+  # Origin gains the lockfile and the clone does not fetch the checkout up: its tree has lost the rest.
+  git clone -q "$HOME/origin.git" "$HOME/other"
+  printf '{}\n' > "$HOME/other/Packages/packages-lock.json"
+  git -C "$HOME/other" add -A && git -C "$HOME/other" -c user.name=t -c user.email=t@t commit -qm lock && git -C "$HOME/other" push -q origin main
+  git -C "$REPO" fetch -q origin
+  rm "$REPO/Cargo.lock"
+  git -C "$REPO" rm -rq .github docs tests && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm behind
+  run "$CHECK" shooter --systems
+  assert_line --regexp '^PASS +security +Dependencies pinned by a lockfile'
+  assert_line --regexp '^PASS +security +A secret scan gates'
+  assert_line --regexp '^PASS +ci +A CI workflow in the repo'
+  assert_line --regexp '^PASS +tests +Automated tests are in the repo'
+  assert_line --regexp '^PASS +deploy +The deploy doc says how to roll back'
+}
+
+@test "systems.md: repo-wide rows read the working tree with no origin" {
+  write_systems_doc
+  { sed -n '1,/^## Criteria/p' "$REPO_ROOT/.local/src/docs/systems.md"; printf '\n| System | Applies | Criterion | Check | Why |\n| --- | --- | --- | --- | --- |\n'
+    for r in 'The deploy doc says how to roll back' 'A secret scan gates' 'The dedicated server image is named'; do
+      grep -F "$r" "$REPO_ROOT/.local/src/docs/systems.md"; done; } > "$SYSTEMS_DOC.new" && mv "$SYSTEMS_DOC.new" "$SYSTEMS_DOC"
+  mkdir -p "$REPO/docs/operations" "$REPO/.githooks" "$REPO/scripts/build/games"
+  run "$CHECK" shooter --systems
+  # NEGATIVE CONTROL: with none of the files, every row fails.
+  assert_line --regexp '^FAIL +deploy +The deploy doc says how to roll back'
+  assert_line --regexp '^FAIL +security +A secret scan gates'
+  assert_line --regexp '^FAIL +netcode +The dedicated server image'
+  printf '## Rollback\n' > "$REPO/docs/operations/deploy.md"
+  printf 'gitleaks protect\n' > "$REPO/.githooks/pre-commit"
+  printf '{"image":"x"}\n' > "$REPO/scripts/build/games/shooter.json"
+  run "$CHECK" shooter --systems
+  assert_line --regexp '^PASS +deploy +The deploy doc says how to roll back'
+  assert_line --regexp '^PASS +security +A secret scan gates'
+  assert_line --regexp '^PASS +netcode +The dedicated server image'
 }
 
 @test "an unknown project, an unknown stage or no declared stage exits 2" {

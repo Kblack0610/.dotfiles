@@ -113,6 +113,14 @@ impl Shown {
         Shown::fit(Role::Title, &t.title, &one_line(&whole))
     }
 
+    /// A name its author wrote to be read whole (a report's title): cleaned as any text is (ids,
+    /// tags and a `type(area):` head go), cut only at the role's caps. A board row's
+    /// [`Shown::title`] also cuts at the first clause break and reads the legacy `<plan> P4:`
+    /// shape; neither applies to free text an author titled.
+    pub fn name(raw: &str) -> Shown {
+        Shown::plain(Role::Title, raw)
+    }
+
     pub fn sub(raw: &str) -> Shown {
         Shown::plain(Role::Sub, raw)
     }
@@ -308,7 +316,9 @@ pub const FIELD_ROLES: &[(&str, Role)] = &[
     ("what", Role::Note),
     ("next", Role::Next),
     ("needs", Role::Next),
+    ("decisions", Role::Next),
     ("landed", Role::Note),
+    ("by_project", Role::Note),
     ("builds", Role::Note),
     ("overnight", Role::Note),
     ("money", Role::Note),
@@ -557,6 +567,7 @@ mod tests {
         let briefing = crate::briefing::Briefing {
             headline: "Two things need you.".into(),
             needs: vec!["Answer the ask in the dotfiles session".into()],
+            decisions: vec!["Take yes on: ship it? (dotfiles, 2h, ask a1)".into()],
             landed: vec!["Merged 4 changes".into()],
             ..Default::default()
         };

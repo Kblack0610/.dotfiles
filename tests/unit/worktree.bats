@@ -429,6 +429,27 @@ make_drifted_submodule() {
   assert_output 'dirty (1 uncommitted)'
 }
 
+@test "a worktree whose git status FAILS is held, never recycled or listed reapable" {
+  # Refusal first. A canary run on razer-laptop left a submodule .git holding a bare sha, so
+  # every status there died; read as zero lines, the tree was idle and dispatch tried to
+  # recycle it every pass, and the switch refused on the run's files (ar-6220).
+  make_drifted_submodule
+  git -C "$WT" submodule update --quiet
+  printf '%s\n' "$C1" >"$WT/sub/.git"
+  run git -C "$WT" status --porcelain=v2
+  assert_failure # the fixture really is in the broken state
+  run wt_dirty_count "$WT"
+  assert_failure
+  assert_output --regexp '.+' # git's own error, whatever its wording
+  run wt_reap_reason "$WT"
+  assert_failure
+  assert_output --regexp '^git status fails: .+'
+  run wt_next_slot platform "$MAIN"
+  assert_output "2${PANEL_TAB}fresh"
+  run wt_row "$WT" agent-1 origin/main ''
+  assert_output --regexp $'\tdirty\t'
+}
+
 @test "a STAGED submodule pointer is somebody's intent, not drift" {
   make_drifted_submodule
   git -C "$WT" add sub
@@ -1242,7 +1263,7 @@ Description=tmux child pane 40 launched by process 95
 ControlGroup=/s/mute
 EOF
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)" "$SANDBOX/fakes"
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/hub"
+  unix_sock "$TMUX_TMPDIR/tmux-$(id -u)/hub"
   echo '81 10' > "$SANDBOX/panes.hub"
   printf '#!/bin/sh\ncat %q\n' "$SANDBOX/scopes" > "$SANDBOX/fakes/systemctl"
   # list-panes for the server after -L, from panes.<server>; no such file is a server that is silent

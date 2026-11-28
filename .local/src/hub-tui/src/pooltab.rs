@@ -1,5 +1,5 @@
 //! One runner pool's page in place of Infra's Machines tab, drawn from the page `hub_core` reads
-//! for both surfaces (`hub_core::pool_page`): its parts and the governor's bounds, the machines
+//! for both surfaces (`hub_core::pool_page`): its parts, the machines
 //! with a slot in it, the CI jobs waiting for it, and its busy and waiting over the last days.
 //! agent-web draws the same page at `#infra/pools/<pool>`.
 

@@ -46,6 +46,8 @@ setup() {
   assert_output STALLED
   run cat "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
   assert_output --partial 'tag fetch failed for all 1 repos'
+  # git's own error names the cause (ar-3609): here, the remote that is not a repository.
+  assert_output --partial "(fatal: '$SANDBOX/missing.git' does not appear to be a git repository): comparing against local tags"
 }
 
 @test "--dry-run publishes nothing" {

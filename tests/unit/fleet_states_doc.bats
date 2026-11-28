@@ -81,11 +81,16 @@ pin_lines() { awk -F'\037' -v c="$1" '{ n = split($c, p, "`"); for (i = 2; i <= 
 
 check_pinned() { rows "$1" | pin_lines 4 | pins_missing; } # <doc>
 
-check_shepherd() { # <doc> <fleet-shepherd>
-  local b bad=0 body
+# A due function reads a bucket by its quoted name, or, for a finished one (fleet-sessions'
+# BUCKET_FINISHED, the state document's vocab.finished), through FIN_JQ's `finished`.
+check_shepherd() { # <doc> <fleet-shepherd> <fleet-sessions>
+  local b bad=0 body fin
   body="$(awk '/^[a-z_]*due\(\) \{/,/^}/' "$2")"
+  fin=" $(sed -n 's/^BUCKET_FINISHED="\(.*\)"$/\1/p' "$3") "
   while IFS= read -r b; do
-    grep -qF "\"$b\"" <<<"$body" || { echo "$b: its actor is the shepherd, but no due function reads it"; bad=1; }
+    grep -qF "\"$b\"" <<<"$body" && continue
+    [[ "$fin" == *" $b "* ]] && grep -qw finished <<<"$body" && continue
+    echo "$b: its actor is the shepherd, but no due function reads it"; bad=1
   done < <(rows "$1" | awk -F'\037' 'tolower($2) ~ /shepherd/ {print $1}')
   return "$bad"
 }
@@ -147,11 +152,11 @@ check_owner_copies() { # <doc> <file>...
 }
 
 @test "every bucket the shepherd acts on is read by one of its due functions" {
-  run check_shepherd "$DOC" "$SHEPHERD"
+  run check_shepherd "$DOC" "$SHEPHERD" "$SESSIONS"
   assert_success
 }
 
-@test "negative controls: a stray bucket word, a missing row, an empty cell, a dead test name and an unread bucket all fail" {
+@test "negative controls: a stray bucket word, a missing row, an empty cell, a dead test name, an unread bucket and an unread finished set all fail" {
   local t="$BATS_TEST_TMPDIR"
   { cat "$SESSIONS"; echo '  echo "UNCLEAR stray"'; } > "$t/sessions"
   run check_words "$DOC" "$t/sessions"
@@ -170,9 +175,13 @@ check_owner_copies() { # <doc> <file>...
   assert_failure
   assert_output --partial 'CHAT: no @test "a CHAT row gets a pass line'
   sed -E 's/"CHAT"/"CHATTY"/g' "$SHEPHERD" > "$t/shepherd"
-  run check_shepherd "$DOC" "$t/shepherd"
+  run check_shepherd "$DOC" "$t/shepherd" "$SESSIONS"
   assert_failure
   assert_output 'CHAT: its actor is the shepherd, but no due function reads it'
+  sed -E 's/\(finished or /(false or /' "$SHEPHERD" > "$t/no-finished"
+  run check_shepherd "$DOC" "$t/no-finished" "$SESSIONS"
+  assert_failure
+  assert_output --partial 'DONE: its actor is the shepherd, but no due function reads it'
 }
 
 @test "the close table's step ids and verdicts, in order, are the tagged branches of close_verdict" {
@@ -388,6 +397,50 @@ check_owner_copies() { # <doc> <file>...
   assert_output --partial "/.claude/hooks/stop-post.d/85-sync-plans.sh"
 }
 
+@test "the private repo's lib and skill scripts are looked in too, not only its bin" {
+  local t="$BATS_TEST_TMPDIR"
+  PRIVATE="$t/priv"
+  git init -q "$PRIVATE"; mkdir -p "$PRIVATE/.local/bin" "$PRIVATE/.local/lib" "$PRIVATE/.claude/skills/s"
+  for f in .local/bin/a .local/lib/live-sessions.sh .claude/skills/s/feed.sh .claude/skills/s/SKILL.md; do : > "$PRIVATE/$f"; done
+  git -C "$PRIVATE" add -A
+  run owned_files
+  assert_success
+  assert_output --partial "$PRIVATE/.local/bin/a"
+  assert_output --partial "$PRIVATE/.local/lib/live-sessions.sh"
+  assert_output --partial "$PRIVATE/.claude/skills/s/feed.sh"
+  refute_output --partial "SKILL.md"
+}
+
+@test "negative controls for the re-review's gate gaps: a guessed branch loop, a harness prefix test either quote and a size capture or word list are found; the owner's loop and an interrupt count are not" {
+  local t="$BATS_TEST_TMPDIR"
+  printf '%s\n' '  for ref in main master develop; do' > "$t/branch"
+  printf '%s\n' '  elif ($t | startswith("[Request interrupted")) then ""' > "$t/prefix"
+  printf '%s\n' '    if "continued from a previous conversation" in t:' > "$t/compact.py"
+  printf '%s\n' "    if t.startswith('[Request interrupted'):" > "$t/single.py"
+  printf '%s\n' '  size="$(jq -r '"'"'(.task | capture("#size/(?<s>[sml])") | .s)'"'"')"' > "$t/capture"
+  printf '%s\n' '  test("^[+-]#(urgent|size/[sml]|plan)$")' > "$t/words"
+  printf '%s\n' '    .map_or(Val::None, |s| at(&["xs", "s", "m", "l", "xl"], s)),' > "$t/sizes.rs"
+  printf '%s\n' '  (if ($c | startswith("[Request interrupted by user")) then .interrupts += 1 else . end)' > "$t/interrupts"
+  run check_owner_copies "$DOC" "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$t/branch" "$t/prefix" "$t/compact.py" "$t/single.py" "$t/capture" "$t/words" "$t/sizes.rs" "$t/interrupts"
+  assert_failure
+  for f in branch prefix compact.py single.py capture words sizes.rs; do assert_output --partial "$t/$f:1:"; done
+  refute_output --partial "$t/interrupts"
+  refute_output --partial "agent-merge-proof.sh"
+}
+
+@test "negative controls for the landed predicate and the agentctl state dir: an ok-with-a-PR test and a one-name default are found; OUTCOME_JQ and the two-name default are not" {
+  local t="$BATS_TEST_TMPDIR"
+  printf '%s\n' '  jq '"'"'select(.status == "ok" and (.pr // "") != "")'"'"'' > "$t/landed"
+  printf '%s\n' 'STATE_DIR="${AGENTCTL_STATE:-$HOME/.local/state/agentctl}"' > "$t/one-old"
+  printf '%s\n' 'STATE="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}"' > "$t/one-new"
+  printf '%s\n' '  printf "%s" "${AGENTCTL_STATE_DIR:-${AGENTCTL_STATE:-$HOME/.local/state/agentctl}}"' > "$t/both"
+  run check_owner_copies "$DOC" "$REPO_ROOT/.local/bin/agent-queue" "$t/landed" "$t/one-old" "$t/one-new" "$t/both"
+  assert_failure
+  for f in landed one-old one-new; do assert_output --partial "$t/$f:1:"; done
+  refute_output --partial "$t/both"
+  refute_output --partial "agent-queue:"
+}
+
 @test "fact-owners check passes on the real tree: every copy is owned or debt, the pin holds, the generated rules and schema tags hold" {
   run env DOTFILES_PRIVATE="$PRIVATE" "$REPO_ROOT/.local/bin/fact-owners" check
   assert_success
@@ -420,7 +473,7 @@ check_owner_copies() { # <doc> <file>...
   local t="$BATS_TEST_TMPDIR" n
   n=$(DOTFILES_PRIVATE="$PRIVATE" "$REPO_ROOT/.local/bin/fact-owners" count --debt)
   # a debt entry dropped without lowering the pin
-  sed '/^| `kinds`/ s/`.local\/bin\/fleet-bench` (ar-5455); //' "$DOC" > "$t/dropped.md"
+  sed '/^| `kinds`/ s/`.local\/src\/hub-core\/src\/home.rs` (ar-5455); //' "$DOC" > "$t/dropped.md"
   run FACT_OWNERS check --doc "$t/dropped.md" --debt
   assert_failure
   assert_output --partial "are below Debt pinned"
@@ -495,4 +548,16 @@ PY
   assert_output --partial "$t/b.rs:1:"
   assert_output --partial "$t/c.rs:1:"
   refute_output --partial "$t/d.rs"
+}
+
+@test "fact-owners names lists each row key and writer file, a private writer by its path, for a plan's Owners: line" {
+  cat > "$BATS_TEST_TMPDIR/doc.md" <<'MD'
+| Fact | Writer | Home | Forbidden copy | Lock | Pinned by | Debt |
+| --- | --- | --- | --- | --- | --- | --- |
+| `kinds`: a row kind | `.local/bin/a:fn` | `h` | `x` | - | `t` | - |
+| plain fact | `private:.local/bin/b:fn` | `h` | `y` | - | `t` | - |
+MD
+  run FACT_OWNERS names --doc "$BATS_TEST_TMPDIR/doc.md"
+  assert_success
+  assert_output $'.local/bin/a\n.local/bin/b\nkinds'
 }

@@ -17,7 +17,7 @@ pub struct Event {
     pub ts: String,
     /// Intake: `split` (a list became one line per ask, `why` its size), `moved` (outbox or Focus -> an inbox), `filed`, `dup`, `planned`, `left` (waits
     /// for the human) or `refused` (a write the CLI turned down). A verb's write to a row:
-    /// `added`, `edited`, `detailed`, `tagged`, `started`, `unstarted`, `toggled` (a Focus row), `done`, `dropped`, `placed` (another
+    /// `capped` (a new agent row the daily intake cap turned away, `gate.rs`), `added`, `edited`, `detailed`, `tagged`, `started`, `unstarted`, `toggled` (a Focus row), `done`, `dropped`, `reopened` (its `why` is the reason the close was false), `placed` (another
     /// version on the same sheet), `rehomed` (another project), `removed` (left Focus undone),
     /// `swept` or `archived`.
     pub action: String,
@@ -181,13 +181,22 @@ pub fn path(p: &Profile) -> PathBuf {
     p.state_dir.join("ingest.jsonl")
 }
 
-/// Past this size the record is cut to its last [`KEEP_DAYS`], and then to its newest
-/// [`PRUNE_TO_BYTES`] when those days still run over, so the page's read stays cheap. The cut goes
-/// well under the cap, so a prune runs once per that many bytes of appends, never on each: a
-/// rewrite replaces the file, and a `tail -F` reader (coord-watch) re-reads it whole.
-const MAX_BYTES: u64 = 32 * 1024 * 1024;
-const PRUNE_TO_BYTES: usize = (MAX_BYTES / 2) as usize;
-const KEEP_DAYS: i64 = 30;
+/// The days the record keeps: a week, so judge-eval's 48h settle window leaves five days of
+/// scored verdicts. It kept 30 under a fixed 32 MB cap, which at the fleet's volume held under two
+/// days, so every settle-window verdict stayed pending (ar-5881).
+const KEEP_DAYS: i64 = 7;
+/// One day of the record at the fleet's volume, with headroom: 10.5 to 12 MB a day, measured
+/// 2026-11-24..25. Thirty such days would be over 300 MB, read whole by every full reader (`notes
+/// today` on each shell start, the hub page, judge-eval), so the days come down, not the cap up.
+const DAY_BYTES: usize = 14 * 1024 * 1024;
+/// A prune cuts the record to its last [`KEEP_DAYS`], and then to its newest [`PRUNE_TO_BYTES`]
+/// when those days still run over, so the page's read stays bounded. The byte cut follows the days
+/// (KEEP_DAYS of DAY_BYTES), so it never takes a day the days cut kept at normal volume.
+const PRUNE_TO_BYTES: usize = KEEP_DAYS as usize * DAY_BYTES;
+/// Past this size the record is pruned. It is a quarter over the cut, so a prune runs once per that
+/// many bytes of appends, never on each: a rewrite replaces the file, and a `tail -F` reader
+/// (coord-watch) re-reads it whole.
+const MAX_BYTES: u64 = (PRUNE_TO_BYTES + PRUNE_TO_BYTES / 4) as u64;
 
 /// Append `ev`. Best effort, like the inbox flag: a record that cannot be written must not
 /// fail the move it describes, so the error goes to stderr and the write stands.
@@ -290,25 +299,43 @@ pub fn import(p: &Profile, input: &str) -> std::io::Result<(usize, Option<String
     Ok((take.len(), newest))
 }
 
-/// Keep the events of the last [`KEEP_DAYS`], then only the newest lines that fit in `keep_bytes`.
-/// RFC 3339 stamps of one zone sort as text.
+/// Keep the events of the last [`KEEP_DAYS`], then only the newest lines that fit in `keep_bytes`,
+/// newest by stamp, not by place: `import` appends a worker's older lines at the end, and a cut by
+/// place dropped this machine's later lines and kept them (ar-4902: 28 closes lost, chain drift).
+/// The kept lines are written in stamp order. A line with no stamp is dated by the line before it.
 fn prune(path: &std::path::Path, keep_bytes: usize) -> std::io::Result<()> {
-    let cut = (chrono::Local::now() - chrono::Duration::days(KEEP_DAYS)).to_rfc3339();
+    let cut = chrono::Local::now().fixed_offset() - chrono::Duration::days(KEEP_DAYS);
     let text = fs::read_to_string(path)?;
-    let recent: Vec<&str> = text
+    let mut last = None;
+    let mut recent: Vec<(chrono::DateTime<chrono::FixedOffset>, &str)> = text
         .lines()
-        .filter(|l| l.get(7..7 + cut.len()).is_some_and(|ts| ts >= &cut[..]))
+        .filter_map(|l| {
+            last = stamp(l).or(last);
+            last.map(|t| (t, l))
+        })
+        .filter(|(t, _)| *t >= cut)
         .collect();
+    // Stable, so lines of one stamp keep their order.
+    recent.sort_by_key(|(t, _)| *t);
     let mut size = 0;
     let from = recent
         .iter()
-        .rposition(|l| {
+        .rposition(|(_, l)| {
             size += l.len() + 1;
             size > keep_bytes
         })
         .map_or(0, |i| i + 1);
-    let kept: String = recent[from..].iter().map(|l| format!("{l}\n")).collect();
+    let kept: String = recent[from..]
+        .iter()
+        .map(|(_, l)| format!("{l}\n"))
+        .collect();
     crate::md::write_atomic(path, &kept).map_err(std::io::Error::other)
+}
+
+/// The `ts` a record line opens with (`{"ts":"<RFC 3339>",...`), any zone.
+fn stamp(l: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    let rest = l.strip_prefix("{\"ts\":\"")?;
+    chrono::DateTime::parse_from_rfc3339(&rest[..rest.find('"')?]).ok()
 }
 
 /// Every event on `day` (`YYYY-MM-DD`), oldest first. A line that does not parse is skipped.
@@ -326,6 +353,17 @@ fn read_day(p: &Profile, day: &str) -> (Vec<Event>, Vec<Reject>) {
 /// Every event the record holds, oldest first.
 pub fn all(p: &Profile) -> Vec<Event> {
     read(p, |_| true).0
+}
+
+/// The events whose record line `keep` takes, oldest first: a cheap read of the whole record for
+/// one kind of event.
+pub fn matching(p: &Profile, keep: impl Fn(&str) -> bool) -> Vec<Event> {
+    read(p, keep).0
+}
+
+/// The events of the last `days` local days (today included), oldest first.
+pub fn recent(p: &Profile, days: i64) -> Vec<Event> {
+    read_since(p, days).0
 }
 
 fn read_since(p: &Profile, days: i64) -> (Vec<Event>, Vec<Reject>) {
@@ -765,6 +803,91 @@ mod tests {
             fs::read_to_string(path(&p)).unwrap(),
             after,
             "under the target, nothing goes"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_prune_keeps_a_record_of_keep_days_at_normal_volume_whole() {
+        let dir = std::env::temp_dir().join(format!("ingest-prune-days-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let p = crate::config::test_profile(dir.to_str().unwrap());
+        fs::create_dir_all(path(&p).parent().unwrap()).unwrap();
+        // The top day measured (2026-11-24..25), as one line an hour back to KEEP_DAYS ago. Under the
+        // old 16 MB cut this kept the newest day and a third and lost the rest (ar-5881).
+        let normal_day = 12 * 1024 * 1024;
+        let hours = KEEP_DAYS * 24 - 1;
+        let pad = "x".repeat(normal_day / 24);
+        let now = chrono::Local::now().fixed_offset();
+        let text: String = (0..=hours)
+            .rev()
+            .map(|h| {
+                let mut e = Event::new("item-set", "ar", "", &pad);
+                e.ts = (now - chrono::Duration::hours(h))
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+                serde_json::to_string(&e).unwrap() + "\n"
+            })
+            .collect();
+        assert!(
+            text.len() as u64 <= MAX_BYTES,
+            "a normal week does not trip a prune by itself"
+        );
+        fs::write(path(&p), &text).unwrap();
+        prune(&path(&p), PRUNE_TO_BYTES).unwrap();
+        let after = fs::read_to_string(path(&p)).unwrap();
+        assert_eq!(after.lines().count() as i64, hours + 1, "every hour kept");
+        assert_eq!(
+            after.lines().next().and_then(stamp),
+            text.lines().next().and_then(stamp),
+            "the first day intact"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_prune_cuts_by_stamp_so_an_imported_older_block_goes_before_newer_local_lines() {
+        let dir = std::env::temp_dir().join(format!("ingest-prune-order-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let p = crate::config::test_profile(dir.to_str().unwrap());
+        fs::create_dir_all(path(&p).parent().unwrap()).unwrap();
+        // This machine stamps in its own zone (-08:00 here), a worker's import in UTC: compared as
+        // text, 2026-11-25T01:00-08:00 sorts before 2026-11-25T03:00Z though it is six hours later.
+        let pst = chrono::FixedOffset::west_opt(8 * 3600).unwrap();
+        let line = |h: i64, utc: bool, t: &str| {
+            let at = chrono::Utc::now() - chrono::Duration::hours(h);
+            let mut e = Event::new("filed", "outbox", "nc", t);
+            e.ts = if utc {
+                at.format("%Y-%m-%dT%H:%M:%SZ").to_string()
+            } else {
+                at.with_timezone(&pst)
+                    .to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+            };
+            serde_json::to_string(&e).unwrap()
+        };
+        // This machine's lines, then a worker's older block appended by import, as the record holds them.
+        let text = [
+            line(3, false, "local a"),
+            line(2, false, "local b"),
+            line(1, false, "local c"),
+            line(5, true, "worker x"),
+            line(4, true, "worker y"),
+        ]
+        .join("\n")
+            + "\n";
+        fs::write(path(&p), &text).unwrap();
+        let three: usize = text.lines().take(3).map(|l| l.len() + 1).sum();
+        prune(&path(&p), three).unwrap();
+        let texts: Vec<String> = fs::read_to_string(path(&p))
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Event>(l).unwrap().text)
+            .collect();
+        // A cut by place (the code before ar-4902) kept local c and the worker's block; one by stamp text
+        // kept the worker's UTC lines over this machine's newer -08:00 ones.
+        assert_eq!(
+            texts,
+            ["local a", "local b", "local c"],
+            "the newest by stamp, in stamp order"
         );
         let _ = fs::remove_dir_all(&dir);
     }

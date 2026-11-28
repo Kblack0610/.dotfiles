@@ -20,7 +20,7 @@ Rules for this repo only, read by every CLI (Claude imports this file from `CLAU
 
 ## Tests: CI is the gate
 
-- An agent session never runs a test on the workstation: the PR's CI run of what `tests/pick.sh` picks is the test run, and `agent-land` waits for it (the `shell-test-harness` skill; its `metadata.replaces` rows are the guard `hand_methods.py` applies). Why: agent bats runs held the workstation at load 40 and held dispatch (2026-11-23, ar-4846).
+- An agent session never runs a test suite on the workstation: the PR's CI run of what `tests/pick.sh` picks is the test run, and `agent-land` waits for it. One named test file and the lint may run here to iterate (the `shell-test-harness` skill; its `metadata.replaces` rows are the guard `hand_methods.py` applies, in any repo). Why: agent bats runs held the workstation at load 40 and held dispatch (2026-11-23, ar-4846).
 
 ## Hard limits on budgets
 

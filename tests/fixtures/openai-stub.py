@@ -10,6 +10,7 @@ request; the behaviour part picks the answer, so one server serves every test:
   prose  200, content is "not json"
   scalar 200, content is the bare JSON value false
   empty  200, empty content (a model that spent its budget thinking)
+  busy   429 (the route's rate limit)
   down   500 with a LiteLLM-shaped error (the route's backend is unreachable)
   hang   never answers (the client's timeout must end the call)
   other  401
@@ -61,6 +62,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, reply("not json"))
         if key == "empty":
             return self.send(200, reply("", "length"))
+        if key == "busy":
+            return self.send(429, {"error": {"message": "Rate limit exceeded"}})
         if key == "down":
             return self.send(500, {"error": {"message": "litellm.APIConnectionError: Connection refused"}})
         return self.send(401, {"error": {"message": "Authentication Error, Invalid proxy server token passed."}})
