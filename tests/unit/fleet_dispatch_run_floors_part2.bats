@@ -103,6 +103,17 @@ load 'fleet_dispatch/fleet_dispatch_run_floors'
   assert_equal "$(outcome)" WORKED
 }
 
+# 2026-11-25: tuf-b550 powered off at 110 C; a critical CPU temperature is the one HOLD no floor goes past (ar-6357).
+@test "red floor: a critical CPU temperature still holds a red, and the skip names its temperature" {
+  red_held_machine
+  stub fleet-assess '[ "$1" = --watch-probe ] && { echo "HOLD tctl 105.0 C >= 100 C critical (load 0.5/24, tctl 105.0 C, mem 60% free, stall 0%)"; exit 1; }; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD tctl 105.0 C >= 100 C critical'
+  refute_output --partial 'on the red floor (DISPATCH_RED_FLOOR=2)'
+  assert_not_called 'wt new'
+}
+
 @test "red floor: a fleet past its pace target still starts a red, a tripped watch's first, up to the floor; a plain item waits" {
   # 2026-11-12: 58 live sessions against a target of 30 returned NOOP before the red floor, and no red started for 21h.
   project game beta "$SANDBOX/repos/game"
@@ -164,6 +175,25 @@ load 'fleet_dispatch/fleet_dispatch_run_floors'
   printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item r1 on the red floor'
+}
+
+@test "red floor: a gated floor whose red does not fit the run units left settles NOOP, not BLOCKED (ar-4951)" {
+  # ar-4890: a red floor that started nothing went on to the gate's BLOCKED, so a pass with every run
+  # unit but one taken read as a stall on fleet-liveness. Too heavy for the units left is a full fleet.
+  red_held_machine
+  five_of_six_units
+  agent-queue add --project game --slug r --weight heavy --tags 'red cause:ab12' "fix r" >/dev/null
+  # Negative control first: no red floor, the gate holds a red that could start, and that is BLOCKED.
+  DISPATCH_RED_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" BLOCKED
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'red items start on the red floor'
+  assert_output --partial 'heavy needs 2 run units, 1 free'
+  assert_not_called 'wt new'
+  assert_equal "$(outcome)" NOOP
 }
 
 @test "red floor: it counts this pass's red starts, and past it the machine gates hold again" {

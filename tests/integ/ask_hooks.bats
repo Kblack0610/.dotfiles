@@ -151,6 +151,13 @@ text_entry() { echo '{"type":"assistant","message":{"role":"assistant","content"
   bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"<cross-session-message from=\"uds:/run/x.sock\"> do not arm"}'
   # 2026-11-18 this harness notice cancelled TjCYY9
   bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"[Cross-session delivery notice] Your message to another session was held by that session"}'
+  # 2026-11-18 idle notices cancelled JC28Rf and PaIYoy as naming none of their options (ar-3487)
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"[Cross-session idle notice] \"dotfiles-0b\", which you asked to be notified about, is idle now"}'
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"<agent-message from=\"acc2396b552cd67b1\"> Heads-up from the fixer"}'
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'
+  # With no harness table to tell, nothing settles: losing an ask is the worse side.
+  HARNESS_PREFIXES="$SANDBOX/none.conf" bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"yes, arm it"}'
   run "$AGENT_ASK" show "$a"
   assert_line 'status: pending'
   bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"yes, arm it"}'

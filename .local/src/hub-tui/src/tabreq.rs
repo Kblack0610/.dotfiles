@@ -43,7 +43,7 @@ pub fn parse(s: &str) -> Option<Req> {
     let tab = Tab::parse(t)?;
     // A section that moved to another tab (`fleet tokens`) asks for it there, matched by the name
     // as asked so a retired tab's own rows still match; one that opens a table under a chip
-    // (`infra governor`) keeps its word, which the tab knows.
+    // (`infra cloud`) keeps its word, which the tab knows.
     if let Some((to, sec)) = q
         .as_deref()
         .filter(|q| hub_core::layout::moved_chip(t, q).is_none())

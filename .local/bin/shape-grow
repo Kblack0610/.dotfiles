@@ -1,40 +1,82 @@
 #!/usr/bin/env python3
-"""shape-grow - list the long functions a change makes longer.
+"""shape-grow - list the long functions a change makes longer, and the copies it adds.
 
-Usage: shape-grow [-C <dir>] <base> <head>
+Usage: shape-grow [-C <dir>] [--body <file>] [--conf <file>] <base> <head>
 
-For each Python, shell or Rust file the change touches, measures every function at <base> and at
-<head> and prints `path:line name base->head` for each one that is over LIMIT lines at <head> and
-longer than at <base> (a new function counts from 0). Exit 0 when it prints nothing, 1 when it
-prints a function, 2 on a usage or git error.
+Grow: for each Python, shell or Rust file the change touches, measures every function at <base> and
+at <head> and prints `path:line name base->head` for each one that is over LIMIT lines at <head> and
+longer than at <base> (a new function counts from 0).
 
-The rule it backs, checked by agent-land's shape gate: a function over LIMIT lines does not get
-longer. Extract the new logic as a pure function (inputs in, result out) and call it: a helper that
-mutates shared state only moves the length, and makes the caller order-dependent. When that cannot
-be done in this PR, the PR body names an open board row that names the function and will split it,
-"Split: <row id>". A function moved to another file counts from 0 there. Measured 2026-11-04..18: 291 of 1660 dotfiles merges and 22 of 789 home-config
-merges would have tripped it, 85% of the dotfiles ones on 10 functions. Why: 2026-11-18
-ci-runner-governor's decide() grew from 34 to 269 lines across 35 sessions, each PR adding a few
-lines to one function, and no review read the whole function.
+Copy: only in a repo whose <base> has COPY_CONF, and over the code files of <head> (the same three
+languages, .bats left out). Prints `path:line copy <what>, also <path>:<line>` for each copy the
+change adds of code that already exists: a function name it defines that another file of its language defines; an
+UPPER_CASE constant it assigns that another file assigns the same value; a run of `block-lines`
+significant lines it adds that exist elsewhere (blank, comment, import and keyword-only lines do
+not count). The conf is read at <base>, so a change cannot loosen its own check. --conf reads it from a file instead, to tune a repo's conf against its
+history before it has one; CI and pre-push never pass it.
+
+Escape: --body names a file, or - for stdin (the PR body; pre-push passes the pushed commit messages), whose lines
+"Split: <row id> <function>..." and "Dup: <row id> <name or path>..." cover the grown functions and
+the copies they list (a copy's name is the function, the constant, or for a block the path it copies).
+A covered line is printed with its escape and does not fail. That the row is open on a board and
+names each one is checked by agent-land, the only reader of the boards.
+
+Exit 0 when nothing uncovered is listed, 1 when something is, 2 on a usage, conf or git error.
+
+The rules it backs, run by the dotfiles CI lint job (under `gate`) and pre-push, and by agent-land
+in a repo whose CI does not run it: a function over LIMIT lines does not get longer, and a change
+does not add a second copy. Extract the new logic as a pure function (inputs in, result out) and
+call it: a helper that mutates shared state only moves the length, and makes the caller
+order-dependent. Use or extend the existing copy instead of adding one. A function moved to another
+file counts from 0 there; a function or block moved (gone from where it was) is no copy. Measured
+2026-11-04..18: 291 of 1660 dotfiles merges and 22 of 789 home-config merges would have tripped the
+grow check, 85% of the dotfiles ones on 10 functions. Why: 2026-11-18 ci-runner-governor's decide()
+grew from 34 to 269 lines across 35 sessions, each PR adding a few lines to one function, and no
+review read the whole function; the 11-18 re-review found 9 new copies hours after a 15-phase
+cleanup (plan everything-should-wondrous-snail).
 
 Python is measured with ast. Shell and Rust end a function at the first later line that closes a
 brace at the definition's own indent (rustfmt and this repo's shell style both do that). That is
 rough, but it runs the same way on both sides, so the growth it reports holds.
 """
 import ast
+import fnmatch
 import re
 import subprocess
 import sys
 
 LIMIT = 150
+COPY_CONF = '.config/shape-grow/copy.conf'
+MAX_BLOB = 1 << 20
 
 # Shell: "name() {", "function name {" or "function name() {", the brace on the line or the next.
 SH_DEF = re.compile(r'^(\s*)(?:function\s+([A-Za-z_][\w:.-]*)\s*(?:\(\))?|([A-Za-z_][\w:.-]*)\s*\(\))\s*(\{.*)?$')
 RS_DEF = re.compile(r'^(\s*)(?:pub(?:\([^)]*\))?\s+)?(?:(?:const|async|unsafe|extern\s+"[^"]*")\s+)*fn\s+(\w+)')
 
+# A constant: an UPPER_CASE name assigned at the top of a file.
+CONST = {
+    'py': re.compile(r'^([A-Z][A-Z0-9_]{2,})\s*(?::[^=]+)?=(?!=)\s*(.+)$'),
+    'sh': re.compile(r'^(?:readonly\s+|export\s+|declare\s+-[a-zA-Z]+\s+)?([A-Z][A-Z0-9_]{2,})=(.+)$'),
+    'rs': re.compile(r'^(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+([A-Z][A-Z0-9_]{2,})\s*:[^=]+=\s*(.+?);?$'),
+}
+TRIVIAL_VALUES = {'""', "''", 'true', 'false', 'True', 'False', 'None', '()', '[]', '{}'}
 
-def git(args, cwd):
-    return subprocess.run(['git', '-C', cwd] + args, capture_output=True, encoding='utf-8', errors='replace')
+# Lines a block copy does not count: comments, imports, and lines with no content of their own.
+COMMENT = {'py': ('#',), 'sh': ('#',), 'rs': ('//',)}
+IMPORT = {
+    'py': re.compile(r'^(?:import|from)\s'),
+    'sh': re.compile(r'^(?:source|\.)\s'),
+    'rs': re.compile(r'^(?:pub\s+)?(?:use|mod|extern\s+crate)\s'),
+}
+TRIVIAL_LINES = {
+    'done', 'esac', 'else', 'then', 'pass', 'break', 'continue', 'return', 'else:', 'try:', 'finally:',
+    '} else {', 'exit 0', 'exit 1', 'return 0', 'return 1', 'set -euo pipefail', 'set -uo pipefail',
+    'set -eu', 'set -e', 'Ok(())', '}', '};', '});', ')', '),', '];', '*)', ';;',
+}
+
+
+def git(args, cwd, **kw):
+    return subprocess.run(['git', '-C', cwd] + args, capture_output=True, encoding='utf-8', errors='replace', **kw)
 
 
 def blob(ref, path, cwd):
@@ -61,6 +103,7 @@ def kind(path, text):
 
 
 def py_funcs(text):
+    """(name, line, length, top) per function; top is a module-level def."""
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -70,7 +113,7 @@ def py_funcs(text):
     def walk(node, prefix):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                out.append((prefix + child.name, child.lineno, child.end_lineno - child.lineno + 1))
+                out.append((prefix + child.name, child.lineno, child.end_lineno - child.lineno + 1, prefix == ''))
                 walk(child, prefix + child.name + '.')
             elif isinstance(child, ast.ClassDef):
                 walk(child, prefix + child.name + '.')
@@ -82,6 +125,8 @@ def py_funcs(text):
 
 
 def indent_funcs(text, pattern, lang):
+    """(name, line, length, top) per function; top is any shell function (a fallback defined inside
+    an if is still a copy) and a Rust fn at column 0 (methods and test helpers are indented)."""
     lines = text.split('\n')
     out = []
     for i, line in enumerate(lines):
@@ -90,6 +135,7 @@ def indent_funcs(text, pattern, lang):
             continue
         g = m.groups()
         indent, name = g[0], (g[1] or g[2]) if lang == 'sh' else g[1]
+        top = lang == 'sh' or indent == ''
         if lang == 'rs':
             # A signature runs until a line ends in "{" (a body), ";" (a trait declaration) or "}"
             # (a whole body on one line, `fn tiny() -> i32 { 1 }`).
@@ -99,15 +145,15 @@ def indent_funcs(text, pattern, lang):
             if j == len(lines) or lines[j].rstrip().endswith(';'):
                 continue
             if lines[j].rstrip().endswith('}'):
-                out.append((name, i + 1, j - i + 1))
+                out.append((name, i + 1, j - i + 1, top))
                 continue
         elif g[3] and g[3].rstrip().endswith('}'):
-            out.append((name, i + 1, 1))  # f() { ...; } on one line
+            out.append((name, i + 1, 1, top))  # f() { ...; } on one line
             continue
         close = re.compile('^' + re.escape(indent) + r'\}')
         for k in range(i + 1, len(lines)):
             if close.match(lines[k]):
-                out.append((name, i + 1, k - i + 1))
+                out.append((name, i + 1, k - i + 1, top))
                 break
             nxt = pattern.match(lines[k])
             if nxt and len(nxt.group(1)) <= len(indent):
@@ -129,39 +175,11 @@ def funcs(path, text):
 def keyed(found):
     """name -> (line, length), with a repeated name (Rust's many `new`) keyed by its occurrence."""
     seen, out = {}, {}
-    for name, line, length in found:
+    for name, line, length, _ in found:
         n = seen.get(name, 0)
         seen[name] = n + 1
         out[name if n == 0 else f'{name}#{n + 1}'] = (line, length)
     return out
-
-
-def main(argv):
-    cwd = '.'
-    if len(argv) >= 2 and argv[0] == '-C':
-        cwd, argv = argv[1], argv[2:]
-    if len(argv) != 2 or argv[0].startswith('-'):
-        print(__doc__.split('\n\n')[1], file=sys.stderr)
-        return 2
-    base, head = argv
-    r = git(['diff', '-z', '-M', '--name-status', '--diff-filter=AMR', base, head], cwd)
-    if r.returncode != 0:
-        print(f'shape-grow: git diff {base} {head}: {r.stderr.strip()}', file=sys.stderr)
-        return 2
-    hits = []
-    for was_path, path in changed(r.stdout):
-        new_text = blob(head, path, cwd)
-        new = keyed(funcs(path, new_text))
-        if not any(length > LIMIT for _, length in new.values()):
-            continue
-        old = keyed(funcs(was_path, blob(base, was_path, cwd)))
-        for name, (line, length) in new.items():
-            was = old.get(name, (0, 0))[1]
-            if length > LIMIT and length > was:
-                hits.append(f'{path}:{line} {name} {was}->{length}')
-    for h in hits:
-        print(h)
-    return 1 if hits else 0
 
 
 def changed(status):
@@ -178,9 +196,331 @@ def changed(status):
             i += 2
 
 
+def grow_hits(files, base, head, cwd):
+    """(escape key, line) per long function the change made longer."""
+    hits = []
+    for was_path, path in files:
+        new = keyed(funcs(path, blob(head, path, cwd)))
+        if not any(length > LIMIT for _, length in new.values()):
+            continue
+        old = keyed(funcs(was_path, blob(base, was_path, cwd)))
+        for name, (line, length) in new.items():
+            was = old.get(name, (0, 0))[1]
+            if length > LIMIT and length > was:
+                key = re.sub(r'#\d+$', '', name).rsplit('.', 1)[-1]
+                hits.append(('Split', key, f'{path}:{line} {name} {was}->{length}'))
+    return hits
+
+
+# --- copies -------------------------------------------------------------------------------------
+
+def parse_copy_conf(text):
+    """COPY_CONF -> {'names': [glob], 'skip': [path glob], 'block': int}. A line is `name <glob>...`
+    (a function or constant name every tool may define), `skip <path glob>` (never indexed) or
+    `block-lines <n>`; `#` starts a comment."""
+    conf = {'names': [], 'skip': [], 'block': 6}
+    for n, raw in enumerate(text.split('\n'), 1):
+        line = raw.split('#', 1)[0].split()
+        if not line:
+            continue
+        key, vals = line[0], line[1:]
+        if key == 'name' and vals:
+            conf['names'] += vals
+        elif key == 'skip' and len(vals) == 1:
+            conf['skip'].append(vals[0])
+        elif key == 'block-lines' and len(vals) == 1 and vals[0].isdigit() and int(vals[0]) >= 2:
+            conf['block'] = int(vals[0])
+        else:
+            raise ValueError(f'{COPY_CONF}:{n}: not "name <glob>...", "skip <glob>" or "block-lines <n>": {raw.strip()}')
+    return conf
+
+
+def code_tree(ref, cwd, skip):
+    """path -> (lang, text) for every code file at <ref>, read in one `git cat-file --batch`; a blob
+    over MAX_BLOB is never read."""
+    r = git(['ls-tree', '-r', '-z', '-l', '--full-tree', ref], cwd)
+    if r.returncode != 0:
+        raise RuntimeError(f'git ls-tree {ref}: {r.stderr.strip()}')
+    entries = []
+    for rec in r.stdout.split('\0'):
+        if not rec:
+            continue
+        meta, path = rec.split('\t', 1)
+        mode, typ, sha, size = meta.split()
+        if typ == 'blob' and mode != '120000' and int(size) <= MAX_BLOB and not any(fnmatch.fnmatchcase(path, g) for g in skip):
+            entries.append((path, sha))
+    out = {}
+    if not entries:
+        return out
+    p = subprocess.run(['git', '-C', cwd, 'cat-file', '--batch'], input=''.join(s + '\n' for _, s in entries).encode(),
+                       capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError(f'git cat-file --batch: {p.stderr.decode(errors="replace").strip()}')
+    data, pos = p.stdout, 0
+    for path, _ in entries:
+        nl = data.index(b'\n', pos)
+        size = int(data[pos:nl].split()[2])
+        body = data[nl + 1:nl + 1 + size]
+        pos = nl + 1 + size + 1
+        if b'\0' in body:
+            continue
+        text = body.decode('utf-8', errors='replace')
+        lang = kind(path, text)
+        if lang:
+            out[path] = (lang, text)
+    return out
+
+
+def ignored(name, conf):
+    return any(fnmatch.fnmatchcase(name, g) for g in conf['names'])
+
+
+def top_defs(path, text):
+    """name -> first line, for the functions a copy check compares (py_funcs/indent_funcs `top`).
+    Python and shell only: a Rust fn lives in a module's namespace, and 72 of 80 name hits over 200
+    merged PRs were Rust namesakes (`read`, `page`, `parse`) doing other jobs."""
+    out = {}
+    if kind(path, text) == 'rs':
+        return out
+    for name, line, _, top in funcs(path, text):
+        if top:
+            out.setdefault(name, line)
+    return out
+
+
+def consts(lang, text):
+    """(NAME, value) -> first line, for each UPPER_CASE constant assigned at column 0 to a value with
+    content (empty, 0/1, true/false and the like are left out)."""
+    out = {}
+    pat = CONST[lang]
+    for i, raw in enumerate(text.split('\n'), 1):
+        m = pat.match(raw)
+        if not m:
+            continue
+        val = m.group(2).strip()
+        if lang != 'rs':
+            val = re.sub(r'\s+#.*$', '', val)
+        val = val.rstrip(';').strip()
+        if len(val) <= 2 or val in TRIVIAL_VALUES:
+            continue
+        out.setdefault((m.group(1), val), i)
+    return out
+
+
+def significant(lang, text):
+    """(line number, normalized line) for each line a block copy counts. A Rust file stops at its
+    `#[cfg(test)]` module: test cases repeat their setup, and those were the block hits that were no
+    copy over 200 merged PRs."""
+    out = []
+    for i, raw in enumerate(text.split('\n'), 1):
+        if lang == 'rs' and raw.startswith('#[cfg(test)]'):
+            break
+        s = ' '.join(raw.split())
+        if not s or s.startswith(COMMENT[lang]) or IMPORT[lang].match(s) or s in TRIVIAL_LINES:
+            continue
+        if sum(c.isalnum() for c in s) < 3:
+            continue
+        out.append((i, s))
+    return out
+
+
+def added_lines(base, head, cwd):
+    """head path -> set of line numbers the change adds there (`git diff -U0`, renames followed)."""
+    r = git(['-c', 'core.quotePath=false', 'diff', '-U0', '-M', '--no-prefix', '--no-color',
+             '--diff-filter=AMR', base, head], cwd)
+    if r.returncode != 0:
+        raise RuntimeError(f'git diff -U0 {base} {head}: {r.stderr.strip()}')
+    out, path, header = {}, None, False
+    for line in r.stdout.split('\n'):
+        if line.startswith('diff --git '):
+            header = True
+        elif header and line.startswith('+++ '):
+            path = line[4:].rstrip('\t')  # git ends the name with a tab when it has a space
+            out.setdefault(path, set())
+        elif line.startswith('@@') and path:
+            header = False
+            m = re.match(r'^@@ -\S+ \+(\d+)(?:,(\d+))? @@', line)
+            if m:
+                start, count = int(m.group(1)), int(m.group(2) or 1)
+                out[path].update(range(start, start + count))
+    return out
+
+
+def cached(fn):
+    """fn(path, ...) memoized by path: the tree is parsed at most once per file per run."""
+    memo = {}
+
+    def get(path, *args):
+        if path not in memo:
+            memo[path] = fn(path, *args)
+        return memo[path]
+    return get
+
+
+def func_copies(files, tree, base, cwd, conf):
+    hits = []
+    defs_of = cached(top_defs)
+    for was_path, path in files:
+        if path not in tree:
+            continue
+        lang, text = tree[path]
+        old = set(top_defs(was_path, blob(base, was_path, cwd)))
+        for name, line in sorted(top_defs(path, text).items(), key=lambda kv: kv[1]):
+            if name in old or ignored(name, conf):
+                continue
+            other = next(((p, defs[name]) for p, (lg, t) in sorted(tree.items())
+                          if p != path and lg == lang and name in t and name in (defs := defs_of(p, t))), None)
+            if other:
+                hits.append(('Dup', name, f'{path}:{line} copy function {name}, also {other[0]}:{other[1]}'))
+    return hits
+
+
+def const_copies(files, tree, base, cwd, conf):
+    hits = []
+    consts_of = cached(lambda p, lg, t: consts(lg, t))
+    for was_path, path in files:
+        if path not in tree:
+            continue
+        lang, text = tree[path]
+        was = blob(base, was_path, cwd)
+        old = set(consts(kind(was_path, was), was)) if kind(was_path, was) else set()
+        for (name, val), line in sorted(consts(lang, text).items(), key=lambda kv: kv[1]):
+            if (name, val) in old or ignored(name, conf):
+                continue
+            other = next(((p, c[(name, val)]) for p, (lg, t) in sorted(tree.items())
+                          if p != path and name in t and (name, val) in (c := consts_of(p, lg, t))), None)
+            if other:
+                hits.append(('Dup', name, f'{path}:{line} copy constant {name}, also {other[0]}:{other[1]}'))
+    return hits
+
+
+def block_windows(sig, n):
+    """Each run of n significant lines as (start index, normalized text)."""
+    return [(i, tuple(s for _, s in sig[i:i + n])) for i in range(len(sig) - n + 1)]
+
+
+def block_copies(files, tree, added, base, cwd, conf):
+    """A run of `block-lines` significant lines, every one added by the change, that also stands
+    anywhere else at <head> (another file, or another place in this one). A run that stands in its
+    file no more often than at <base> was moved or re-indented there, not copied."""
+    n = conf['block']
+    news = {}  # path -> (significant lines, [(start index, window)] the change adds)
+    for was_path, path in files:
+        if not added.get(path):
+            continue
+        sig, adds = significant(*tree[path]), added[path]
+        head_w = block_windows(sig, n)
+        was = blob(base, was_path, cwd)
+        lang = kind(was_path, was)
+        before = {}
+        for _, w in block_windows(significant(lang, was), n) if lang else []:
+            before[w] = before.get(w, 0) + 1
+        now = {}
+        for _, w in head_w:
+            now[w] = now.get(w, 0) + 1
+        news[path] = (sig, [(i, w) for i, w in head_w if now[w] > before.get(w, 0)
+                            and all(sig[j][0] in adds for j in range(i, i + n))])
+    wanted = {w for _, starts in news.values() for _, w in starts}
+    if not wanted:
+        return []
+    index = {}  # window -> [(path, first line, last line)]
+    for p, (lang, text) in tree.items():
+        sig = news[p][0] if p in news else significant(lang, text)
+        for i, w in block_windows(sig, n):
+            if w in wanted:
+                index.setdefault(w, []).append((p, sig[i][0], sig[i + n - 1][0]))
+    hits = []
+    for path in sorted(news):
+        sig, starts = news[path]
+        run_start = prev = match = None
+        for i, w in starts + [(None, None)]:
+            m = None
+            if i is not None:
+                first, last = sig[i][0], sig[i + n - 1][0]
+                m = next(((p, a) for p, a, b in sorted(index[w]) if p != path or b < first or a > last), None)
+            if m and run_start is not None and i == prev + 1:
+                prev = i
+                continue
+            if run_start is not None:
+                hits.append(('Dup', match[0], f'{path}:{sig[run_start][0]} copy block of {prev - run_start + n} '
+                             f'lines, also {match[0]}:{match[1]}'))
+                run_start = None
+            if m:
+                run_start = prev = i
+                match = m
+    return hits
+
+
+def copy_hits(files, base, head, cwd, conf_text=None):
+    text = blob(base, COPY_CONF, cwd) if conf_text is None else conf_text
+    if not text:
+        return []
+    conf = parse_copy_conf(text)
+    tree = code_tree(head, cwd, conf['skip'])
+    files = [(w, p) for w, p in files if p in tree]
+    if not files:
+        return []
+    return (func_copies(files, tree, base, cwd, conf) + const_copies(files, tree, base, cwd, conf)
+            + block_copies(files, tree, added_lines(base, head, cwd), base, cwd, conf))
+
+
+# --- escapes and the run -------------------------------------------------------------------------
+
+# The same grammar as agent-land's shape_gate reads, so a line one of them skips the other skips too.
+ESCAPE = re.compile(r'^[ \t]*(Split|Dup):[ \t]*([a-z]+-[0-9]+)(?![a-z0-9-])(.*)$', re.M)
+
+
+def escapes(body):
+    """'Split' or 'Dup' -> {name: row id} from the body's escape lines."""
+    out = {'Split': {}, 'Dup': {}}
+    for kind_, row, rest in ESCAPE.findall(body):
+        for name in re.split(r'[\s,]+', rest.strip()):
+            if name:
+                out[kind_].setdefault(name, row)
+    return out
+
+
+def main(argv):
+    cwd, body, conf = '.', '', None
+    while argv and argv[0] in ('-C', '--body', '--conf') and len(argv) >= 2:
+        if argv[0] == '-C':
+            cwd = argv[1]
+        else:
+            if argv[1] == '-':
+                text = sys.stdin.read()
+            else:
+                with open(argv[1], encoding='utf-8', errors='replace') as f:
+                    text = f.read()
+            body, conf = (text, conf) if argv[0] == '--body' else (body, text)
+        argv = argv[2:]
+    if len(argv) != 2 or argv[0].startswith('-'):
+        print(__doc__.split('\n\n')[1], file=sys.stderr)
+        return 2
+    base, head = argv
+    r = git(['diff', '-z', '-M', '--name-status', '--diff-filter=AMR', base, head], cwd)
+    if r.returncode != 0:
+        print(f'shape-grow: git diff {base} {head}: {r.stderr.strip()}', file=sys.stderr)
+        return 2
+    files = list(changed(r.stdout))
+    esc = escapes(body)
+    failed = 0
+    for kind_, key, line in grow_hits(files, base, head, cwd) + copy_hits(files, base, head, cwd, conf):
+        row = esc[kind_].get(key)
+        print(f'{line} [{kind_}: {row}]' if row else line)
+        failed += not row
+    if failed:
+        sys.stdout.flush()  # the list, then the hint, in a log that merges the two
+        print('shape-grow: fix each line above in this change. A grown function: extract the new logic as a pure '
+              'function and call it. A copy: use or extend the one it names instead of adding a second; a namesake that does another job: rename it. When that '
+              'cannot be done here, the PR body names an open board row that names it: "Split: <row id> <function>..." '
+              'or "Dup: <row id> <name or path>..."; CI reads the body when its lint job runs, so push or re-run '
+              'that job after adding the line', file=sys.stderr)
+    return 1 if failed else 0
+
+
 if __name__ == '__main__':
     try:
         sys.exit(main(sys.argv[1:]))
-    except Exception as e:  # 1 means "a function grew", so a crash must not exit 1 with a traceback
+    except Exception as e:  # 1 means "a function grew or a copy was added", so a crash must not exit 1
         print(f'shape-grow: {type(e).__name__}: {e}', file=sys.stderr)
         sys.exit(2)

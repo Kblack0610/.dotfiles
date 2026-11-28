@@ -249,7 +249,7 @@ J
 }
 
 @test "session_prs: each PR with its state from its own repo's store, viewed PRs not counted, one read per repo a pass" {
-  pr_store; pr_transcript "$SANDBOX/t.jsonl"
+  seed_pr_store; pr_transcript "$SANDBOX/t.jsonl"
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
   [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["o/one",7,"OPEN",null],["o/two",9,"MERGED","2026-10-30T12:00:00Z"]]' ]
@@ -260,7 +260,7 @@ J
 }
 
 @test "session_prs: a repo the store cannot answer leaves a null state, is read once a pass, and not kept past it" {
-  pr_store; pr_transcript "$SANDBOX/t.jsonl"
+  seed_pr_store; pr_transcript "$SANDBOX/t.jsonl"
   touch "$LEDGER_DIR/PRS_FAIL_o_two"
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
@@ -323,10 +323,25 @@ J
   [ ! -s "$LEDGER_DIR/calls" ] || ! grep -q '^sync-prs' "$LEDGER_DIR/calls"
   # a repo the store does not list is no fault
   rm -f "$LEDGER_DIR/SYNC_FAIL" "$CACHE/blind_row" "$CACHE"/refreshed_*
-  printf '#!/usr/bin/env bash\n[ "$1" = sync-prs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
+  ss_script '[ "$1" = sync-prs ] && exit 3; echo "[]"'
   rm -f "$CACHE"/*_origin
   CLOSE_SELF=sid-1 prs_for "$SANDBOX/fjwt" >/dev/null
   [ ! -f "$CACHE/blind_row" ]
+}
+
+@test "repo_prs: one prs read per repo per pass, under a pass cache whose path has capitals (mktemp -d)" {
+  CACHE="$SANDBOX/PassCache"; mkdir -p "$CACHE"
+  printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_o_r.tsv"
+  : > "$LEDGER_DIR/calls"
+  run repo_prs o/r
+  assert_success
+  [ "$(jq -r '.[0].number' <<<"$output")" = 11 ]
+  pr_states o/r >/dev/null
+  repo_prs o/r >/dev/null
+  [ "$(grep -c '^prs ' "$LEDGER_DIR/calls")" = 1 ]
+  ss_script 'exit 3'
+  run repo_prs o/other
+  assert_failure 3
 }
 
 @test "store_key: a Forgejo alias host is the store's host, any other repo as given (ar-2786)" {
@@ -538,6 +553,62 @@ SH
   assert_success
   run pr_made_here "$SANDBOX/r" 875 feat/x '[]' "$SANDBOX/t.jsonl" - "$SANDBOX/a/plan.md"
   assert_failure
+}
+
+# reviewer_item <state> <tags> [verdict]: session s1's own queue item, a review of fix-wave-save (after:, on lab:s2)
+# tagged <tags>, recording <verdict> on the PR head when given; done items finish now.
+reviewer_item() {
+  local d="$HOME/.agent/queue/$1" v="" oid; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  rm -rf "$HOME/.agent/queue"; mkdir -p "$HOME/.agent/queue/queued"
+  [ "$1" = done ] && d="$d/$(date +%F)"; mkdir -p "$d"
+  [ -z "${3:-}" ] || v="verdict: $3\nverdict_head: $oid\n"
+  [ "$1" != done ] || v="${v}finished: $(date -u +%FT%TZ)\n"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s2\n---\nfix wave save\n' \
+    > "$HOME/.agent/queue/queued/20261103-100000-fix-wave-save.md"
+  printf "slug: validate-fix-wave-save-${oid:0:8}\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: auto:validate\nagent: claude\nqueued: 2026-11-03T11:00:00Z\nsession: lab:s1\nafter: fix-wave-save\ntags: %s\n${v}---\ncheck(validate): fix-wave-save, apociseum#9\n" \
+    "$2" > "$d/20261103-110000-validate-fix-wave-save-${oid:0:8}.md"
+}
+
+@test "end to end: a validate session that failed the PR it reviewed closes off it; a pass or no verdict keeps (ar-5260)" {
+  # validate-ar-5194-3edd08df failed #3435 and close --self kept it: "land it: PR #3435 open", the author item's PR.
+  bats_require_minimum_version 1.5.0
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  panel "$SANDBOX/wt"
+  ledger feat/x '[]'; open_pr FAIL
+  reviewer_item done validate fail
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .pr <<<"$output")" = - ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+  [ "$(jq -r .close.verdict <<<"$output")" = now ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self sid-9
+  assert_success
+  assert_output --regexp "^now: quiet [0-9]+m, nothing to land$"
+
+  # no verdict yet: the review is still left here, done or running
+  reviewer_item done validate
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 9 ]
+  [ "$(jq -r .close.verdict <<<"$output")" = keep ]
+  [[ "$(jq -r .close.why <<<"$output")" == "land it: PR #9 open, CI "* ]]
+  reviewer_item running validate
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self sid-9
+  assert_failure 1
+  assert_line --index 0 --partial "keep: land it: PR #9 open, CI "
+
+  # a pass keeps it: the validate session lands the PR itself
+  reviewer_item done validate pass
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 9 ]
+  [ "$(jq -r .close.verdict <<<"$output")" = keep ]
+
+  # negative control: an author session (no validate tag) with the same open PR still lands it
+  reviewer_item done "" fail
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .pr <<<"$output")" = 9 ]
+  [ "$(jq -r .close.verdict <<<"$output")" = keep ]
+  [[ "$(jq -r .close.why <<<"$output")" == "land it: PR #9 open, CI "* ]]
 }
 
 @test "end to end: a merged PR another session made on a shared worktree branch is not this session's (ar-455)" {
@@ -1164,6 +1235,39 @@ PROM
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red, background shell idle over 30m' ]
 }
 
+@test "end to end: a gate detached with & reads a gate wait on an idle session, not STALLED (ar-1085)" {
+  # unity-core-playground-agent-3 (run 42525454189): ci-gate.sh ran on in the worktree after the Bash call that started
+  # it with & returned, the session read idle, and live_wait never ran, so the row read STALLED.
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache" FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  printf 'gate ci-gate.sh\n' > "$FLEET_TIME_USE_CONF"
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  printf 'sleep 60\n' > "$SANDBOX/wt/scripts/test/ci-gate.sh"
+  job 77 'Harness tests:failure'
+  ledger feat/x '[]'; open_pr FAIL 77
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  local gate
+  (cd "$SANDBOX/wt" && exec -a x bash scripts/test/ci-gate.sh) >/dev/null 2>&1 3>&- &
+  gate=$!; LIVE_PIDS="$gate"
+  until grep -q ci-gate.sh "/proc/$gate/cmdline" 2>/dev/null; do :; done
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = 'gate running detached, nothing wakes the session when it ends' ]
+  # ci-gate.sh is a landing-queue gate: it ends itself, so FLEET_SHELL_STALE_MIN does not make it stale
+  [ "$(jq -r .open_job <<<"$output")" = queue ]
+  FLEET_SHELL_STALE_MIN=30 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'gate running detached, nothing wakes the session when it ends' ]
+  # negative controls: a session idle under FLEET_IDLE_MIN, and one whose gate ended
+  PANEL_IDLE_S=300 panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'idle 5m' ]
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  kill "$gate"; wait "$gate" 2>/dev/null || true
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+}
+
 @test "end to end: a red gate line is CI running while its item is after: an open item, red once that item is done (ar-4314)" {
   # 2026-11-21 unity-core-playground #3076 and #3083 read STALLED CI red: each item was stacked on an open
   # item, so agent-land held it (exit 4) before a gate was dispatched and Checks' Merge gate line stayed red.
@@ -1235,6 +1339,69 @@ PROM
   rm -rf "$HOME/.agent/queue/running"; queue_item running lab:s1
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+}
+
+# validated_item <author state> <validate slug> <validate item state> [<verdict> <verdict head>]: session s1's item
+# fix-wave-save naming its validate item, and that item, as agent-land's validate_gate leaves them (ar-5286).
+validated_item() {
+  local d="$HOME/.agent/queue/$3" v=""
+  rm -rf "$HOME/.agent/queue"; mkdir -p "$HOME/.agent/queue/$1"
+  [ "$3" = done ] && d="$d/$(date +%F)"; mkdir -p "$d"
+  [ -z "${4:-}" ] || v="verdict: $4\nverdict_head: $5\nfinished: $(date -u +%FT%TZ)\n"
+  printf 'slug: fix-wave-save\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\nvalidate: %s\n---\nfix wave save\n' \
+    "$2" > "$HOME/.agent/queue/$1/20261103-100000-fix-wave-save.md"
+  printf "slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T11:00:00Z\nsession: lab:s2\n${v}---\ncheck(validate): fix-wave-save\n" \
+    "$2" > "$d/20261103-110000-$2.md"
+}
+
+@test "end to end: a green PR is landable only on its validate verdict: pending waits, a fail on its head is DONE (ar-5286)" {
+  # 2026-11-24 #3435 read STALLED green, not merged after validate-ar-5194-3edd08df failed it, and the shepherd
+  # nudged agent-13 to land a PR agent-land refuses.
+  landed_fixture
+  local oid other=0123456789abcdef0123456789abcdef01234567; oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  ledger feat/x '[]'; open_pr PASS
+  validated_item running "validate-fix-wave-save-${oid:0:8}" queued
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 waiting on validate-fix-wave-save-${oid:0:8}, a second agent's review" ]
+
+  # the validate session failed this head: agent-land sent the item back to the queue, so nothing here lands
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 failed validation (validate-fix-wave-save-${oid:0:8}), its item went back to the queue with the findings" ]
+  [ "$(jq -r .finished <<<"$output")" = true ]
+  [ "$(jq -r '.blockers | length' <<<"$output")" = 0 ]
+
+  # negative controls: a pass, a fail on another head, a live validate item filed for another head
+  validated_item running "validate-fix-wave-save-${oid:0:8}" done pass "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  validated_item running "validate-fix-wave-save-${other:0:8}" done fail "$other"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+  validated_item running "validate-fix-wave-save-${other:0:8}" running
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
+
+  # a head that only merged main in since the verdict still carries it (agent-land's covers: catch_up merges first)
+  git clone -q -b main "$SANDBOX/origin.git" "$SANDBOX/other" 2>/dev/null; main_change theirs
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t merge -q --no-edit origin/main
+  open_pr PASS
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  validated_item running "validate-fix-wave-save-${oid:0:8}" running
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = "PR #9 waiting on validate-fix-wave-save-${oid:0:8}, a second agent's review" ]
+  # negative control: a commit of its own after the verdict is a new head the verdict never read
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m more
+  open_pr PASS
+  validated_item queued "validate-fix-wave-save-${oid:0:8}" done fail "$oid"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #9 green, not merged' ]
 }
 
@@ -1388,7 +1555,7 @@ PROM
     [ "$(jq -r .reason <<<"$output")" = 'PR #2166 closed without merging' ]
     [ "$(jq -r .finished <<<"$output")" = false ]
   done
-  done_item ok "$sha"; pr_transcript "$SANDBOX/t.jsonl"; pr_store
+  done_item ok "$sha"; pr_transcript "$SANDBOX/t.jsonl"; seed_pr_store
   printf -- '-\t9\tCLOSED\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -1971,6 +2138,50 @@ GH
   assert_output ''
 }
 
+@test "close --self: a submodule pointer in a worktree the session edited, not its own, is not its dirt (ar-5937)" {
+  local g=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always) d="$HOME/.worktrees/other" sub="$SANDBOX/fsub"
+  CACHE="$SANDBOX/cache"; mkdir -p "$CACHE" "$sub" "$HOME/.worktrees"
+  git init -q "$sub"; "${g[@]}" -C "$sub" commit -q --allow-empty -m one
+  git init -q --bare "$SANDBOX/other.git"; git clone -q "$SANDBOX/other.git" "$d" 2>/dev/null
+  "${g[@]}" -C "$d" submodule add -q "$sub" module 2>/dev/null
+  echo original > "$d/tracked"; git -C "$d" add tracked; "${g[@]}" -C "$d" commit -qm init
+  "${g[@]}" -C "$d" push -q origin HEAD:main 2>/dev/null; git -C "$d" fetch -q origin
+  # Another writer stages a pin bump: moved_pin keeps a staged pin, so the tree reads one dirty pointer.
+  "${g[@]}" -C "$sub" commit -q --allow-empty -m two
+  git -C "$d/module" fetch -q origin; git -C "$d/module" checkout -q --detach origin/HEAD; git -C "$d" add module
+  [ "$(git -C "$d" status --porcelain)" = 'M  module' ]
+  run dirty_paths "$d" "$d/tracked"; assert_output 'module'          # its own tree: every entry is its own
+  run dirty_paths "$d" "$d/tracked" 1; assert_output ''              # foreign: the pointer is another writer's
+  # An edit at or inside that submodule makes the pointer the session's.
+  run dirty_paths "$d" "$d/module/inside" 1; assert_output 'module'
+  run dirty_paths "$d" "$d/module" 1; assert_output 'module'
+  # Work inside the submodule a Bash edit may have made stays dirt: a working file, a commit no remote holds.
+  echo new > "$d/module/new"
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'module'
+  rm "$d/module/new"
+  "${g[@]}" -C "$d/module" commit -q --allow-empty -m unpushed
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'module'
+  git -C "$d/module" reset -q --hard HEAD~1
+  # An unstaged pin moved to an unpushed commit, the other shape moved_pin keeps, stays dirt too.
+  git -C "$d" reset -q module; "${g[@]}" -C "$d/module" commit -q --allow-empty -m unpushed
+  [ "$(git -C "$d" status --porcelain)" = ' M module' ]
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'module'
+  git -C "$d/module" reset -q --hard HEAD~1; git -C "$d" add module
+  # A plain file beside it is still dirt in a foreign tree.
+  echo x > "$d/tracked"
+  run dirty_paths "$d" "$d/tracked" 1; assert_output 'tracked'
+  # The close read, from another cwd: the pointer alone holds nothing, the edited file still does.
+  gh_script 'exit 1'; MAIN_CACHE="$SANDBOX/main"; touch "$LEDGER_DIR/prs.tsv"
+  git init -q "$SANDBOX/own"
+  run edited_work_blockers "$SANDBOX/own" "$d/tracked"
+  assert_output --partial "unlanded work in $d: 1 dirty file(s) (tracked)"
+  git -C "$d" checkout -q tracked
+  run edited_work_blockers "$SANDBOX/own" "$d/tracked"; assert_output ''
+  # An edit inside the submodule keeps the pointer on the close read.
+  run edited_work_blockers "$SANDBOX/own" "$(printf '%s\n' "$d/tracked" "$d/module/inside")"
+  assert_output --partial "unlanded work in $d: 1 dirty file(s) (module)"
+}
+
 @test "close verdict: each step of the fleet-states.md close flow, first match wins" {
   # Not ours to judge while work is left here; with nothing left it closes like any row, on the park's age (a parked row has no claude start, so age_min is null).
   [ "$(verdict '{bucket: "PARKED", blockers: ["PR #9 open, CI PASS"]}')" = "keep: parked: its claude is gone, work is left here" ]
@@ -2165,8 +2376,8 @@ GH
   holder_doc() { jq -nc --argjson t "$1" --argjson r "$2" '{generated_epoch: $t, sessions: [$r]}' > "$f"; }
   holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","idle_min":0,"blockers":[]}'
   # This machine's own pass would read blind (no PR store, no run ledger): the answer is the holder's.
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
-  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  ss_script 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_success
   assert_output "now: quiet 0m, nothing to land"
   # The holder reads no worker transcript: what will wake this session is read here (ar-3598).
@@ -2234,6 +2445,46 @@ GH
   [[ "$stderr" == *"no live session sid-w"* ]]
 }
 
+@test "close --self on a fleet worker: a PR merged since the holder's store polled reads merged here (ar-5947)" {
+  rm -f "$SANDBOX/lease-held"
+  bats_require_minimum_version 1.5.0
+  export CLAUDE_CODE_SESSION_ID=sid-w FLEET_HOST=razer-laptop FLEET_STATE_FILE="$SANDBOX/state/state.json"
+  mkdir -p "$SANDBOX/state"
+  local f="$SANDBOX/state/holder-state.json" now; now="$(date +%s)"
+  worker_ssh
+  # This worker's store polled before the merge; its refresh reads PR #11 MERGED (after_sync_).
+  forgejo_stale_fixture
+  local w="$SANDBOX/fjwt"
+  git -C "$w" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+  git -C "$w" update-ref refs/remotes/origin/main HEAD
+  # The holder's row still reads the PR open, from its own store.
+  jq -nc --argjson t "$now" --arg w "$w" '{generated_epoch: $t, sessions: [{session_id: "sid-w", host: "razer-laptop",
+    bucket: "DONE", cwd: $w, pr: "11", pr_state: "OPEN", ci: "PENDING", blockers: ["PR #11 open, CI PENDING"]}]}' > "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_success
+  assert_output "now: quiet 0m, nothing to land"
+  [ "$(grep -c '^sync-prs --wait fj.example/o/r$' "$LEDGER_DIR/calls")" -eq 1 ]
+  # A store that cannot read the forge is a wait, never the stale OPEN taken as fact.
+  printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_fj.example_o_r.tsv"; touch "$LEDGER_DIR/SYNC_FAIL"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_output --partial "after: this worker could not read PR store refresh (fj.example/o/r)"
+  # A PR closed unmerged says so, and a plan-less "nothing merged" stays: only a merge settles it.
+  rm "$LEDGER_DIR/SYNC_FAIL"
+  printf 'feat/x\t11\tCLOSED\tPASS\tabc\t-\t\n' > "$LEDGER_DIR/after_sync_fj.example_o_r.tsv"
+  jq -c '.sessions[0].blockers += ["no plan file and nothing merged"]' "$f" > "$f.new" && mv "$f.new" "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_line "blocker: PR #11 closed without merging"
+  assert_line "blocker: no plan file and nothing merged"
+  refute_line --partial "PR #11 open"
+  # NEGATIVE CONTROL: a PR the refreshed store still reads open keeps the holder's blocker.
+  printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_fj.example_o_r.tsv"
+  rm "$LEDGER_DIR/after_sync_fj.example_o_r.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_line --index 0 "keep: land it: PR #11 open, CI PENDING"
+}
+
 @test "close --self on a fleet worker: a submodule pin behind master is not unlanded work (ar-2445)" {
   rm -f "$SANDBOX/lease-held"
   bats_require_minimum_version 1.5.0
@@ -2249,8 +2500,8 @@ GH
 
   # The lease holder's row for this session in the submodule
   holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":[],"cwd":"'"$sub"'"}'
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
-  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  ss_script 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_success
   assert_output "now: quiet 0m, nothing to land"
 
@@ -2617,26 +2868,6 @@ GH
   [ "$(jq -r .bucket <<<"$output")" = LANDED ]
 }
 
-@test "plan_row_title: the heading leads, cut to 80 with the slug whole; no heading keeps the old title (ar-5348)" {
-  . "$REPO_ROOT/.local/lib/plan-phases.sh"
-  printf -- '---\n# a frontmatter comment\n---\n```sh\n# a shell comment\n```\n# Fix #12 the <UPS> shutdown\n\n## Phases\n# not this\n' > "$SANDBOX/swirling-knuth.md"
-  [ "$(plan_row_title "$SANDBOX/swirling-knuth.md")" = "Fix 12 the UPS shutdown (plan swirling-knuth)" ]
-  printf '# %s\n' "$(printf 'word %.0s' $(seq 1 30))" > "$SANDBOX/a-long-session-slug-name.md"
-  t="$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")"
-  [ "${#t}" -le 80 ]
-  [[ "$t" == "word word "*" (plan a-long-session-slug-name)" ]]
-  # A cut that ends on punctuation drops it.
-  printf '# %s: more words follow here\n' "$(printf 'x%.0s' $(seq 1 47))" > "$SANDBOX/a-long-session-slug-name.md"
-  [ "$(plan_row_title "$SANDBOX/a-long-session-slug-name.md")" = "$(printf 'x%.0s' $(seq 1 47)) (plan a-long-session-slug-name)" ]
-  # A slug too long to leave room for a heading keeps it first, where no cut reaches it.
-  slug=a-pasted-request-about-the-platform-feature-iridescent-moon
-  printf '# A heading\n' > "$SANDBOX/$slug.md"
-  [ "$(plan_row_title "$SANDBOX/$slug.md")" = "plan $slug: run its open phases" ]
-  # NEGATIVE CONTROL: a plan with no heading keeps the title ask-sweep and older rows use.
-  printf '## Phases\n\n- [ ] x\n' > "$SANDBOX/bare.md"
-  [ "$(plan_row_title "$SANDBOX/bare.md")" = "plan bare: run its open phases" ]
-}
-
 @test "plan_phase_title: the phase name leads, then (P<n>, heading); no session slug, cut to 80 (ar-5462)" {
   . "$REPO_ROOT/.local/lib/plan-phases.sh"
   printf '# Pasted intake gate\n\n## Phases\n' > "$SANDBOX/pasted-content-id-0d29-d-cozy-kahn.md"
@@ -2837,6 +3068,24 @@ GH
   assert_output "$(printf 'o/three\t3\tFAIL\tabc123')"
 }
 
+@test "CI_JQ: a check of a PR_CI_NO_VERDICT workflow is neither red nor pending (ar-3499)" {
+  # 2026-11-18 ucp#2870: Checks passed, and Drop closed gates' "Run Checks the slot refused", which
+  # acts on other PRs, was cancelled by its concurrency group on this PR's head: the PR read CI FAIL.
+  check() { printf '{"name":"%s","workflowName":"%s","conclusion":"%s","status":"%s","detailsUrl":"https://github.com/o/r/actions/runs/%s/job/%s"}' "$1" "$2" "$3" "${4:-COMPLETED}" "$5" "$5"; }
+  local view
+  for c in CANCELLED FAILURE ''; do
+    view=$(printf '{"statusCheckRollup":[%s,%s]}' "$(check Checks Checks SUCCESS COMPLETED 1)" \
+      "$(check 'Run Checks the slot refused' 'Drop closed gates' "$c" "$([ -n "$c" ] && echo COMPLETED || echo QUEUED)" 2)")
+    [ "$(jq -r "$CI_JQ"' ci' <<<"$view")" = PASS ]
+    [ "$(jq -r "$CI_JQ"' red' <<<"$view")" = - ]
+    # negative control: with the list off, the same check counts
+    [ "$(PR_CI_NO_VERDICT='' jq -r "$CI_JQ"' ci' <<<"$view")" = "$([ -n "$c" ] && echo FAIL || echo PENDING)" ]
+  done
+  # a workflow the list does not name is still read
+  view=$(printf '{"statusCheckRollup":[%s,%s]}' "$(check Checks Checks SUCCESS COMPLETED 1)" "$(check Lint 'Drop closed gates x' CANCELLED COMPLETED 2)")
+  [ "$(jq -r "$CI_JQ"' ci' <<<"$view")" = FAIL ]
+}
+
 @test "self_wait reads a tail --pid on another process as an event wait, and the row stays WORKING (ar-2426)" {
   # 2026-11-14: a `tail --pid <pid>` waiting on another process, the event wait the rules ask for,
   # read "background shell is not a gate or test" and drew a nudge.
@@ -2869,6 +3118,36 @@ GH
   # negative control: a shell the transcript could not class, with no such tail, is still not a wait
   run b shell 0 0 0 25 1 0 0 875 MERGED PASS 1 - 2/3 x - jobs
   assert_output 'LANDED PR #875 merged, tree clean, next phase: x, background shell is not a gate or test'
+}
+
+@test "self_wait reads a background gh event listen as an event wait, and a gh command that is not one as nothing (ar-5664)" {
+  # 2026-11-24 dotfiles-agent-20 waited on #3501 with a background `gh event listen` and read STALLED
+  # "background shell is not a gate or test". perl's $0 gives the stand-in gh's own command line.
+  stand_in() {
+    printf '%s\n' "perl -e '\$0 = \"$1\"; sleep 60'; :" > "$SANDBOX/$2.sh"
+    setsid bash -c 'bash "$1"; :' _ "$SANDBOX/$2.sh" >/dev/null 2>&1 3>&- &
+    SI_ROOT=$!
+    local spins=0
+    LIVE_PIDS="${LIVE_PIDS:-} -$SI_ROOT"   # teardown kills it, pass or fail
+    until pgrep -s "$SI_ROOT" -f "^$1" >/dev/null; do
+      kill -0 "$SI_ROOT" || fail "the $2 stand-in exited before it started"
+      [ $((++spins)) -lt 20000 ] || fail "the $2 stand-in never started"
+    done
+  }
+  stand_in 'gh event listen --resource PR_kwDOabc' listen
+  run self_wait "$SI_ROOT"
+  assert_output 'wait'
+  FLEET_IDLE_MIN=20 FLEET_SHELL_STALE_MIN=120
+  run b shell 0 0 0 25 1 0 0 875 OPEN PENDING 1 - 1/3 x - wait
+  assert_output 'WORKING shell'
+  # a global flag before the subcommand is the same wait
+  stand_in 'gh -R o/r event listen --resource PR_kwDOabc' flagged
+  run self_wait "$SI_ROOT"
+  assert_output 'wait'
+  # negative control: another gh command under the claude is no event wait
+  stand_in 'gh event list' other
+  run self_wait "$SI_ROOT"
+  assert_output ''
 }
 
 @test "end to end: a plan-mode copy of a queued plan under another name reads that plan's queued phases (ar-2426)" {
@@ -3214,4 +3493,37 @@ GH
     [ "$(jq -r .bucket <<<"$output")" = STALLED ]
     [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
   done
+}
+
+@test "end to end: a plan-mode copy under ~/.claude*/plans reads its phases from the canonical ~/.agent/plans plan (ar-3465)" {
+  # 2026-11-18 the tilecast coordinator read 0/5 overdue from a copy while 2/5 had landed in the canonical plan.
+  landed_fixture
+  local cp="$HOME/.claude/plans/quirky-donut.md" live="$HOME/.agent/plans/_live" proj="$HOME/.agent/plans/lab"
+  mkdir -p "$HOME/.claude/plans" "$live" "$proj"
+  copy() { local f="$1"; shift; { printf '# Plan\n\n## Phases\n\n'; printf '%s\n' "$@"; } > "$f"; }
+  copy "$cp" '- [ ] P1 a' '- [ ] P2 b' '- [ ] P3 c'
+  panel "$SANDBOX/wt" "$cp"
+  read_plan() { run "$REPO_ROOT/.local/bin/fleet-sessions" --json; jq -c '[.plan_file, .phases_done, .phases_total]' <<<"$output"; }
+  # no canonical plan: the copy is all there is
+  [ "$(read_plan)" = "[\"$cp\",0,3]" ]
+  # a canonical plan in _live wins, unless it is older than the copy (an earlier run's plan of a reused slug)
+  copy "$live/quirky-donut.md" '- [x] P1 a (#1)' '- [x] P2 b (#2)' '- [ ] P3 c'
+  touch -d '2020-01-01' "$live/quirky-donut.md"
+  [ "$(read_plan)" = "[\"$cp\",0,3]" ]
+  touch "$live/quirky-donut.md"
+  [ "$(read_plan)" = "[\"$live/quirky-donut.md\",2,3]" ]
+  # so does the one project dir that holds a real file of that name
+  rm "$live/quirky-donut.md"; copy "$proj/quirky-donut.md" '- [x] P1 a (#1)' '- [ ] P2 b' '- [ ] P3 c'
+  [ "$(read_plan)" = "[\"$proj/quirky-donut.md\",1,3]" ]
+  # a project plan that is a link is found too
+  mv "$proj/quirky-donut.md" "$SANDBOX/real.md"; ln -s "$SANDBOX/real.md" "$proj/quirky-donut.md"
+  [ "$(read_plan)" = "[\"$proj/quirky-donut.md\",1,3]" ]
+  # negative controls: two project dirs hold it, so which is canonical is unknown
+  mkdir -p "$HOME/.agent/plans/other"; cp "$SANDBOX/real.md" "$HOME/.agent/plans/other/quirky-donut.md"
+  [ "$(read_plan)" = "[\"$cp\",0,3]" ]
+  # a plan already linked into ~/.agent/plans is read where it is, and a plan outside ~/.claude*/plans is untouched
+  rm "$cp"; ln -s "$proj/quirky-donut.md" "$cp"
+  [ "$(read_plan)" = "[\"$cp\",1,3]" ]
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  [ "$(read_plan | jq -r '.[0]')" = "$SANDBOX/plan.md" ]
 }

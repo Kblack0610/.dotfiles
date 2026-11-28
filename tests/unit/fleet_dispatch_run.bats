@@ -61,6 +61,10 @@ load 'fleet_dispatch/run'
   assert_output 0
   # A question blocks one step, and reap, not the session, moves the item to waiting.
   assert_called 'only that step is blocked, not the task'
+  assert_called 'once the ask is all that is left, run /wind-down auto'
+  assert_called 'If wind-down will not close, end your turn on the question and leave this window open'
+  run grep -c 'only when nothing else is left' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
   run grep -cE 'agent-queue move gm-1 waiting|then stop and leave' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   assert_called 'tmux -L lab set-option -t =game-agent-1: @dispatch game: gm-1'
@@ -343,6 +347,16 @@ load 'fleet_dispatch/run'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_failure
   assert_equal "$(outcome)" FAILED
+}
+
+@test "run names the cmd_start cause in the FAILED reason and the activity log, not only exit 1 (ar-3995)" {
+  game_ready
+  stub wt 'echo "wt: disk full" >&2; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_failure
+  assert_output --partial 'wt: disk full'
+  grep -qE 'could not start queue item gm-1 \(exit 1\): .*wt: disk full.*wt new failed for queue item gm-1' \
+    "$HOME/.local/state/agentctl/fleet-dispatch/activity.log" || fail "the cause is not in the activity log"
 }
 
 @test "run publishes FAILED when it could not judge" {

@@ -27,8 +27,11 @@ pub const KEYS_OFF_WHILE_MOVING: &str = "ctrl-o,alt-o,ctrl-y,alt-d";
 /// preview scroll keys every panel shares.
 pub fn layout() -> Result<Vec<String>> {
     let home = std::env::var("HOME").context("HOME is not set")?;
-    let helper = Path::new(&home).join(".local/src/tmux/panel-layout.sh");
-    let out = Command::new(&helper)
+    layout_from(&Path::new(&home).join(".local/src/tmux/panel-layout.sh"))
+}
+
+fn layout_from(helper: &Path) -> Result<Vec<String>> {
+    let out = Command::new(helper)
         .args(["args", "agent-panel"])
         .stderr(Stdio::inherit())
         .output()
@@ -255,6 +258,18 @@ mod tests {
         assert!(!args("/bin/ap", "/tmp/m.map", None, None, &stacked)
             .iter()
             .any(|x| x.starts_with("load:")));
+    }
+
+    #[test]
+    fn the_panel_scrolls_its_preview_on_the_shared_ctrl_d_and_ctrl_u_binds() {
+        // The same string tests/integ/control_menu.bats asserts, from the helper in this tree.
+        const SCROLL: &str = "--bind=ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up,page-down:preview-page-down,page-up:preview-page-up";
+        let helper = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tmux/panel-layout.sh");
+        let layout = layout_from(&helper).expect("the tree's panel-layout.sh");
+        let a = args("/bin/ap", "/tmp/m.map", None, None, &layout);
+        assert!(a.contains(&SCROLL.to_string()), "{a:?}");
+        // Negative control: with no layout the panel has no preview scroll keys.
+        assert!(!args("/bin/ap", "/tmp/m.map", None, None, &[]).contains(&SCROLL.to_string()));
     }
 
     #[test]

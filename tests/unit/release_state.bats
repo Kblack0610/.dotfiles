@@ -187,13 +187,14 @@ field() { row "$1" | jq -r "$2"; }
 
 @test "link facts: a deploy marker in a workflow's code flags it, in a comment it does not" {
   mkdir -p "$CLONE/.github/workflows"
-  printf 'name: Checks\njobs:\n  t:\n    steps:\n      # stubs home-config and kubectl apply\n      - run: scripts/test_roll.sh\n' > "$CLONE/.github/workflows/checks.yml"
+  printf 'name: Checks\njobs:\n  t:\n    runs-on: [self-hosted, light]  # a runner pod (home-config apps/arc)\n    steps:\n      # stubs home-config and kubectl apply\n      - run: scripts/test_roll.sh\n' > "$CLONE/.github/workflows/checks.yml"
   printf 'name: Bump\njobs:\n  t:\n    steps:\n      - run: scripts/home-config-bump.sh\n' > "$CLONE/.github/workflows/bump.yml"
+  printf 'name: Roll\njobs:\n  t:\n    steps:\n      - run: echo "rolling #42" && kubectl apply -f k8s  # live\n' > "$CLONE/.github/workflows/roll.yml"
   git -C "$CLONE" add -A; git -C "$CLONE" commit -qm wf; git -C "$CLONE" push -q origin main 2>/dev/null
   git -C "$CLONE" remote set-head origin main
   run "$RS" refresh
   assert_success
-  assert_equal "$(jq -c '[.links.workflows.infra.files[] | [.path, .deploy]]' "$RELEASE_STATE_DIR/state.json")" '[[".github/workflows/bump.yml",true],[".github/workflows/checks.yml",false]]'
+  assert_equal "$(jq -c '[.links.workflows.infra.files[] | [.path, .deploy]]' "$RELEASE_STATE_DIR/state.json")" '[[".github/workflows/bump.yml",true],[".github/workflows/checks.yml",false],[".github/workflows/roll.yml",true]]'
 }
 
 @test "link facts: a long deploy workflow writes no broken pipe when SIGPIPE is ignored, as under systemd" {
@@ -642,6 +643,34 @@ commit_tag() {
   commit_tag "hand (#5)" web-v1.2.0 "Kenneth"
   push_pin v1.2.0
   export KUBE_IMAGE=reg/web:v1.2.0
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(row web-prod | jq -c '[.pinned.provenance, .provenance]')" '["outside","outside"]'
+}
+
+@test "provenance: an image that drops the v of a build tag outside the line is held to that tag" {
+  ship "start (#2)" web-v1.0.0
+  commit_tag "cut (#4)" v1.1.0-game1 cut.yml
+  push_pin 1.1.0-game1
+  export KUBE_IMAGE=reg/web:1.1.0-game1
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(row web-prod | jq -c '[.status, .pinned.provenance, .live.provenance, .provenance]')" '["ok","flow","flow","flow"]'
+  run "$RS" check
+  refute_output --partial 'OUTSIDE web web-prod'
+  # Negative control: the same bare value of a hand-cut build tag stays outside and pages.
+  commit_tag "hand (#5)" v1.2.0-game1 "Kenneth"
+  push_pin 1.2.0-game1
+  export KUBE_IMAGE=reg/web:1.2.0-game1
+  run "$RS" refresh web
+  assert_success
+  assert_equal "$(row web-prod | jq -c '[.pinned.provenance, .provenance]')" '["outside","outside"]'
+  run "$RS" check
+  assert_output --partial 'OUTSIDE web web-prod: pinned 1.2.0-game1 live 1.2.0-game1 was not released by the flow'
+  # Negative control: a bare release value is never held to another product's root `v` tag.
+  commit_tag "other (#6)" v1.3.0 cut.yml
+  push_pin 1.3.0
+  export KUBE_IMAGE=reg/web:1.3.0
   run "$RS" refresh web
   assert_success
   assert_equal "$(row web-prod | jq -c '[.pinned.provenance, .provenance]')" '["outside","outside"]'

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# runner-host-dark - name each CI runner host the governor keeps running whose every runner has
+# runner-host-dark - name each self-hosted CI runner host whose every registered GitHub runner has
 # been offline for a whole window. The probe of the Sentinel watch runner-host-dark.
 #
 #   runner-host-dark [--for 10m] [--at <epoch|date>]
@@ -8,19 +8,14 @@
 # (watch-companion-loop puts it in the page), or one `unreadable:` line when Prometheus or the
 # runner exporter gave no reading (Sentinel holds the state, no page).
 #
-# Hosts: the ones the governor keeps running, as home-config's CiHostRunnersOffline reads them:
-# an owned host (ci_governor_rate_usd_per_hour{basis="owned"}) or a cloud host it has powered on
-# (ci_governor_power_state{state="running"}). A host it has powered off, or is starting or
-# stopping, is skipped. So is a host its "<host>.slots" key pinned to 0 at any reading in the
-# window (machine-mode's pin, ci_governor_effective_slots source "slots"): machine-mode stops the
-# runner units over its count, so that host is dark on purpose, and once the pin lifts its units
-# get the window to come back. A withheld or lent runner, or a release reservation's 0 (source
-# "reserve"), is still online on GitHub, so a held host is never dark.
+# Hosts: every host label of the runner exporter's github_runner_state (one series per registered
+# runner, its status in the state label) but the ARC scale sets' (EPHEMERAL_HOSTS): their runners
+# are pods kube-scheduler places for one job each, so no machine stands behind the label. Today
+# that leaves the mac-mini, whose macOS runners cannot run in the cluster.
 #
-# Dark: at least one registered GitHub runner now, and no online runner
-# (github_runner_pool_online) at any exporter reading across the window. A reading the exporter
-# did not give (GitHub unanswered: it then emits no pool counts) counts as nothing, never as
-# offline, and the window must hold readings from its first minute. --at replays a past moment.
+# Dark: at least one registered runner now, and no runner online (state idle or running) at any
+# exporter reading across the window. A reading the exporter did not give counts as nothing, never
+# as offline, and the window must hold readings from its first minute. --at replays a past moment.
 
 set -uo pipefail
 
@@ -29,25 +24,10 @@ set -uo pipefail
 PROM_TIMEOUT=20
 # The exporter is scraped about once a minute, so one reading per minute is every reading.
 STEP=60
-# While the governor is not reporting (ci_governor_ok 0 or absent), its hosts and power states are
-# read as last known over this long: it drops its series on a pass it cannot read GitHub, which is
-# what a runner outage looks like (2026-11-22 22:45-23:30Z: 39 runners offline and no
-# ci_governor_rate_usd_per_hour), so a read of now goes blind then. While it reports, now wins, so a
-# host it dropped or powered back on is read as it is. Last known is each series as it read at or
-# after the governor's last report: a series it stopped emitting before then (a host it dropped, a
-# slots pin that lifted) is gone, never its last value. 2026-11-25 14:03Z: a 2-minute gap read
-# tuf-b550, powered off since 10:21Z, as still under a pin lifted 14h before, and the workstation,
-# dropped at 02:24Z, as still governed; the OK lifted the watch's quarantine.
-KNOWN=1d
-# The governor's last report, as an epoch. timestamp() gives a sample's own time only on a bare
-# selector (on `x == 1` it gives the evaluation step), so the value is filtered with `and`.
-LAST_OK="max(last_over_time((timestamp(ci_governor_ok) and ci_governor_ok == 1)[$KNOWN:${STEP}s]))"
-# at_last <bare selector> -> per host, the last value over $KNOWN of each of its series still read at
-# or after the governor's last report. Every governor series comes from one scrape and shares its
-# timestamp, so the 1s slack only absorbs float error: a series dropped one pass earlier is 60s short.
-at_last() { echo "(max by (host) (last_over_time($1[$KNOWN]) and (last_over_time(timestamp($1)[$KNOWN:${STEP}s]) - on () group_left () $LAST_OK >= -1)))"; }
-# known <selector> -> the governor's reading per host now, or its last known one while it is not reporting.
-known() { echo "(max by (host) ($1) or ($(at_last "$1") unless on () (max(ci_governor_ok) == 1)))"; }
+# The host labels of ARC scale-set runner pods (`unknown` is a pod that has not reported its node).
+EPHEMERAL_HOSTS='unknown|arc|arc-.+'
+RUNNERS="github_runner_state{forge=\"github\",state!=\"missing\",host!~\"$EPHEMERAL_HOSTS\"}"
+ONLINE="github_runner_state{forge=\"github\",state=~\"idle|running\",host!~\"$EPHEMERAL_HOSTS\"}"
 
 usage() { sed -n '5p' "$0" | sed 's/^# *//' >&2; exit 2; }
 
@@ -69,39 +49,30 @@ else end=$(date -d "$at" +%s 2>/dev/null) || { echo "runner-host-dark: --at '$at
 fi
 start=$((end - secs))
 
-online=$(prom_range "sum by (host) ($W (github_runner_pool_online))" "$start" "$end" "$STEP") \
-  || { echo "unreadable: Prometheus did not answer the runner exporter's online counts"; exit 1; }
-reg=$(prom_q "count by (host) ($W (github_runner_state{forge=\"github\",state!=\"missing\"}))" "$end") \
+# Per host and reading, the runners online, 0 for a host whose runners all read offline.
+online=$(prom_range "count by (host) ($W ($ONLINE)) or (count by (host) ($W ($RUNNERS)) * 0)" "$start" "$end" "$STEP") \
+  || { echo "unreadable: Prometheus did not answer the runner exporter's runner states"; exit 1; }
+reg=$(prom_q "count by (host) ($W ($RUNNERS))" "$end") \
   || { echo "unreadable: Prometheus did not answer the registered runners"; exit 1; }
-gov=$(prom_q "$(known 'ci_governor_rate_usd_per_hour{basis="owned"}') or $(known 'ci_governor_power_state{state="running"}') == 1" "$end") \
-  || { echo "unreadable: Prometheus did not answer the governor's hosts"; exit 1; }
-stop=$(prom_q "$(known 'ci_governor_power_state{state!="running"}') == 1" "$end") \
-  || { echo "unreadable: Prometheus did not answer the governor's power states"; exit 1; }
-slots='ci_governor_effective_slots{source="slots"}'
-pin=$(prom_q "max by (host) (min_over_time(${slots}[$win])) == 0 or ($(at_last "$slots") == 0 unless on () (max(ci_governor_ok) == 1))" "$end") \
-  || { echo "unreadable: Prometheus did not answer the governor's slot pins"; exit 1; }
 
-out=$(jq -rn --argjson r "$online" --argjson reg "$reg" --argjson gov "$gov" --argjson stop "$stop" --argjson pin "$pin" \
-  --argjson start "$start" --argjson end "$end" --argjson step "$STEP" --arg win "$win" --arg known "$KNOWN" '
+out=$(jq -rn --argjson r "$online" --argjson reg "$reg" \
+  --argjson start "$start" --argjson end "$end" --argjson step "$STEP" --arg win "$win" '
   def by_host($j): [$j.data.result[] | {key: .metric.host, value: (.value[1] | tonumber)}] | from_entries;
   [$r.data.result[].values[][0]] as $ts
-  | [$gov.data.result[].metric.host] | unique as $hosts
-  | if ($hosts | length) == 0 then "unreadable: the governor reported no host in the last \($known) (ci_governor_rate_usd_per_hour)"
-    elif ($ts | length) == 0 or ($ts | max) < $end - $step then "unreadable: the runner exporter gave no online count (github_runner_pool_online) now"
+  | if ($ts | length) == 0 or ($ts | max) < $end - $step then "unreadable: the runner exporter gave no runner state (github_runner_state) now"
     else
-      by_host($reg) as $regd | by_host($stop) as $off | by_host($pin) as $pinned | ($ts | min) as $first | ($ts | max) as $last
+      by_host($reg) as $regd | ($ts | min) as $first | ($ts | max) as $last
       # Each host'"'"'s last reading with a runner online, null when none in the window.
       | ($r.data.result | map({key: .metric.host, value: ([.values[] | select((.[1] | tonumber) > 0)] | last)}) | from_entries) as $up
-      | [$hosts[] as $h | ($regd[$h] // 0) as $n | $up[$h] as $u
-         | if $off[$h] then "skip: \($h) is powered off by the governor"
-           elif $pinned | has($h) then "skip: \($h) is pinned to 0 slots by its \($h).slots key (machine-mode)"
-           elif $n == 0 then "skip: \($h) has no registered runner"
-           elif $u != null and $u[0] >= $last then "ok: \($h) \($u[1]) of \($n) online"
+      | [$regd | keys[] as $h | $regd[$h] as $n | $up[$h] as $u
+         | if $u != null and $u[0] >= $last then "ok: \($h) \($u[1]) of \($n) online"
            elif $u != null then "ok: \($h) all \($n) offline, for under \($win)"
            elif $first > $start + $step then "ok: \($h) all \($n) offline, but the exporter readings start inside the window"
            else {host: $h, n: $n} end] as $rows
-      | ($rows[] | if type == "object" then "dark: \(.host) all \(.n) runners offline for \($win) or more" else . end),
-        ([$rows[] | objects | "\(.host) (\(.n) runners)"] | select(length > 0) | "reason: \(join(", ")) offline for \($win) or more")
+      | if ($rows | length) == 0 then "ok: no self-hosted runner host is registered"
+        else ($rows[] | if type == "object" then "dark: \(.host) all \(.n) runners offline for \($win) or more" else . end),
+          ([$rows[] | objects | "\(.host) (\(.n) runners)"] | select(length > 0) | "reason: \(join(", ")) offline for \($win) or more")
+        end
     end') && [ -n "$out" ] || { echo "unreadable: runner-host-dark could not judge the readings Prometheus gave"; exit 1; }
 
 printf '%s\n' "$out"

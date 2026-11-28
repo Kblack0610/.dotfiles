@@ -293,8 +293,7 @@ pub const TABS: [Tab; 13] = [
             "quarantine",
             "jobs",
         ],
-        // What is red and its fixes moved to Alerts (MOVED); the governor's verdict and the
-        // cloud power are columns of the machine they act on. Runners keeps the `ci` section id
+        // What is red and its fixes moved to Alerts (MOVED). Runners keeps the `ci` section id
         // (the CI head), so `#ci`, `#infra/ci` and `hub --tab ci` still land on it; then the
         // jobs waiting for a runner and the local Unity gate's failures. Runs is every run of 30
         // days (`hub_core::builds`), Pipelines each repo's workflows (`hub_core::pipelines`),
@@ -538,8 +537,8 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
     ("infra", "red", "alerts", "firing"),
     ("infra", "fixes", "alerts", "fixes"),
     ("infra", "reds", "alerts", "fixes"),
-    // Infra's Governor panel and Cloud tab: the governor's verdict and each cloud host's power
-    // are columns of the machine they act on (2026-11-11). agent-web opens them filtered.
+    // Infra's Governor panel and Cloud tab, gone with the governor (hc-955): an old link opens
+    // Machines, the cloud one under its chip.
     ("infra", "governor", "infra", "machines"),
     ("infra", "cloud", "infra", "machines"),
     // Releases' Builds and Tests inner tabs: CI that ships no release is the machinery's
@@ -562,10 +561,7 @@ pub const MOVED: &[(&str, &str, &str, &str)] = &[
 
 /// A moved name that opens its new table under a state chip, on both surfaces: (tab, old
 /// section, table, chip). agent-web's app.js MOVED carries the same chips as a query.
-pub const MOVED_CHIPS: &[(&str, &str, &str, &str)] = &[
-    ("infra", "governor", "machines", "governed"),
-    ("infra", "cloud", "machines", "cloud"),
-];
+pub const MOVED_CHIPS: &[(&str, &str, &str, &str)] = &[("infra", "cloud", "machines", "cloud")];
 
 /// The table and chip a moved name opens under (`MOVED_CHIPS`), any case.
 pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> {
@@ -582,7 +578,7 @@ pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> 
 /// its sprints, its rows, its epics, the next stage's checklist and what happened, then one
 /// Departments tab holding the project's departments as chips ([`PROJECT_DEPTS`]). Overview is
 /// the default; a section id opens the inner tab holding it.
-pub const PROJECT_PAGE: [Inner; 8] = [
+pub const PROJECT_PAGE: [Inner; 9] = [
     Inner {
         id: "overview",
         title: "Overview",
@@ -622,6 +618,25 @@ pub const PROJECT_PAGE: [Inner; 8] = [
         id: "activity",
         title: "Activity",
         sections: &["p-shipped", "p-timeline", "p-note"],
+    },
+    // The project's knowledge space (`hub_core::space`): its lab docs, repo docs, plans, lessons,
+    // sessions, knowledge notes, open asks and queue items in one place, with its cadence.
+    Inner {
+        id: "knowledge",
+        title: "Knowledge",
+        sections: &[
+            "p-space-head",
+            "p-space-docs",
+            "p-space-repo",
+            "p-space-adrs",
+            "p-space-changelog",
+            "p-space-plans",
+            "p-space-lessons",
+            "p-space-sessions",
+            "p-space-outcomes",
+            "p-space-notes",
+            "p-space-work",
+        ],
     },
     // The project's departments (`hub_core::departments`) under one tab, a chip each; a project
     // with no type has none, so no tab. `#projects/<p>/departments/<dept>` opens a chip.
@@ -1018,12 +1033,10 @@ mod tests {
                 "{old}"
             );
         }
-        // Each opens Machines under its chip, a chip the table has.
-        assert_eq!(
-            moved_chip("Infra", " Governor "),
-            Some(("machines", "governed"))
-        );
-        assert_eq!(moved_chip("infra", "cloud"), Some(("machines", "cloud")));
+        // The cloud one opens Machines under its chip, a chip the table has; the governor one
+        // plain.
+        assert_eq!(moved_chip("Infra", " Governor "), None);
+        assert_eq!(moved_chip("infra", " Cloud "), Some(("machines", "cloud")));
         assert_eq!(moved_chip("infra", "machines"), None);
         for (_, old, table, chip) in MOVED_CHIPS {
             assert!(MOVED.iter().any(|m| m.1 == *old && m.3 == *table), "{old}");
@@ -1254,6 +1267,7 @@ mod tests {
             "releases",
             "stage",
             "activity",
+            "knowledge",
         ];
         let mut page = work.to_vec();
         page.push("departments");

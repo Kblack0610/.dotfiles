@@ -64,6 +64,8 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
   grep -q 'tests/lint.sh --only' "$HOOK"
   grep -q 'tests/rust.sh' "$HOOK"
   grep -q 'tests/pick.sh rust HEAD' "$HOOK"
+  grep -q '\.local/bin/shape-grow --body ' "$WF"
+  grep -q '\.local/bin/shape-grow --body - ' "$HOOK"
 }
 
 @test "a shell-only change lints the changed shell files and runs no rust step" {
@@ -175,7 +177,7 @@ realrepo() {
     cp "$REPO/tests/$f" "$W/tests/$f"
   done
   cp "$REPO/.shellcheckrc" "$W/"
-  cp "$REPO/.local/lib/test-pick.sh" "$W/.local/lib/"
+  cp "$REPO/.local/lib/test-pick.sh" "$REPO/.local/lib/uncomment.sh" "$W/.local/lib/"
   : >"$W/tests/broad.txt"
   printf '@test "x" { true; }\n' >"$W/tests/unit/x.bats"
   printf '#!/usr/bin/env bash\n[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0\n' >"$W/.local/src/tmux/fleet.sh"
@@ -284,4 +286,30 @@ realrepo() {
   PREPUSH_CHANGED=a.sh run --separate-stderr hook
   assert_failure 1
   [[ "$stderr" == *"lint-files.sh failed"* && "$stderr" == *"PREPUSH_CHANGED is set"* ]]
+}
+
+@test "shape-grow runs over what the branch adds with its commit messages as the body; a red one refuses; the seam skips it" {
+  mkrepo; stubs
+  stub .local/bin/shape-grow 'echo "shape $*" >>"$CALLS"; sed "s/^/body: /" >>"$CALLS"; exit "${STUB_SHAPE_RC:-0}"'
+  git -C "$W" add .local/bin/shape-grow && git -C "$W" commit -qm tool
+  git -C "$W" update-ref refs/remotes/origin/main HEAD
+  base=$(git -C "$W" rev-parse HEAD)
+  git -C "$W" checkout -q -b feat
+  printf 'y\n' >"$W/a.sh" && git -C "$W" add a.sh && git -C "$W" commit -qm 'a' -m 'Dup: ar-9 a.sh'
+  sha=$(git -C "$W" rev-parse HEAD) zero=0000000000000000000000000000000000000000
+  run --separate-stderr bash -c "cd '$W' && printf 'refs/heads/feat $sha refs/heads/feat $zero\n' | .githooks/pre-push"
+  assert_success
+  [[ "$stderr" == *"copy+shape (shape-grow) ok"* ]]
+  run cat "$CALLS"
+  assert_line "shape --body - $base $sha"
+  assert_line "body: Dup: ar-9 a.sh"
+  : >"$CALLS"
+  run --separate-stderr env STUB_SHAPE_RC=1 bash -c "cd '$W' && printf 'refs/heads/feat $sha refs/heads/feat $zero\n' | .githooks/pre-push"
+  assert_failure
+  [[ "$stderr" == *"copy+shape (shape-grow) FAILED"* ]]
+  : >"$CALLS"
+  run --separate-stderr env PREPUSH_CHANGED=a.sh bash -c "cd '$W' && .githooks/pre-push </dev/null"
+  assert_success
+  run grep -c '^shape ' "$CALLS"
+  assert_output 0
 }

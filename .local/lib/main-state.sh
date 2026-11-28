@@ -32,18 +32,36 @@ MAIN_LIVE='(map(.createdAt // empty) | max) as $newest
       end'
 
 : "${MAIN_CACHE:=${XDG_CACHE_HOME:-$HOME/.cache}/fleet}"
-# The run ledger's one reader (schedules-sync runs); the sibling in this tree, so a worktree's
-# scripts read through its own copy.
+# The run ledger's and the PR store's one reader (schedules-sync runs, prs); the sibling in this tree,
+# so a worktree's scripts read through its own copy.
 : "${SCHEDULES_SYNC:=$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../bin/schedules-sync}"
 
 # main_runs <owner/repo> [branch] -> the branch's runs (every branch's without one) in gh run list field names, from the run
 # ledger (~/.local/state/ci/runs.jsonl), never actions/runs: schedules-sync is its one writer and
 # keeps it within 10 minutes. rc 1 when the ledger cannot answer for the repo (not synced in 30
-# minutes, or unreadable), so the caller reads unknown, never green; rc 3, and nothing, for a repo
-# the ledger does not sync (`schedules-sync repos` is the one list of watched repos), which the caller decides.
+# minutes, or unreadable), so the caller reads unknown, never green; rc 4 when that is for a cause
+# every repo shares (no sync pass, a GitHub rate limit, the exporter feed: schedules-sync runs' exit 5),
+# its `ledger down: <cause>[, resets <ISO>]` the first line of its stderr (schedules-sync's, passed
+# through: a caller keeps or drops it), so a caller shows one outage, not one unknown per repo
+# (ar-230); rc 3, and nothing, for a repo the ledger does not sync (`schedules-sync repos` is the
+# one list of watched repos), which the caller decides.
 main_runs() {
   local runs rc=0
-  runs="$("$SCHEDULES_SYNC" runs "$1" ${2:+--branch "$2"} 2>/dev/null)" || rc=$?
-  [ "$rc" -eq 0 ] || { [ "$rc" -eq 3 ] && return 3; return 1; }
+  runs="$("$SCHEDULES_SYNC" runs "$1" ${2:+--branch "$2"})" || rc=$?
+  case $rc in 0) ;; 3) return 3 ;; 5) return 4 ;; *) return 1 ;; esac
   jq -ce 'map({id, event, workflowName: .workflow, workflowPath: .path, headBranch: .branch, status, conclusion, headSha: .sha, createdAt: .created_at})' <<<"$runs"
+}
+
+# pr_store <store key> [prs args] -> the PR store's rows (`schedules-sync prs`, JSON array: --state, --since,
+# --branch, --checks) for the repo, the one reader of it for the bash callers; the key is origin_store_name's.
+# rc as main_runs: 1 when the store cannot answer (stale, or any failure: the caller reads unknown, never
+# none), 3, and nothing, for a repo it does not list, which the caller decides. stderr is the reader's own.
+pr_store() {
+  local out rc=0
+  out="$("$SCHEDULES_SYNC" prs "$@")" || rc=$?
+  case "$rc" in
+    0) printf '%s\n' "$out" ;;
+    3) return 3 ;;
+    *) return 1 ;;
+  esac
 }

@@ -6,8 +6,10 @@
 //!
 //! One row per thing that waits: a session with a pending ask shows the ask, not the session as
 //! well, and a queue item waiting on a session already shown adds nothing. A waiting item an ask
-//! holds (its `ask:<id>` tag, or the ask's Claude session last in its `sessions`) shows on the ask's row
-//! after that session ends, and one whose last session's ask was answered leaves the list. Sessions are matched
+//! holds (its `ask:<id>` tag, or the ask's Claude session last among its Claude `sessions`, a
+//! trainee's opencode session after it skipped) shows on the ask's row after that session ends, and
+//! one whose last session's ask was answered leaves the list. An audit ask (`audit_of`) and a
+//! trainee run's wait list nothing: the fleet answers both, no human waits. Sessions are matched
 //! to a queue item by their tmux session name, the one name an item and a state row carry; an ask
 //! finds its session by `claude_session` alone (the state row's `session_id`), never by name.
 //!
@@ -599,7 +601,7 @@ impl crate::table::Row for Running {
             }),
             "project" => some(Some(&self.project)).map(|p| Link::To(Kind::Project, p)),
             "row" => some(self.row.as_deref()).map(|r| Link::To(Kind::Row, r)),
-            "epic" => some(self.epic.as_deref()).map(|e| Link::To(Kind::Epic, e)),
+            "epic" => some(self.epic.as_deref()).map(|e| Link::To(Kind::Row, e)),
             "pr" => some(self.pr_url.as_deref()).map(Link::Url),
             "ci" => some(self.ci_url.as_deref()).map(Link::Url),
             _ => None,
@@ -945,6 +947,24 @@ fn ask_need(
     }
 }
 
+/// Whether ask `a` waits on a decision. An audit (`audit_of`, posted before ar-4765) reviews an
+/// answer and the fleet reads it: it stands for its item in `needs` and lists nothing.
+fn has_decision(a: &Value) -> bool {
+    str_of(a, "audit_of").is_empty()
+}
+
+/// Whether waiting item `i` is a row of its own: no ask stands for it, no shown session owns it,
+/// and a trainee run did not end it, a wait the fleet answers.
+fn waits_alone(i: &Item, asked: &HashSet<String>, shown: &HashSet<String>) -> bool {
+    i.state == State::Waiting
+        && !i.ended_as_trainee()
+        && !asked.contains(&i.slug)
+        && !i
+            .session
+            .as_deref()
+            .is_some_and(|s| shown.contains(tmux_name(s)))
+}
+
 /// The waiting item ask `a` holds once its session is gone: the one tagged `ask:<id>`, or the one
 /// whose last session is the ask's `claude_session`, unless an ask before it took that item (`asked`).
 fn held_item<'a>(items: &[&'a Item], a: &Value, asked: &HashSet<String>) -> Option<&'a Item> {
@@ -1108,7 +1128,7 @@ pub fn needs(
             dependents(item.map(|i| i.slug.as_str())),
             age_min(since),
         );
-        out.push(ask_need(a, item, target, since, score));
+        out.extend(has_decision(a).then(|| ask_need(a, item, target, since, score)));
     }
     for s in &sessions {
         let target = str_of(s, "target");
@@ -1140,14 +1160,7 @@ pub fn needs(
             )),
         });
     }
-    for i in items.iter().filter(|i| i.state == State::Waiting) {
-        if asked.contains(&i.slug)
-            || i.session
-                .as_deref()
-                .is_some_and(|s| shown.contains(tmux_name(s)))
-        {
-            continue;
-        }
+    for i in items.iter().filter(|i| waits_alone(i, &asked, &shown)) {
         work(&mut worked, Some(i));
         let waited = i.waiting.as_deref();
         let target = i.session.as_deref().and_then(|s| target_of(tmux_name(s)));
@@ -1480,15 +1493,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn an_ask_row_keeps_the_state_documents_audit_of_for_the_pager() {
-        let row = |a: Value| ask_need(&a, None, None, None, Score::new(true, true, 0, 0, 120));
-        let audit = row(json!({"id": "au", "project": "p", "question": "q?", "audit_of": "q1"}));
-        assert_eq!(audit.ask.unwrap().audit_of, "q1");
-        let plain = row(json!({"id": "a1", "project": "p", "question": "q?"}));
-        assert_eq!(plain.ask.unwrap().audit_of, "");
-    }
-
     /// `build` with every kind in `needs`, for the tests of the ranking and the rows themselves;
     /// `build` alone moves the agent kinds to `routed` (`Kind::owner`).
     fn build_all(
@@ -1732,6 +1736,86 @@ mod tests {
             h.needs.iter().find(|n| n.id == "a1").unwrap().holds_line(),
             ""
         );
+    }
+
+    #[test]
+    fn a_dead_askers_item_a_trainee_run_ran_after_shows_once_on_the_ask() {
+        // The Claude asker ended, then a trainee's opencode session ran the item: the ask's
+        // session is no longer the last id in `sessions`, but it is the last Claude one.
+        let mut st = state();
+        st["asks"][0]["claude_session"] = json!("sid-gone");
+        let mut held = item("held", State::Waiting, Some("lab:repo-agent-9"));
+        held.extra
+            .insert("sessions".into(), json!("sid-gone ses_eval123"));
+        let q = Queue {
+            items: vec![held.clone()],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue));
+        let asks: Vec<_> = h.needs.iter().filter(|n| n.kind == Kind::Ask).collect();
+        assert_eq!(asks.len(), 1);
+        assert_eq!(asks[0].holds_line(), "holds held");
+        // Negative control: a Claude session after the asker's is still its own row.
+        held.extra
+            .insert("sessions".into(), json!("sid-gone ses_eval123 sid-later"));
+        let q = Queue {
+            items: vec![held],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Queue && n.id == "held"));
+    }
+
+    #[test]
+    fn an_audit_ask_lists_nothing_but_still_stands_for_its_item() {
+        let mut st = state();
+        st["asks"][0]["audit_of"] = json!("q1");
+        st["asks"][0]["claude_session"] = json!("sid-gone");
+        let mut held = item("held", State::Waiting, Some("lab:repo-agent-9"));
+        held.extra.insert("sessions".into(), json!("sid-gone"));
+        let q = Queue {
+            items: vec![held],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h.needs.iter().any(|n| n.id == "a1"));
+        assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue));
+        // Negative control: the same ask without audit_of lists.
+        st["asks"][0]["audit_of"] = json!("");
+        let h = build(Some(&st), None, None, None, NOW);
+        assert!(h.needs.iter().any(|n| n.id == "a1"));
+    }
+
+    #[test]
+    fn a_trainee_runs_wait_lists_nothing_and_a_claude_wait_does() {
+        let mut trainee = item("tr", State::Waiting, None);
+        trainee.extra.insert("trainee".into(), json!("ocfree:beam"));
+        trainee
+            .extra
+            .insert("sessions".into(), json!("sid-a ses_x"));
+        // The header stays after a rejection: a Claude retry that ended waiting is its own row.
+        let mut retried = trainee.clone();
+        retried.slug = "retried".into();
+        retried
+            .extra
+            .insert("sessions".into(), json!("ses_x sid-b"));
+        let plain = item("plain", State::Waiting, None);
+        let q = Queue {
+            items: vec![trainee, retried, plain],
+            ..Default::default()
+        };
+        let h = build(Some(&state()), Some(&q), None, None, NOW);
+        let queued: Vec<_> = h
+            .needs
+            .iter()
+            .filter(|n| n.kind == Kind::Queue)
+            .map(|n| n.id.as_str())
+            .collect();
+        assert_eq!(queued, ["retried", "plain"]);
     }
 
     #[test]
@@ -2056,7 +2140,7 @@ mod tests {
                 Some("#sessions/sessions/lab%2Frepo-agent-2%3A1"),
                 Some("#projects/p"),
                 Some("#projects/all?q=id:=tr-9"),
-                Some("#projects/all?q=id:=tr-1&s=epics")
+                Some("#projects/all?q=id:=tr-1")
             )
         );
         assert_eq!(

@@ -93,6 +93,17 @@ lint() { run "$DRIFT" --lint "$REPO"; }
   assert_output --partial "missing description"
 }
 
+# A frontmatter far past the pipe buffer (1.2 MB) makes `fm | grep -q` kill sed with SIGPIPE every time,
+# so pipefail read name: as missing; a 10 KB one did it under CI load (ar-4853). fm_has captures.
+@test "NOFRONTMATTER: a 1 MB frontmatter still has its name and description" {
+  local pad=() i
+  for i in $(seq 15000); do pad+=("  # padding line $i, long enough that fifteen thousand of them run past a megabyte"); done
+  mkskill ops big "${pad[@]}" >/dev/null
+  lint
+  assert_success
+  refute_output --partial "NOFRONTMATTER"
+}
+
 @test "BADNAME: name is not kebab-case" {
   d=$(mkskill ops Bad_Name)
   lint
