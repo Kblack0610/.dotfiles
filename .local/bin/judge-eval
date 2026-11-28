@@ -52,8 +52,8 @@ set -uo pipefail
 
 : "${FLEET_DISPATCH_DIR:=$HOME/.agent/dispatch}"
 : "${JUDGE_EVAL_QUEUE_CMD:=agent-queue list --json --state all}"
-# The notes ingest record: what became of each row a runner wrote (its 30 days are all it keeps).
-: "${JUDGE_EVAL_INGEST_CMD:=notes log --json --days 30}"
+# The notes ingest record: what became of each row a runner wrote (its 7 days are all it keeps, KEEP_DAYS in notes-cli ingest.rs).
+: "${JUDGE_EVAL_INGEST_CMD:=notes log --json --days 7}"
 CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 # How long a runner's write stands before it counts as right: a filed row untouched, a skipped row
 # not started by hand.

@@ -15,6 +15,8 @@ A judge is a model call that decides something a human would otherwise decide: t
 | sentinel-diagnose (no `SCORE`) | not recorded | - | - | everything: its verdict is only the transition in the watch log, keyed by watch, and the truth (a rollback or hotfix after a healthy verdict) is in the release records, and the lane makes few calls. It needs a verdict line keyed by release before it can be counted |
 | shepherd, dream (no `SCORE`) | the shepherd's: each nudge and close claim, one line in `~/.agent/shepherd/nudges.jsonl` (`fleet-sessions mark`: `at`, `sid`, `kind`, `fact`, and the row's `target`, `project`, `bucket` from the latest state document). A line is the claim, taken before the message goes out; a close nothing was typed into is given back with a `close-released` line. Dream's: not recorded | - | - | everything. The shepherd's verdicts are recorded but no conf names a truth for them yet (board row ar-57: what counts as a nudge that worked). Dream's promotions are edits to lessons and memory/ files (its `activity.log` keeps one summary line per sweep), so "still present 14d later" needs a per-entry promotions record; its mem0 proposals are decided in `agent-propose`, whose records keep each accept and reject |
 
+The ingest record keeps a week (`KEEP_DAYS` in notes-cli `src/ingest.rs`), so a lane it scores has at most its last five days settled, and its 28-day figures cover only those.
+
 ## Rules
 
 - Judges are scored only by `judge-eval`. A dashboard or report shows its numbers and never counts again. Why: `agent-ask judge-report` and hub-core's own count both scored the answer judge, and they disagreed on in-session answers. Tests: `tests/unit/judge_eval.bats`, hub-core `fleet::tests::the_answer_judge_tiles_are_judge_evals_numbers`.
