@@ -2122,6 +2122,15 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial 'watch: queue-starved tripped (high)'
 }
 
+@test "an ERROR watch raises no tripped line; a TRIP one in the same three-column output still does (ar-3570)" {
+  doc "[$(row a STALLED false false)]"
+  stub agent-queue 'true'
+  export STUB_TRIPPED='probe-broken\turgent\tERROR\nqueue-starved\thigh\tTRIP\n' STUB_K3S='[]'
+  run "$SH" run
+  refute_output --partial 'watch: probe-broken'
+  assert_output --partial 'watch: queue-starved tripped (high)'
+}
+
 @test "a normal or low trip raises no line (its triage item or the human sheet owns it); a held red item owns nothing" {
   doc "[$(row a STALLED false false)]"
   stub agent-queue 'printf "%s\n" "{\"tags\":\"red watch cause:ab\",\"state\":\"queued\",\"hold\":\"after x\",\"task\":\"check(watch): home-k3s-node-disk tripped since x\"}"'
