@@ -238,6 +238,36 @@ ask_fixture() {
   assert_output '[2,null,30.8,7.7]'
 }
 
+@test "kpi --json: both windows from one read of the sources, the same object the two reports gave" {
+  ask_fixture
+  # judged 10 days ago: in the 28-day window only, so the two windows differ
+  ask err_old judge=error judge_rule= "judged_at=$(date -d '10 days ago' +%Y-%m-%dT%H:%M:%S%z)"
+  printf '{"verdict":"error","project":"p","key":"k","at":"%s"}\n' "$(date -Iseconds)" > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  # the queue stub counts its runs: kpi reads every source once, not once per window
+  printf '#!/usr/bin/env bash\necho x >> "%s"\ncat "%s"\n' "$HOME/queue.runs" "$QUEUE" > "$SANDBOX/bin/queue-stub"
+  run "$JUDGE_EVAL" kpi --json
+  assert_success
+  assert_equal "$(jq -Sc . <<<"$output")" "$(jq -Sc . <<'EOF'
+{"ask_answered_pct":{"28d":30.8,"7d":30.8},"ask_human_only_pct":{"28d":0,"7d":0},"ask_unclear_pct":{"28d":7.7,"7d":7.7},
+ "dispatch_false_defer_pct":{"28d":null,"7d":null},"judge_errors":{"28d":3,"7d":2},"judge_human_only_live_pct":{"28d":null,"7d":null},
+ "judge_precision":{"28d":null,"7d":null},"runner_score_ask_sweep":{"28d":null,"7d":null},"runner_score_inbox_plan":{"28d":null,"7d":null},
+ "runner_score_inbox_priority":{"28d":null,"7d":null},"runner_score_inbox_triage":{"28d":null,"7d":null}}
+EOF
+)"
+  assert_equal "$(wc -l < "$HOME/queue.runs")" 1
+}
+
+@test "kpi --json: a 28-day window over 128 KB still scores (one jq, no window passed as an argument)" {
+  # Each window was once passed to jq with --argjson, and one argument over 128 KB (MAX_ARG_STRLEN)
+  # failed kpi with "Argument list too long": fleet-bench then read {} for every judge KPI.
+  # one rule and one cell per ask, a stats object each: about 1.5 KB of report per ask
+  local i
+  for i in $(seq 1 200); do ask "big$i" judge=take-recommend answer=yes "judge_rule=rule$i" "judge_type=type$i"; done
+  run "$JUDGE_EVAL" kpi --json
+  assert_success
+  assert_equal "$(jq -c '.ask_answered_pct' <<<"$output")" '{"7d":0,"28d":0}'
+}
+
 @test "the verdict list: every verdict under any prompt, what it said, why and what you did" {
   ask live1 judge=take-recommend answered_by=judge judge_override=kept judge_rule=ship_deploy judge_type=ship_deploy judge_evidence=merged judge_reason=merged
   ask live2 judge=take-recommend answered_by=judge judge_override=no 'answer=yes'
