@@ -2,9 +2,9 @@
 # ci_runners.sh: the waybar CI chip. It renders `hub ci --json` .glance, the slot model
 # hub-core computes for every CI surface. What these pin: the bar is
 # `CI r:<running> q:<queued>` behind dim labels and nothing else; its class is ok whatever the glance alert or domain level says, since a
-# runner or machine down is the health chip's; the hover is each CI node's cells on the title line, the board's head line with the booked CPU, jobs by kind, one row per machine with
-# the CPU and memory its job pods book and 4 cells of the fuller share (a part cell as an eighth block), what runs there and the next waiting job that fits it (red past the load chip's HOT_RATIO), the
-# stopped cloud hosts and the pods waiting for room on a line each, down and long runs; and a failed hub read shows `CI: prom down`, never the last numbers.
+# runner or machine down is the health chip's; the hover is each CI node's cells on the title line, the board's head line with the units taken, jobs by kind, CI POOL as hub-core words it, one row per machine with
+# the CPU and memory its pods take and 4 cells of the fuller share (a part cell as an eighth block), what runs there and the next waiting job that fits it (red past the load chip's HOT_RATIO), the
+# the pods waiting for room on a line, down and long runs; and a failed hub read shows `CI: prom down`, never the last numbers.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -27,20 +27,21 @@ STUB
 }
 
 # glance <jq patch>: a warn domain with an ok alert and 3 of 3 runners up, 2 jobs running, 2 queued, 4 done at 75%; ms-a2 the
-# one CI node, its job pods booking 4.38 of 32 cores and 2.5G of 92G; the workstation's gate and Unity slot and mac-mini on no
-# CI node; one stopped cloud host, no pod waiting for room, nothing WAITING, then the patch merged over it.
+# one CI node, 32 units, its job pods taking 4.38 of them and 2.5G of 92G; the workstation's gate and Unity slot and mac-mini on no
+# CI node; no pod waiting for room, nothing WAITING, then the patch merged over it.
 glance() {
   jq -n --argjson patch "$1" '{glance: ({
     level: "warn", alert: "ok", up: 3, expected: 3, parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
     feed: null, busy: 2, queued: 2, oldest: 900, done: 4, pass: 0.75,
-    booked: {cpu: 4.38, cpu_alloc: 32, mem: 2700000000, mem_alloc: 98768805888}, pending: [],
-    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, usual: 1260, pass: 0.5, weight: "1*"},
+    units: {total: 32, taken: 4.38, free: 27.62, real: 8, brief: "taken 4.4/32 units (14%)", head: "CI POOL  32 units (1 unit = 1 CI core)", line: "taken 4.4 of 32 (14%), free 27.6, real use 8.0 (25%)", columns: ["TAKEN BY", "PODS", "EACH", "UNITS", "SHARE"], rows: [["arc-org-light", "2", "1.69", "3.4", "11%"], ["forgejo-runner", "1", "1.00", "1.0", "3%"], ["free", "", "", "27.6", "86%"]]},
+    pending: [],
+    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, usual: 1260, pass: 0.5},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
     machines: [{host: "ms-a2", busy: 3, running: ["[arc-org-light] x2", "[forgejo-runner]"], next: null, load: 0.2,
                 booked: {cpu: 4.38, cpu_alloc: 32, mem: 2700000000, mem_alloc: 98768805888}},
                {host: "workstation", busy: 2, running: ["[gates]", "[unity] platform"], next: null, load: 0.4, booked: null},
                {host: "mac-mini", busy: 0, running: [], next: {job: "Checks", repo: "web", n: 1, wait: 300}, load: null, booked: null}],
-    off: ["aws-burst-1"], down: [], long: [], next: []} * $patch)}' > "$FX/ci.json"
+    down: [], long: [], next: []} * $patch)}' > "$FX/ci.json"
 }
 
 # Three CI nodes as the cluster books them (2026-11-24): deskslim-1 near full on CPU, deskslim-2
@@ -82,7 +83,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   # Memory is the fuller share on deskslim-2: half of it is two cells of four.
   [[ "$(tip)" == *$'\ndeskslim-2   1.0/24 32G/64G  ██<span color=\'#7f7f7f\'>██</span>  [unity] unity-core-playground x2, [forgejo-runner]  -\n'* ]]
   run plain
-  assert_line "MACHINE              BOOKED        RUNNING                                             NEXT"
+  assert_line "MACHINE               TAKEN        RUNNING                                             NEXT"
   assert_line "ms-a2       4.4/32 2.5G/92G  ▌███  [arc-org-light] x2, [forgejo-runner]                -"
   # A machine on no CI node has no cells and reads -; its Unity slot job is in the same row.
   assert_line "workstation               -        [unity] platform                                    -"
@@ -111,26 +112,27 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip)" == *$'\nb       7.8/32 0B/64G  █<span color=\'#7f7f7f\'>███</span>'* ]]
 }
 
-@test "the bar never shows the booking; the hover head does" {
-  glance '{"level": "ok", "busy": 6, "queued": 9, "booked": {"cpu": 6.4, "cpu_alloc": 64, "mem": 0, "mem_alloc": 1}}'
+@test "the bar never shows the units taken; the hover head does" {
+  glance '{"level": "ok", "busy": 6, "queued": 9, "units": {"total": 64, "taken": 6.4, "brief": "taken 6.4/64 units (10%)"}}'
   run "$MODULE"
   assert_equal "$(bare)" "CI r:6 q:9"
-  assert_equal "$(plain | sed -n 2p)" "6 running, 9 queued (oldest 15m), booked 6.4/64 cpu, 4 done 24h, 75% passed"
+  assert_equal "$(plain | sed -n 2p)" "6 running, 9 queued (oldest 15m), taken 6.4/64 units (10%), 4 done 24h, 75% passed"
 }
 
 @test "the hover head shows the 1h and 5h done counts before the 24h one, only once the kinds report them" {
   glance '{"done_1h": 0, "done_5h": 12}'
   run "$MODULE"
-  assert_equal "$(plain | sed -n 2p)" "2 running, 2 queued (oldest 15m), booked 4.4/32 cpu, 0 done 1h, 12 done 5h, 4 done 24h, 75% passed"
+  assert_equal "$(plain | sed -n 2p)" "2 running, 2 queued (oldest 15m), taken 4.4/32 units (14%), 0 done 1h, 12 done 5h, 4 done 24h, 75% passed"
 }
 
-@test "with no CI node reporting the booking is a dash and no cell is drawn, never a runner count as capacity" {
-  glance '{"booked": null, "machines": [
+@test "with no CI node reporting the units are gone and no cell is drawn, never a runner count as capacity" {
+  glance '{"units": null, "machines": [
     {"host": "workstation", "busy": 2, "running": ["[gates]", "[unity] platform"], "next": null, "load": 0.4, "booked": null}]}'
   run "$MODULE"
   assert_equal "$(tip | sed -n 1p)" "<b>CI runners</b>"
   assert_equal "$(plain | sed -n 2p)" "2 running, 2 queued (oldest 15m), 4 done 24h, 75% passed"
   run plain
+  refute_output --partial "CI POOL"
   assert_line "workstation      -        [gates], [unity] platform  -"
 }
 
@@ -167,13 +169,13 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 
 @test "the head line is the board's, the pass rate painted amber under 90%" {
   run "$MODULE"
-  assert_equal "$(tip | sed -n 2p)" "2 running, 2 queued (oldest 15m), booked 4.4/32 cpu, 4 done 24h, <span color='#ffcc2f'>75% passed</span>"
+  assert_equal "$(tip | sed -n 2p)" "2 running, 2 queued (oldest 15m), taken 4.4/32 units (14%), 4 done 24h, <span color='#ffcc2f'>75% passed</span>"
   glance '{"pass": 0.5}'
   run "$MODULE"
   [[ "$(tip | sed -n 2p)" == *"<span color='#ef5734'>50% passed</span>" ]]
   glance '{"queued": 0, "pass": 0.95}'
   run "$MODULE"
-  assert_equal "$(plain | sed -n 2p)" "2 running, 0 queued, booked 4.4/32 cpu, 4 done 24h, 95% passed"
+  assert_equal "$(plain | sed -n 2p)" "2 running, 0 queued, taken 4.4/32 units (14%), 4 done 24h, 95% passed"
 }
 
 @test "the parts line paints each level, and a short feed says why in red" {
@@ -184,51 +186,52 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip | sed -n 3p)" == *", <span color='#ef5734'>runner exporter missed its last scrape: runner rows may be missing</span>" ]]
 }
 
-@test "jobs by kind: weight, running, waiting, oldest, done, usual and pass, no FREE; none read is a dash" {
+@test "jobs by kind: running, waiting, oldest, done, usual and pass, no FREE and no WEIGHT; none read is a dash" {
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND          WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS"
-  assert_line --index 4 "unity             1*       2       2    15m     2   21m  50%"
-  assert_line --index 5 "github-hosted      -       -       -      -     2     -  100%"
+  assert_line --index 3 "KIND          RUNNING WAITING OLDEST  DONE USUAL  PASS"
+  assert_line --index 4 "unity               2       2    15m     2   21m  50%"
+  assert_line --index 5 "github-hosted       -       -      -     2     -  100%"
   refute_output --partial "FREE"
+  refute_output --partial "not measured yet"
 }
 
-@test "a kind the governor has not measured reads 1* under a key line; a measured one reads its share, and with none unmeasured there is no key" {
+@test "CI POOL sits above the machines: its head and line, then TAKEN BY as hub-core words it, the first column left, the rest right, free last" {
+  glance '{"units": {"rows": [["ci-build-slot", "2", "7.36", "14.7", "23%"], ["arc-org-light", "2", "1.69", "3.4", "5%"], ["other", "-", "-", "3.0", "5%"], ["free", "", "", "40.9", "64%"]]}}'
   run "$MODULE"
   run plain
-  assert_line "* not measured yet, counted as a whole slot"
-  glance '{"kinds": [{"kind": "light", "running": 1, "waiting": 0, "done": 5, "pass": 1, "weight": "0.66"}]}'
-  run "$MODULE"
-  run plain
-  assert_line --regexp '^light +0\.66 '
-  refute_output --partial "not measured yet"
+  assert_line "CI POOL  32 units (1 unit = 1 CI core)"
+  assert_line "taken 4.4 of 32 (14%), free 27.6, real use 8.0 (25%)"
+  assert_line "TAKEN BY       PODS  EACH  UNITS  SHARE"
+  assert_line "ci-build-slot     2  7.36   14.7    23%"
+  assert_line "other             -     -    3.0     5%"
+  assert_line "free                        40.9    64%"
+  # The pool comes after the kinds and right before the MACHINE header, a blank line between.
+  [[ "$output" == *$'free                        40.9    64%\n\nMACHINE'* ]]
 }
 
 @test "a kind reads its own jobs running, never the busy slots that carry its cap" {
   glance '{"kinds": [{"kind": "heavy", "running": 0, "busy": 7, "slots": 9, "waiting": 0, "oldest": null, "done": 2, "pass": 0.5}]}'
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND  WEIGHT RUNNING WAITING OLDEST  DONE USUAL  PASS"
-  assert_line --index 4 --regexp '^heavy +- +0 +0 '
+  assert_line --index 3 "KIND  RUNNING WAITING OLDEST  DONE USUAL  PASS"
+  assert_line --index 4 --regexp '^heavy +0 +0 '
   refute_output --partial "7/9"
 }
 
-@test "one row per machine: BOOKED and its cells, RUNNING by kind and repo, NEXT the oldest waiting job that fits; no held, no SPACE, no WHERE, no slot counts" {
+@test "one row per machine: TAKEN and its cells, RUNNING by kind and repo, NEXT the oldest waiting job that fits; no held, no SPACE, no WHERE, no slot counts" {
   run "$MODULE"
   [[ "$(tip)" == *$'\nms-a2       4.4/32 2.5G/92G  <span background=\'#7f7f7f\'>▌</span><span color=\'#7f7f7f\'>███</span>  [arc-org-light] x2, [forgejo-runner]  -\n'* ]]
   run plain
-  assert_line "MACHINE              BOOKED        RUNNING                               NEXT"
+  assert_line "MACHINE               TAKEN        RUNNING                               NEXT"
   assert_line "workstation               -        [gates], [unity] platform             -"
   assert_line "mac-mini                  -        -                                     Checks (web) 5m"
-  assert_line "cloud: 1 host off"
   refute_output --partial "held"
   refute_output --partial "WHERE"
   refute_output --partial "SPACE"
   refute_output --partial "local:workstation"
-  refute_output --partial "other"
   refute_output --partial "DOING"
   refute_output --partial "SLOTS"
-  refute_output --partial "TAKEN"
 }
 
 @test "a machine at or past the load chip's HOT_RATIO has a red name and booking; under it, or no reading, stays plain" {
@@ -243,18 +246,15 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip)" == *$'\nmac-mini               -        -                   -'* ]]
 }
 
-@test "stopped cloud hosts fold to one line and are never down" {
-  glance '{"off": ["aws-spot-1", "aws-spot-2"], "down": [{"host": "windows-media", "state": "offline", "n": 1}]}'
+@test "a down runner host is listed under DOWN" {
+  glance '{"down": [{"host": "windows-media", "state": "offline", "n": 1}]}'
   run "$MODULE"
   run plain
-  assert_line "cloud: 2 hosts off"
   assert_line "DOWN:"
   assert_line "  windows-media  1 offline"
-  refute_output --partial "aws-spot-1"
 }
 
-@test "nothing off or down draws neither line" {
-  glance '{"off": []}'
+@test "nothing down draws no DOWN line" {
   run "$MODULE"
   run plain
   refute_output --partial "cloud:"
@@ -312,7 +312,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
            "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
   [[ "$(tip)" == *"a&lt;b          -        -        -"* ]]
-  [[ "$(tip)" == *"x&amp;y       -       -       0      -     1     -  100%"* ]]
+  [[ "$(tip)" == *"x&amp;y        -       0      -     1     -  100%"* ]]
 }
 
 @test "a warning on stderr does not break the read" {
