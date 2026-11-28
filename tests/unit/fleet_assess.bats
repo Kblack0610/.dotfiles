@@ -10,6 +10,15 @@ setup() {
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-assess"
   FLEET_GH_PROBE_TTL_S=0 # every test reads the stubbed bucket fresh; the cache tests set their own
+  # No sensor unless a test makes one: a hot CI runner must not flip the probe tests to a critical HOLD.
+  export CPU_TEMP_HWMON="$BATS_TEST_TMPDIR/hwmon" CPU_TEMP_THERMAL="$BATS_TEST_TMPDIR/thermal"
+}
+
+# hwmon_tctl <millidegrees> -- a k10temp hwmon under CPU_TEMP_HWMON reading that Tctl.
+hwmon_tctl() {
+  mkdir -p "$CPU_TEMP_HWMON/hwmon0"
+  echo k10temp > "$CPU_TEMP_HWMON/hwmon0/name"
+  echo "$1" > "$CPU_TEMP_HWMON/hwmon0/temp1_input"
 }
 
 # v <load> <tctl> <mem%> <held> on a 24-core box -> the verdict word
@@ -115,7 +124,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   FLEET_HOLD_LOAD_X=0 run "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_failure 1
   assert_output --partial 'HOLD'
-  FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 \
+  FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CRIT_TCTL=1000 \
     run "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_success
 }
@@ -141,7 +150,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   local hold="$REPO_ROOT/.local/bin/agent-hold"
   "$hold" set dispatch --by t "maintenance" >/dev/null
   "$hold" claim mac-desktop --by t "store form" >/dev/null
-  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
+  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CRIT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_success
   assert_output --partial 'OK'
@@ -153,7 +162,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
 @test "--thermal-probe between the marks: a tripped watch stays tripped, and dispatch's --watch-probe does not" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch"
   mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
-  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
+  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CRIT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_success
   echo OK > "$SENTINEL_STATE/fleet-thermal.state"
@@ -171,9 +180,62 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch"
   mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
   printf TRIP > "$SENTINEL_STATE/fleet-thermal.state"
-  run env FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=1000 FLEET_CLEAR_MEM_PCT=0 FLEET_CLEAR_STALL_PCT=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  run env FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CRIT_TCTL=1000 FLEET_CLEAR_LOAD_X=1000 FLEET_CLEAR_MEM_PCT=0 FLEET_CLEAR_STALL_PCT=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_success
   assert_output --partial 'CLEAR'
+}
+
+# 2026-11-25: tuf-b550 read 101-105 C at a load of 0.5-0.85x cores and powered off at 110 C; the hot
+# rule needed 1.5x cores, so nothing held it.
+@test "critical tctl: HOLD at any load; the boost band still needs load" {
+  run fleet_verdict 12 24 110 60 0
+  assert_output 'HOLD tctl 110 C >= 100 C critical'
+  [ "$(fleet_verdict 12 24 100 60 0 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 12 24 99.9 60 0 | cut -d' ' -f1)" = OK ]
+  [ "$(fleet_verdict 12 24 96 60 0 | cut -d' ' -f1)" = OK ]
+  [ "$(fleet_verdict 38.4 24 96 60 0 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 12 24 - 60 0 | cut -d' ' -f1)" = OK ]
+  # The mark is the knob in cpu-temp.sh.
+  FLEET_CRIT_TCTL=111 run fleet_verdict 12 24 110 60 0
+  assert_output --partial 'OK'
+}
+
+@test "critical tctl: a held machine clears only back under the throttle point, so 99.9 C does not flap" {
+  run fleet_verdict 12 24 99.9 60 1
+  assert_output 'HOLD held, tctl 99.9 C not yet under 95 C'
+  [ "$(fleet_verdict 12 24 95 60 1 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 12 24 94.9 60 1 | cut -d' ' -f1)" = CLEAR ]
+  [ "$(fleet_verdict 12 24 - 60 1 | cut -d' ' -f1)" = CLEAR ]
+}
+
+@test "thermal_page: a critical tctl pages urgent at any load, naming the host and its temperature" {
+  FLEET_HOST=tuf-b550 run thermal_page 1 24 105
+  assert_line 'page: urgent'
+  assert_line 'reason: tuf-b550 CPU at 105 C, at or over the 100 C critical mark (near its thermal shutdown)'
+  run thermal_page 1 24 99.9
+  assert_output 'page: low'
+  run thermal_page 1 24 -
+  assert_output 'page: low'
+}
+
+@test "--thermal-probe: a stubbed hwmon at 105000 holds at an idle load and pages urgent naming the Tctl" {
+  export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch" FLEET_LOADAVG="$BATS_TEST_TMPDIR/loadavg"
+  mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
+  echo "0.10 0.10 0.10 1/1 1" > "$FLEET_LOADAVG"
+  hwmon_tctl 105000
+  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOST=tuf-b550 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  assert_failure 1
+  assert_line --partial 'HOLD tctl 105.0 C >= 100 C critical'
+  assert_line 'page: urgent'
+  assert_line 'reason: tuf-b550 CPU at 105.0 C, at or over the 100 C critical mark (near its thermal shutdown)'
+  # Dispatch's gate holds on it too, with no page line.
+  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
+  assert_failure 1
+  refute_output --partial 'page:'
+  # Negative control: the same host at 99 C is OK.
+  hwmon_tctl 99000
+  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  assert_success
 }
 
 @test "thermal_page: a 5-min load at 3x cores pages urgent with its reason, just under pages low" {
@@ -202,7 +264,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_failure 1
   refute_output --partial 'page:'
   echo "0.00 $(( n * 4 )) 1.00 1/1 1" > "$FLEET_LOADAVG"
-  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CRIT_TCTL=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_success
   refute_output --partial 'page:'
 }
@@ -287,6 +349,18 @@ textfile_fixture() {
   run write_textfile "$BATS_TEST_TMPDIR/absent"
   assert_failure
   assert_output --partial 'is not a directory'
+}
+
+@test "textfile: the CPU temperature is a gauge from read_tctl; no sensor publishes no series" {
+  textfile_fixture
+  hwmon_tctl 101250
+  write_textfile "$OUT"
+  run grep '^fleet_cpu_tctl_celsius' "$OUT/fleet_local.prom"
+  assert_output 'fleet_cpu_tctl_celsius 101.2'
+  rm -r "$CPU_TEMP_HWMON"
+  write_textfile "$OUT"
+  run grep -c '^fleet_cpu_tctl_celsius' "$OUT/fleet_local.prom"
+  assert_output 0
 }
 
 @test "textfile: no gates still publishes the session count, so 0 gates reads 0, not stale" {
