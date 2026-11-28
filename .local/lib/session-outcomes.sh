@@ -559,13 +559,26 @@ so_forgejo_pr() {
           additions, deletions, mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
 }
 
-# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state, context}],
-# so pr-ci.sh CI_JQ reads them unchanged: a Forgejo status is pending, success, warning, error or
-# failure, and warning is a pass (Forgejo's own combined state does not fail on it). After so_forgejo_auth.
+# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state, name,
+# detailsUrl}], so pr-ci.sh CI_JQ reads them unchanged: a Forgejo status is pending, success, warning, error
+# or failure, and warning is a pass (Forgejo's own combined state does not fail on it). It reads every post
+# (commits/SHA/statuses, paged) and keeps the newest (highest id) of each context and Actions run (the
+# /actions/runs/N in target_url; a status with none is one per context); CI_JQ then keeps only each
+# context's newest run. The combined commits/SHA/status keeps whichever post came last, so on home-config
+# PR #1521 (head 1fbd16c8) run 5863 re-posted its red zomboid-scripts at 13:18:59, after run 5864's green
+# at 13:14:08, and agent-land refused a head whose newer run was green (2026-11-25, ar-5884). A failed
+# page fails the read, which callers retry as a lost one. After so_forgejo_auth.
 so_forgejo_checks() {
-  local st
-  st="$(so_forgejo_get "$1" "commits/$2/status")" || return 1
-  jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end), context}]' <<<"$st"
+  local page=1 got all=''
+  while :; do
+    got="$(so_forgejo_get "$1" "commits/$2/statuses?limit=$SO_FORGEJO_PAGE&page=$page")" || return 1
+    all+="$got"$'\n'
+    [ "$(jq length <<<"$got")" -ge "$SO_FORGEJO_PAGE" ] || break
+    page=$((page + 1))
+  done
+  jq -cs 'add // [] | map(. + {_run: ((.target_url // "") | capture("/actions/runs/(?<r>[0-9]+)").r // null)})
+    | group_by([.context, ._run]) | map(max_by(.id))
+    | map({state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end), name: .context, detailsUrl: .target_url})' <<<"$all"
 }
 
 # so_pr_view <owner/repo#N or N> <checkout> <fields> <jq> -> <jq> over the PR's <fields>, as `gh pr view -q`
