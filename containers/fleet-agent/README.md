@@ -1,6 +1,6 @@
 # fleet-agent
 
-The whole agent runtime in one image, so a fleet worker runs on any Linux box with docker. The image is `fleet-node install` (the same definition a native host runs) behind sshd. CI publishes `ghcr.io/kblack0610/fleet-agent:<sha>` and `:latest` on every main merge that touches it, and once a day with the rest of main, on its `schedule` trigger (`.github/workflows/fleet-agent.yml`). One tag pins the whole runtime. While the package is private, a box runs `docker login ghcr.io` once before `fleet-agent up`.
+The whole agent runtime in one image, so a fleet worker runs on any Linux box with docker. The image is `fleet-node install` (the same definition a native host runs) behind sshd. CI publishes `ghcr.io/kblack0610/fleet-agent:<sha>` and `:latest` on every main merge that touches it, and once a day with the rest of main, on its `schedule` trigger (`.github/workflows/fleet-agent.yml`). One tag pins the whole runtime. The package is public, so a box pulls it with no login.
 
 ## Run a worker
 
@@ -11,9 +11,9 @@ fleet-agent shell       # sign in here: gh auth login, then clone the private ov
 fleet-agent down        # remove the container; volumes and logins stay
 ```
 
-Each Claude account signs in with its setup token, pushed from a machine with rbw unlocked: `claude-acct token push <host>`, where `<host>` is an ssh alias for the container's port. No `/login` runs in the container.
+Each Claude account signs in with its setup token, pushed from a machine with rbw unlocked: `claude-acct token push ssh://kblack0610@<box>:2223` (the home-config play runs it once the container's key is in the inventory). No `/login` runs in the container.
 
-Then add the box to `fleet_workers` in home-config's inventory with `ansible_port: 2223`. `fleet-dispatch hosts` reads it ready once `wt` is on PATH and `~/.agent` is a peer store (`store-sync join`) and `~/.notes` is a clone (`notes-sync-bootstrap.sh`), and lists `claude` in its kit once `fleet-node ready claude` passes inside.
+Then add the box to `fleet_workers` in home-config's inventory with `fleet_agent: true`, `fleet_ssh_user: kblack0610` and `fleet_ssh_port: 2223`, so dispatch dials the container and Ansible still manages the box on its own sshd (home-config `docs/runbooks/fleet-worker.md`, "Run a worker anywhere": the play installs docker and a `fleet-agent` unit at the pinned image). `fleet-dispatch hosts` reads it ready once `wt` is on PATH and `~/.agent` is a peer store (`store-sync join`) and `~/.notes` is a clone (`notes-sync-bootstrap.sh`), and lists `claude` in its kit once `fleet-node ready claude` passes inside.
 
 ## Build and test it
 
@@ -40,11 +40,11 @@ HOME is one volume because Claude rewrites `~/.claude.json` by rename, so a moun
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| `fleet-dispatch hosts` lists no claude in the worker's kit | an account has no token in the container | `fleet-agent status` names it; `claude-acct token push <host>` from a machine with rbw |
+| `fleet-dispatch hosts` lists no claude in the worker's kit | an account has no token in the container | `fleet-agent status` names it; re-run the home-config play, or `claude-acct token push ssh://kblack0610@<box>:2223` from a machine with rbw |
 | `fleet-dispatch hosts` reads the worker not ready | no peer store (`~/.agent/.sync/peer`) | `fleet-agent shell`, then `store-sync join` |
 | `fleet-dispatch hosts` says the worker has no `~/.notes` clone | the vault was never cloned there | run `.local/src/git/notes-sync-bootstrap.sh` in the container |
 | Every account signed out after a `docker volume rm` | the logins were in that volume | sign in again; `fleet-agent down` never removes volumes |
 | `nproc` inside reads the whole box | started without `fleet-agent` | `fleet-agent down && fleet-agent up`; it sets a cpuset |
-| `fleet-agent up` says it could not pull and there is no local copy | the GHCR package is private and this box is not logged in | `docker login ghcr.io` with a token that can read packages, or make the package public |
+| `fleet-agent up` says it could not pull and there is no local copy | this box cannot reach ghcr.io, or the package was made private | check `curl -sI https://ghcr.io/v2/` from the box; a private package needs `docker login ghcr.io` with a token that can read packages |
 | ssh is refused after the host's authorized_keys changed | the entrypoint copies it at start | `docker restart fleet-agent` |
 | `docker logs fleet-agent` shows `the sync failed` | a stow conflict or rsync error in the home volume; sshd still started | ssh in, clear the conflicting file, `docker restart fleet-agent`; the sync reruns until it completes |
