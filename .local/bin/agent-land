@@ -34,7 +34,7 @@
 # against comms-standard (comms-lint --channel pr-body); it never fails the landing. Before that, a *.md or *.txt
 # file at the top of ~/.cache whose text is the merged body (the --body-file a session wrote) is deleted. Each "After deploy: <step>"
 # line of the body, a step that can run only once the change is live, is added as its own item (deploy_steps). One line per step.
-# So is each step the repo's own .agent-land/after-merge leaves for a merge that changes its paths (after_merge_steps).
+# So is each step the repo's own .agent-land/after-merge leaves for a merge that changes its paths (after_merge_steps; a {role} in the step becomes the roles the merge changed, or all, and a queued item carries a merge only when its Roles cover them).
 # The item is --item, else $AGENT_QUEUE_ITEM (set in a session fleet-dispatch started), else the
 # one this session added or claimed (`agent-queue mine`). No item, no landing: every merged PR
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
@@ -1532,23 +1532,23 @@ after_merge_steps() {
     sha=$(printf '%s' "$step" | sha1sum | cut -c1-7)
     roles=''; left=''
     if [[ "$step" == *"$ph"* ]]; then
-      roles=$(after_merge_roles "$files" "${ps[@]}")
+      roles=$(after_merge_roles "$files" "${ps[@]}" || true); [ -n "$roles" ] || roles=all
       # the roles no queued item of this step covers; an item covering "all" covers every one
       left=" $roles " by=''
       while IFS=$'\t' read -r q have; do
         [[ "$q" =~ ^after-merge-$sha-[0-9]+- ]] || continue
         [ "$have" = all ] && { left=' ' by=$q; break; }
         [ "$roles" = all ] && continue
-        for r in $have; do [[ "$left" == *" $r "* ]] && { left=${left/ $r / }; [[ " $by " == *" $q "* ]] || by+=" $q"; }; done
+        for r in $have; do [[ "$left" == *" $r "* ]] && { left=${left/" $r "/ }; [[ " $by " == *" $q "* ]] || by+=" $q"; }; done
       done <<<"$queued"
       read -ra words <<<"$left"; left=${words[*]}
-      [ -n "$left" ] || { echo "after-merge: ${by# } still queued, applying $roles, so it carries #$pr too: ${step//"$ph"/$roles}"; continue; }
+      [ -n "$left" ] || { echo "after-merge: ${by# } still queued, applying $roles, so it carries #$pr too: ${step//"$ph"/"$roles"}"; continue; }
       roles=$left
     else
       # the repo last: agent-queue cuts a slug at 40 characters
       slug=$(cut -f1 <<<"$queued" | grep -m1 -E "^after-merge-$sha-[0-9]+-") && { echo "after-merge: $slug is still queued and carries #$pr too: $step"; continue; }
     fi
-    step=${step//"$ph"/$roles}
+    step=${step//"$ph"/"$roles"}
     slug="after-merge-$sha-$pr-${repo##*/}"
     task="$pr_ref (merge ${merged:0:12}) changed $hit, and ${repo##*/}'s $AFTER_MERGE_FILE leaves this step for every merge that changes $paths: $step"
     [ -z "$roles" ] || task+=$'\n'"Roles: $roles"
