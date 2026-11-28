@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# plan-standard.sh - holds plans to three rules of ~/.local/src/docs/planning.md (Epic, Phases,
-# Chain), read at the two moments a plan forms:
-#   UserPromptSubmit in plan mode: inject those three rules.
+# plan-standard.sh - holds plans to four rules of ~/.local/src/docs/planning.md (Epic, Phases,
+# Chain, Owners), read at the two moments a plan forms:
+#   UserPromptSubmit in plan mode: inject those rules.
 #   PreToolUse on ExitPlanMode: deny, naming each gap, before the human sees the plan.
 # The doc's Sections table is the written standard and is not checked here (the human released
 # that gate, 2026-11-22). A rule that must be recalled at a trigger does not hold, which is why
-# these three are a check. Fails open: a missing doc or an empty plan passes. "plan-standard:"
+# these four are a check. Fails open: a missing doc or an empty plan passes. "plan-standard:"
 # opens every deny; session outcomes count on it.
 
 DOC="$HOME/.local/src/docs/planning.md"
@@ -36,7 +36,7 @@ if [ "$event" = UserPromptSubmit ]; then
   tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
   [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
   # A rule's "Why:" history is for editing the doc; the deny below names any gap.
-  rules=$(grep -E '^(Chain|Phases): ' "$DOC")
+  rules=$(grep -E '^(Chain|Phases|Owners): ' "$DOC")
   ! epic_checked || rules+=$'\n'$(grep -E '^Epic: ' "$DOC")
   rules=$(sed -E 's/ Why: .*//' <<<"$rules")
   jq -nc --arg c "Plan standard for $label. ExitPlanMode is denied unless the plan meets these rules:
@@ -95,6 +95,32 @@ if [ -n "$phased" ] && [ -x "$aq" ] && tmpd=$(mktemp -d); then
     marker=$(grep -m1 -oE 'could not read its Phases checklist: .*' <<<"$aq_err" | sed 's/^could not read its Phases checklist: //')
     [ -z "$marker" ] || gaps+=("Phases checklist: $marker")
   }
+fi
+
+# The doc's Owners: rule. A plan whose ## Changes names code under .local/bin, .local/lib or .local/src
+# (the private repo's bin is the same path) needs an `Owners:` line; a line that is there is checked
+# either way. A name is a row key or writer file of the Owners table, read by `fact-owners names`, its
+# one parser; `none:` carries its search. Fails open with no table or no fact-owners.
+fo="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/bin/fact-owners"
+owners_doc="$HOME/.local/src/docs/fleet-states.md"
+if declare -F plan_owners_line >/dev/null && [ -x "$fo" ] && [ -r "$owners_doc" ] &&
+  known=$("$fo" names --doc "$owners_doc" 2>/dev/null) && [ -n "$known" ]; then
+  touched=$(awk '/^```/ { f = !f; next } !f && /^## / { on = ($0 ~ /^## Changes[[:space:]]*$/); next } !f && on' <<<"$plan" |
+    grep -oE '(^|[^[:alnum:]_.-])\.local/(bin|lib|src)(/[^[:space:]`,;:)]*)?([^[:alnum:]_/-]|$)' | sed -E 's/[^[:alnum:]_\/]*$//' | sed -E 's/^[^.]*//' | grep -vE "^\.local/src/docs(/|$)" | head -n1)
+  if owners=$(plan_owners_line <<<"$plan"); then
+    if [[ "$owners" == none:* ]]; then
+      grep -qE '^none:[[:space:]]+rg[[:space:]]+[^[:space:]]' <<<"$owners" ||
+        gaps+=("Owners: line says \"$owners\": a none: names the search that found no owner, as \"none: rg <query>\", never free text")
+    elif [ -z "$owners" ]; then
+      gaps+=("Owners: line is empty: name the Owners-table rows this plan reads or writes, or \"none: rg <query>\"")
+    else
+      unknown=$(grep -vxFf <(printf '%s\n' "$known") <<<"$owners" | paste -sd, | sed 's/,/, /g')
+      [ -z "$unknown" ] ||
+        gaps+=("Owners: line names $unknown, no row key or writer file of the Owners table (fact-owners names lists them): fix the name, or say \"none: rg <query>\"")
+    fi
+  elif [ -n "$touched" ]; then
+    gaps+=("## Changes names $touched but ## Reviewed has no Owners: line: name the Owners-table rows (fleet-states.md) this change reads or writes, or \"none: rg <query>\" for the search that found none")
+  fi
 fi
 
 # The doc's Epic: rule (epic_checked, above). The id must be an epic( row on some lab sheet, open
