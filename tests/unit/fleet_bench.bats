@@ -1463,34 +1463,39 @@ asks_order() { bash -c '. "$1"; ask_rows | jq -r "map(.id) | join(\" \")"' _ "$S
   assert_failure 2
 }
 
-# ask_row <id> <status> <created epoch> <answered epoch|""> <answered_by> <closed epoch|""> [TZ] [closed_reason] [answer_note]: one agent-ask list --all line
+# ask_row <id> <status> <created epoch> <answered epoch|""> <answered_by> <closed epoch|""> [TZ] [closed_reason] [answer_note] [judge_level] [kind]: one agent-ask list --all line
 ask_row() {
   local st; st() { [ -n "$1" ] && TZ="${2:-UTC}" date -d "@$1" +%Y-%m-%dT%H:%M:%S%z; }
-  printf '%s\tgame\tdefault\t%s\tchoice\tq?\ta|b\t\t%s\t\ta\t%s\ts\t%s\t%s\t\t\t%s\t\t\t\t\t\t%s\t\t\n' \
-    "$1" "$2" "$(st "$4" "$7")" "$(st "$3" "$7")" "$(st "$6" "$7")" "${8:-}" "$5" "${9:-}" >> "$ASKSALL"
+  printf '%s\tgame\tdefault\t%s\t%s\tq?\ta|b\t\t%s\t\ta\t%s\ts\t%s\t%s\t\t\t%s\t\t\t\t\t\t%s\t\t\t\t\t\t\t\t\t\t%s\n' \
+    "$1" "$2" "${11:-choice}" "$(st "$4" "$7")" "$(st "$3" "$7")" "$(st "$6" "$7")" "${8:-}" "$5" "${9:-}" "${10:-}" >> "$ASKSALL"
 }
 
-@test "kpi: ask load counts human answers outside the asking chat only, ask wait counts pending age, and improve names the one past its threshold" {
+@test "kpi: ask load counts the human's touches, in-session replies too, on asks the daily batch does not carry; ask wait counts pending age; improve names the one past its threshold" {
   kpi_setup
   printf '%s\n' human_answered_per_day_max=0.2 ask_wait_p90_min_max=10000 >> "$KPI_THRESHOLDS"
   local d=86400
-  ask_row h1 answered $((T0 - 2*d)) $((T0 - 2*d + 3600)) human "" EST5   # -0500 stamps, waited 60 min
-  ask_row h2 answered $((T0 - d)) $((T0 - d + 600)) human "" UTC "" "in session: go with a"   # answered in the asking chat
+  ask_row h1 answered $((T0 - 2*d)) $((T0 - 2*d + 3600)) human "" EST5   # -0500 stamps, waited 60 min; unscored
+  ask_row h2 answered $((T0 - d)) $((T0 - d + 600)) human "" UTC "" "in session: go with a" critical   # answered in the asking chat
   ask_row h3 answered $((T0 - d)) $((T0 - d + 900)) human "" UTC "replied in session: sure"   # answered in the asking chat
   ask_row h4 answered $((T0 - d)) $((T0 - d + 300)) "" ""               # in-session capture, no answered_by
   ask_row h5 answered $((T0 - 4*d)) $((T0 - 4*d + 1200)) human ""       # answered outside the asking chat
+  ask_row r1 cancelled $((T0 - 2*d)) "" "" $((T0 - d)) UTC "replied in session"   # a reply in the asking chat closed it, dated by closed_at
+  ask_row b2 answered $((T0 - 3*d)) $((T0 - 3*d + 600)) human "" UTC "" "" fleet approval   # an approval is never batched
   ask_row j1 answered $((T0 - 3*d)) $((T0 - 3*d + 60)) judge ""
   ask_row c1 cancelled $((T0 - 5*d)) "" "" "$T0"                       # waited 7200 min, then cancelled
   ask_row o1 answered $((T0 - 20*d)) $((T0 - 20*d + 1800)) human ""     # 28d window only
   ask_row p1 pending $((T0 - 6*d)) "" "" ""                             # still open: 8640 min and counting
+  # negative control: a non-critical ask the daily batch carries is not a touch, answered in or out of its chat
+  ask_row b1 answered $((T0 - 2*d)) $((T0 - 2*d + 300)) human "" UTC "" "" repo
+  ask_row b3 cancelled $((T0 - 2*d)) "" "" $((T0 - d)) UTC "replied in session" "" self
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c '[.human_answered_per_day["7d"], .human_answered_per_day["28d"], .ask_wait_p90_min["7d"], .ask_wait_p90_min["28d"], .human_answered_per_day.status]' <<<"$output"
-  assert_output '[0.3,0.1,8640,8640,"past"]'
-  # negative control: without the pending ask the p90 is the human hour; the cancelled ask and the judge's answer are not in either number
+  assert_output '[1,0.3,8640,60,"past"]'   # 28d: ten waits, so the pending one is past its nearest rank
+  # negative control: without the pending ask the p90 is the human hour; the cancelled asks and the judge's answer are not in either number
   grep -v '^p1' "$ASKSALL" > "$ASKSALL.new" && mv "$ASKSALL.new" "$ASKSALL"
   run "$SUBJECT" kpi
-  assert_line '| human_answered_per_day | 0.3 | 0.1 | max 0.2 | past |'
+  assert_line '| human_answered_per_day | 1 | 0.3 | max 0.2 | past |'
   assert_line '| ask_wait_p90_min | 60 | 60 | max 10000 | ok |'
   run "$SUBJECT" improve --json
   assert_success
