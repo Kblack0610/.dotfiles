@@ -6257,15 +6257,20 @@ adopt_task() {
 # 34 of the 43 stranded PRs had no item, and only a red session working the whole pile by hand ever
 # owned one, so the pile grew back after each (ar-4011). Each add goes in under the queue cap, the one
 # bound on adds: one the cap holds ends the run, and the next probe tries again. GitHub PRs only, since
-# both briefs read and land through gh. A PR whose item (pr-<project>-<N>) exists in any state has had
+# both briefs read and land through gh. A PR whose item (pr-<owner>-<repo>-<N>) exists in any state has had
 # its owner: it stays on the watch for a red session, never adopted twice.
 cmd_adopt_prs() {
   local dry='' prs ref url checks mergeable title repo project slug owner why head it out rc as=()
-  [ "${1:-}" != --dry-run ] || dry=1
+  case "$*" in
+  '') ;;
+  --dry-run) dry=1 ;;
+  *) say "usage: fleet-dispatch adopt-prs [--dry-run]"; return 2 ;;
+  esac
+  # Before the read, so a read that fails waits for the next probe too, never every pass.
+  [ -n "$dry" ] || { mkdir -p "$DIR" && touch "$DIR/adopt-prs"; }
   prs=$(fleet-bench prs --json 2>/dev/null | jq -r '.prs[] | select(.class == "stranded" and .owner == null)
-      | [.ref, .url // "", .checks // "", .mergeable // "", .title // ""] | join("\u001f")') ||
+      | [.ref, .url // "", .checks // "", .mergeable // "", (.title // "" | gsub("[\r\n\u001f]+"; " "))] | join("\u001f")') ||
     { say "adopt-prs: fleet-bench prs could not be read, so no PR was adopted"; return 1; }
-  [ -n "$dry" ] || touch "$DIR/adopt-prs"
   while IFS=$'\x1f' read -r ref url checks mergeable title; do
     [ -n "$ref" ] || continue
     [[ "$url" == https://github.com/* ]] || continue
@@ -6281,7 +6286,8 @@ cmd_adopt_prs() {
     project=$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_of_repos_json "${repo#*/}" 2>/dev/null | jq -r '.[]' 2>/dev/null)
     # The resolver hands back the bare name when no project claims it: a project with no checkout here has no session to own it.
     [ -n "$project" ] && [ -n "$(repo_dir "$project")" ] || { logline "adopt-prs: PR $ref is stranded, but no project here maps its repo"; continue; }
-    slug="pr-$project-${ref##*#}"
+    # Owner and repo in the slug, so two repos' PR #N never share one.
+    slug=$(tr 'A-Z' 'a-z' <<<"pr-${repo%%/*}-${repo#*/}-${ref##*#}" | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g')
     [ -z "$(item_state "$slug")" ] || continue
     if [ -n "$dry" ]; then echo "would adopt $ref as $slug (${owner/fix/fix-ci}$why)"; continue; fi
     head=$(gh pr view "${ref##*#}" -R "$repo" --json headRefOid -q .headRefOid 2>/dev/null) && [ -n "$head" ] ||
@@ -6297,7 +6303,8 @@ cmd_adopt_prs() {
     [ "$owner" != land ] || [ "$(item_tier "$it")" != 3 ] || as=(agent=claude)
     agent-queue set "$slug" "pr=$ref" "pr_owner=$owner" "${owner}_tries=1 $head$why" mode=oneshot "${as[@]}" \
       "note=PR $ref stranded with no item; ${owner/fix/fix-ci} try 1 of $DISPATCH_FIX_TRIES" >/dev/null ||
-      { say "adopt-prs: queued $slug but could not stamp its PR $ref"; continue; }
+      { say "adopt-prs: queued $slug but could not stamp its PR $ref, so it is cancelled"
+        agent-queue move "$slug" done --status cancelled --why "adopt-prs could not stamp its PR $ref" >/dev/null; continue; }
     logline "adopt-prs: queued $slug to ${owner/fix/fix-ci} stranded PR $ref"
     dispatch_event requeued "$project" "stranded PR with no item: ${owner/fix/fix-ci} try 1" --item "$slug" --pr "$ref" --sha "$head"
     echo "adopted $ref as $slug (${owner/fix/fix-ci})"

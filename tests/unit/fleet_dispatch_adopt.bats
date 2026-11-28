@@ -27,15 +27,15 @@ prs_stub() {
   prs_stub
   run cmd_adopt_prs
   assert_success
-  assert_output --partial 'adopted o/game#1 as pr-game-1 (land)'
+  assert_output --partial 'adopted o/game#1 as pr-o-game-1 (land)'
   local h=0123456789abcdef0123456789abcdef01234567
-  assert_equal "$(agent-queue show pr-game-1 --json | jq -r '[.state, .mode, .pr, .pr_owner, .land_tries, .tags] | join("|")')" "queued|oneshot|o/game#1|land|1 $h|adopt"
-  assert_equal "$(agent-queue show pr-game-2 --json | jq -r '[.state, .pr_owner, .fix_tries] | join("|")')" "queued|fix|1 $h"
-  assert_equal "$(agent-queue show pr-game-3 --json | jq -r '[.state, .pr_owner, .land_tries] | join("|")')" "queued|land|1 $h conflict"
+  assert_equal "$(agent-queue show pr-o-game-1 --json | jq -r '[.state, .mode, .pr, .pr_owner, .land_tries, .tags] | join("|")')" "queued|oneshot|o/game#1|land|1 $h|adopt"
+  assert_equal "$(agent-queue show pr-o-game-2 --json | jq -r '[.state, .pr_owner, .fix_tries] | join("|")')" "queued|fix|1 $h"
+  assert_equal "$(agent-queue show pr-o-game-3 --json | jq -r '[.state, .pr_owner, .land_tries] | join("|")')" "queued|land|1 $h conflict"
   # The brief its session gets is the one own_parked_pr's requeue gets.
-  run item_brief "$(agent-queue show pr-game-3 --json)" claude
+  run item_brief "$(agent-queue show pr-o-game-3 --json)" claude
   assert_output --partial 'in conflict with its base'
-  run item_brief "$(agent-queue show pr-game-2 --json)" claude
+  run item_brief "$(agent-queue show pr-o-game-2 --json)" claude
   assert_output --partial '/fix-ci o/game#2'
 }
 
@@ -46,14 +46,14 @@ prs_stub() {
   stranded o/game#5 SUCCESS UNKNOWN https://git.example/o/game/pulls/5
   stranded o/nowhere#6 SUCCESS MERGEABLE
   stranded o/game#7 SUCCESS MERGEABLE
-  agent-queue add --project game --slug pr-game-7 "chore(review): land or close stranded PR o/game#7" >/dev/null
-  agent-queue move pr-game-7 done --status failed >/dev/null
+  agent-queue add --project game --slug pr-o-game-7 "chore(review): land or close stranded PR o/game#7" >/dev/null
+  agent-queue move pr-o-game-7 done --status failed >/dev/null
   prs_stub
   run cmd_adopt_prs
   assert_success
   refute_output --partial adopted
-  for n in 4 5 6; do [ -z "$(agent-queue show "pr-game-$n" --json 2>/dev/null)" ] || fail "pr-game-$n was adopted"; done
-  assert_equal "$(agent-queue show pr-game-7 --json | jq -r .state)" done
+  for s in pr-o-game-4 pr-o-game-5 pr-o-nowhere-6; do [ -z "$(agent-queue show "$s" --json 2>/dev/null)" ] || fail "$s was adopted"; done
+  assert_equal "$(agent-queue show pr-o-game-7 --json | jq -r .state)" done
   assert_not_called 'gh pr view'
 }
 
@@ -64,8 +64,8 @@ prs_stub() {
   prs_stub
   run cmd_adopt_prs --dry-run
   assert_success
-  assert_output 'would adopt o/game#8 as pr-game-8 (fix-ci)'
-  [ -z "$(agent-queue show pr-game-8 --json 2>/dev/null)" ] || fail "the dry run queued pr-game-8"
+  assert_output 'would adopt o/game#8 as pr-o-game-8 (fix-ci)'
+  [ -z "$(agent-queue show pr-o-game-8 --json 2>/dev/null)" ] || fail "the dry run queued pr-o-game-8"
   assert [ ! -e "$FLEET_DISPATCH_DIR/adopt-prs" ]
 }
 
@@ -85,4 +85,27 @@ prs_stub() {
   touch -d '+1 min' "$ADOPT_WATCH_DIR/pr-stranded.lastrun"
   run adopt_due
   assert_success
+}
+
+@test "adopt-prs: one PR number in two repos gets two items, and a title with a newline stays one record" {
+  project game beta "$SANDBOX/repos/game"
+  : > "$SANDBOX/prs.jsonl"
+  stranded o/game#9 SUCCESS MERGEABLE
+  stranded p/game#9 SUCCESS MERGEABLE
+  jq -c '.title = "fix(x): two\nlines"' <<<"$(tail -n 1 "$SANDBOX/prs.jsonl")" > "$SANDBOX/last" &&
+    { sed -i '$d' "$SANDBOX/prs.jsonl"; cat "$SANDBOX/last" >> "$SANDBOX/prs.jsonl"; }
+  prs_stub
+  run cmd_adopt_prs
+  assert_success
+  assert_output --partial 'adopted o/game#9 as pr-o-game-9'
+  assert_output --partial 'adopted p/game#9 as pr-p-game-9'
+  assert_equal "$(agent-queue show pr-p-game-9 --json | jq -r .pr)" 'p/game#9'
+}
+
+@test "adopt-prs: an argument it does not know is refused before anything is read or written" {
+  : > "$SANDBOX/prs.jsonl"; prs_stub
+  run cmd_adopt_prs --dry
+  assert_failure 2
+  assert_output --partial 'usage: fleet-dispatch adopt-prs [--dry-run]'
+  assert [ ! -e "$FLEET_DISPATCH_DIR/adopt-prs" ]
 }
