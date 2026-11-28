@@ -512,25 +512,20 @@ prs_fixture() {
 @test "prs reads the open PRs of the Forgejo repos in the PR store, with checks mapped and mergeable unknown (ar-4470)" {
   items_stub
   export BENCH_PRS_CMD=prs_forgejo BENCH_NOW=$T0
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
-  cat > "$SCHEDULES_SYNC" <<SS
-#!/usr/bin/env bash
-case "\$1" in
-  repos) echo '[{"forge":"github","repo":"o/gh"},{"forge":"forgejo","host":"git.example","repo":"o/fj"}]' ;;
-  prs) [ "\$2 \$3 \$4 \$5" = "git.example/o/fj --state open --checks" ] || exit 2
-    # #7 is the owner's; #8 is a bot's, which is not the fleet's to land and so never listed
-    printf '[{"number":7,"author":"o","branch":"fix/x","title":"bump x","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"FAIL"},{"number":8,"author":"renovate","branch":"renovate/y","title":"bump y","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"PASS"}]\n' \
-      "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" \
-      "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" ;;
-  *) exit 2 ;;
-esac
-SS
-  chmod +x "$SCHEDULES_SYNC"
+  # #7 is the owner's; #8 is a bot's, which is not the fleet's to land and so never listed
+  ss_answer repos.out '[{"forge":"github","repo":"o/gh"},{"forge":"forgejo","host":"git.example","repo":"o/fj"}]'
+  ss_answer prs.rc 2
+  ss_answer prs.git.example_o_fj.rc 0
+  printf '[{"number":7,"author":"o","branch":"fix/x","title":"bump x","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"FAIL"},{"number":8,"author":"renovate","branch":"renovate/y","title":"bump y","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"PASS"}]\n' \
+    "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" \
+    "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" > "$SS_FIXTURE/ss.prs.git.example_o_fj.out"
   run "$SUBJECT" prs --json
   assert_success
   [ "$(jq -c '[.prs[] | [.ref, .idle_h, .checks, .mergeable, .class]]' <<<"$output")" = '[["o/fj#7",300,"FAILURE","UNKNOWN","stranded"]]' ]
   # a store that cannot be read is unreadable, never an empty list
-  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && echo "[{\\"forge\\":\\"forgejo\\",\\"host\\":\\"h\\",\\"repo\\":\\"o/fj\\"}]" || exit 1\n' > "$SCHEDULES_SYNC"
+  rm -f "$SS_FIXTURE"/ss.prs.*
+  ss_answer repos.out '[{"forge":"forgejo","host":"h","repo":"o/fj"}]'
+  ss_answer prs.rc 1
   run "$SUBJECT" prs --check aged
   assert_failure 2
   assert_output --partial 'unreadable:'
@@ -563,12 +558,12 @@ SS
   git -C "$clone" update-ref refs/remotes/origin/merged main
   printf '{"paths":{"%s":"r"}}\n' "$clone" > "$SANDBOX/map.json"
   export BENCH_PROJECT_MAP="$SANDBOX/map.json" BENCH_BRANCHES_CMD=prs_branches
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
   # o/r is a Forgejo repo here: the store names it host/owner/repo, so asking for o/r would read as unsynced
-  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && { echo "[{\\"forge\\":\\"forgejo\\",\\"host\\":\\"git.example\\",\\"repo\\":\\"o/r\\"}]"; exit 0; }\n[ "$1 $2" = "prs git.example/o/r" ] || exit 3\njq -cn --arg s "%s" %s\n' \
-    "$(git -C "$clone" rev-parse refs/remotes/origin/squashed)" \
-    "'[{branch: \"owned\", state: \"OPEN\", head_sha: \"x\"}, {branch: \"squashed\", state: \"MERGED\", head_sha: \$s}]'" > "$SCHEDULES_SYNC"
-  chmod +x "$SCHEDULES_SYNC"
+  ss_answer repos.out '[{"forge":"forgejo","host":"git.example","repo":"o/r"}]'
+  ss_answer prs.rc 3
+  ss_answer prs.git.example_o_r.rc 0
+  jq -cn --arg s "$(git -C "$clone" rev-parse refs/remotes/origin/squashed)" \
+    '[{branch: "owned", state: "OPEN", head_sha: "x"}, {branch: "squashed", state: "MERGED", head_sha: $s}]' > "$SS_FIXTURE/ss.prs.git.example_o_r.out"
   run "$SUBJECT" prs --check branches
   assert_failure 1
   assert_line '2 unowned branches'
@@ -579,7 +574,9 @@ SS
   refute_output --partial 'r merged'
   refute_output --partial 'r squashed'
   # a repo the PR store does not sync lists nothing: without its PRs every branch would read unowned
-  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && { echo "[]"; exit 0; }\nexit 3\n' > "$SCHEDULES_SYNC"
+  rm -f "$SS_FIXTURE"/ss.prs.*
+  ss_answer repos.out '[]'
+  ss_answer prs.rc 3
   run "$SUBJECT" prs --check branches
   assert_success
   assert_output ''
@@ -1367,6 +1364,29 @@ fired() { eval_at "$@"; open_at "$@"; }
   assert_output human
 }
 
+# live_samples <n>: n WORKING samples for the project, 10 minutes apart, ending at 14:20
+live_samples() {
+  local k
+  for ((k = 0; k < $1; k++)); do
+    printf '{"epoch":%s,"project":"unity-core-playground","bucket":"WORKING"}\n' "$(( $(clock 14:20) - 600 * k ))"
+  done > "$FLEET_BENCH_DIR/progress.jsonl"
+}
+
+@test "findings: under one live session in the window raises no throughput-drop, though 0.1 clears the ratio of a 24h average near 0" {
+  use_fixture
+  live_samples 1
+  run fired 14:20
+  refute_output --partial 'throughput-drop'
+  refute_output --partial 'blind'
+}
+
+@test "findings: one session live for the whole window, less a missed sampler tick, still raises throughput-drop" {
+  use_fixture
+  live_samples 11
+  run fired 14:20
+  assert_output --partial 'throughput-drop unity-core-playground'
+}
+
 @test "findings: the quiet morning after raises no starved or throughput-drop" {
   use_fixture
   for t in 00:30 01:30 02:30 03:30 04:30 05:30; do
@@ -1916,7 +1936,7 @@ live_merges() {
   stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) cat '$SANDBOX/slots.json' ;; esac"
   BENCH_NOW=$T0 run "$SUBJECT" throughput
   assert_success
-  assert_line 'pool unity: 0 waiting, 0 running, finished jobs waited p50 0m, p90 40m (24h)'
+  assert_line 'pool unity: now 0 waiting, 0 running; finished jobs waited p50 0m, p90 40m (24h)'
   assert_line 'wait unity-gate: finished jobs waited p50 0m, p90 10m (24h)'
   assert_line 'wait unity-full: finished jobs waited p50 7m, p90 1.7h (24h)'
   refute_line --partial 'wait unity:'
@@ -1928,6 +1948,41 @@ live_merges() {
   assert_line 'pool and hosts: prometheus unreadable'
   assert_line 'wait unity-gate: finished jobs waited p50 0m, p90 10m (24h)'
   assert_line 'wait unity: finished jobs waited p50 0m, p90 40m (24h)'
+}
+
+@test "throughput: the hosted pool, with no slot row, prints its live waiting count beside its 24h wait on one line (ar-5963)" {
+  live_merges
+  jq -n '{status: "success", data: {result: ([["cc:pool_slots", "unity", "20"], ["cc:pool_waiting", "github-hosted", "5"],
+    ["cc:pool_oldest_wait_seconds", "github-hosted", "720"], ["cc:pool_done_24h", "github-hosted", "40"], ["cc:pool_done_24h", "unity", "9"]]
+    | map({metric: {__name__: .[0], pool: .[1]}, value: [1, .[2]]}))}}' > "$SANDBOX/snap.json"
+  jq -n '{status: "success", data: {result: [["github-hosted", "0.5", "2"], ["github-hosted", "0.9", "147"], ["unity", "0.5", "0"],
+    ["unity", "0.9", "2400"], ["unity-gate", "0.5", "0"], ["unity-gate", "0.9", "600"]]
+    | map({metric: {pool: .[0], quantile: .[1]}, value: [1, .[2]]})}}' > "$SANDBOX/queue.json"
+  stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) cat '$SANDBOX/snap.json' ;; esac"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  # live waiting first, labelled now; the quantile over finished jobs after it, labelled 24h. No running
+  # count: cc:pool_busy has no hosted row, and a 0 there would be a second contradiction.
+  assert_line 'pool github-hosted: now 5 waiting, oldest 12m; finished jobs waited p50 0m, p90 2m (24h)'
+  assert_line 'pool unity: now 0 waiting, 0 running; finished jobs waited p50 0m, p90 40m (24h)'
+  assert_line 'wait unity-gate: finished jobs waited p50 0m, p90 10m (24h)'
+  refute_line --partial 'wait github-hosted'
+  # with --to the snapshot is of that moment, never labelled now
+  BENCH_NOW=$T0 run "$SUBJECT" throughput --from $((T0 - 3600)) --to "$T0"
+  assert_success
+  assert_line --regexp '^pool github-hosted: at [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} 5 waiting, oldest 12m; finished jobs waited p50 0m, p90 2m \(24h\)$'
+  # idle, the hosted pool keeps its line from the jobs it ran in 24h, and reads 0 waiting rather than vanishing
+  jq '.data.result |= map(select(.metric.__name__ | test("waiting|oldest") | not))' "$SANDBOX/snap.json" > "$SANDBOX/idle.json"
+  stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) cat '$SANDBOX/idle.json' ;; esac"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  assert_line 'pool github-hosted: now 0 waiting; finished jobs waited p50 0m, p90 2m (24h)'
+  # Prometheus snapshot unreadable: still exit 0, and the exporter wait prints on its own line
+  stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) exit 7 ;; esac"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  assert_line 'pool and hosts: prometheus unreadable'
+  assert_line 'wait github-hosted: finished jobs waited p50 0m, p90 2m (24h)'
 }
 
 @test "findings: a repo that cannot be fetched is blind, its old refs are not read as no merges" {
@@ -1963,7 +2018,7 @@ live_merges() {
   assert_success
   assert_line --partial 'local runs: 37/h, 58% not passed'
   assert_line 'merges/h: unity-core-playground 1.5'
-  assert_line 'pool unity: 29 waiting, 7 running, oldest 5.4h'
+  assert_line 'pool unity: now 29 waiting, 7 running, oldest 5.4h'
   assert_line --partial 'razer-laptop 1.4x'
 }
 
@@ -1975,6 +2030,14 @@ live_merges() {
   assert_success
   assert_output --partial 'local runs: none recorded'
   assert_output --partial 'merges: none'
+}
+
+@test "throughput: a host with no run ledger says unread, not none recorded (ar-4609)" {
+  use_fixture
+  BENCH_RUNS_TSV="$SANDBOX/absent/runs.tsv" run "$SUBJECT" throughput
+  assert_success
+  assert_line 'local runs unread: the run ledger is missing on this host'
+  refute_output --partial 'none recorded'
 }
 
 @test "throughput: a multi-day window with over 128 KB of merge rows still reads (ar-2446)" {
@@ -2096,10 +2159,20 @@ scorecard_with_data() {
   scorecard_with_data
   mkdir -p "$BENCH_OUTCOMES_DIR/game"
   jq -cn '{session_id: "s1", prs_merged: 2, edits: 3, hard_errors: {tool_errors: 5},
-    activity: {tool_calls: 50, test_runs: 12, ci_polls: 4, api_messages: 60, tokens: 4000000, tokens_after_last_edit: 1000000}}' > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+    activity: {tool_calls: 50, edit_calls: 2, test_runs: 12, ci_polls: 4, api_messages: 60, tokens: 4000000, tokens_after_last_edit: 1000000}}' > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
   BENCH_NOW=$((T0 + 3600)) "$SUBJECT" scorecard >/dev/null
   run grep '^| lab/game-agent-1:1 | 12 ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output '| lab/game-agent-1:1 | 12 | 6 | 4 | 50 | 10% | 60 | 4 | 25% |'
+}
+
+@test "breakdown: no edit call prints '-' in Spent after last edit, whatever the registry edits says" {
+  scorecard_with_data
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  jq -cn '{session_id: "s1", prs_merged: 2, edits: 3, hard_errors: {tool_errors: 5},
+    activity: {tool_calls: 50, edit_calls: 0, test_runs: 12, ci_polls: 4, api_messages: 60, tokens: 4000000, tokens_after_last_edit: 1000000}}' > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  BENCH_NOW=$((T0 + 3600)) "$SUBJECT" scorecard >/dev/null
+  run grep '^| lab/game-agent-1:1 | 12 ' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output '| lab/game-agent-1:1 | 12 | 6 | 4 | 50 | 10% | 60 | 4 | - |'
 }
 
 @test "breakdown: a session the nightly has not seen is not reported as idle" {
@@ -5034,7 +5107,7 @@ alert_setup() {
   route '^check\(watch\): alertmanager-fleet tripped' agent fix-red 'fallback' -
   watch alertmanager-fleet TRIP -25200 high
   # the probe's `page:` line (its trip's level, watch-companion-loop) is not an alert row
-  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
+  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\nsystems: ConvergenceDrift=deploy HomelabCronJobFailed=deploy,ci TraderRunFailed=Bad!\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
     > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
 }
 
@@ -5054,6 +5127,30 @@ alert_setup() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial '4 queued as red fixes'
+}
+
+@test "triage: each alert's red loads its rule's system skills, else the watch's system" {
+  alert_setup
+  export BENCH_SKILLS_DIR="$SANDBOX/skills"
+  mkdir -p "$BENCH_SKILLS_DIR"/{fix-red,k8s-ops,ci-failures,sentinel}
+  printf -- '---\nname: fix-red\nmetadata:\n  system: [any]\n---\n' > "$BENCH_SKILLS_DIR/fix-red/SKILL.md"
+  printf -- '---\nname: k8s-ops\nmetadata:\n  system: [deploy]\n---\n' > "$BENCH_SKILLS_DIR/k8s-ops/SKILL.md"
+  printf -- '---\nname: ci-failures\nmetadata:\n  system: [ci]\n---\n' > "$BENCH_SKILLS_DIR/ci-failures/SKILL.md"
+  printf -- '---\nname: sentinel\nmetadata:\n  system: [telemetry]\n---\n' > "$BENCH_SKILLS_DIR/sentinel/SKILL.md"
+  printf 'system: telemetry\n' >> "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, .*; fix with fix-red: fix this alert; system deploy: load fix-red and k8s-ops #high'
+  # a label naming two ids loads both systems' skills
+  assert_line --regexp '^check\(alert\): HomelabCronJobFailed nas/bark-archive firing, .*; system ci deploy: load fix-red and ci-failures, k8s-ops #high'
+  # an id that is not lowercase is dropped, so that alert falls back to the watch's own system
+  assert_line --regexp '^check\(alert\): TraderRunFailed trader-web/walkforward firing, .*; system telemetry: load fix-red and sentinel #high'
+  # negative control: no systems line and no watch system names none
+  sed -i '/^systems: /d' "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"; sed -i '/^system:/d' "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, '
+  refute_line --regexp '^check\(alert\): .*system'
 }
 
 @test "triage: an alert row files at the trip's level, not the watch's fixed severity" {

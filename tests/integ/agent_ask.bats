@@ -2678,6 +2678,216 @@ ASK-JUDGE-END'
   refute_line --partial 'judge_call:'
 }
 
+# -- knowledge asks, routed at post --
+
+# the_ask [project]: the path of the one ask file a test posted.
+the_ask() { find "$HOME/.agent/asks/${1:-demo}" -name '*.md'; }
+
+@test "post: a credential for a service we run is refused with its admin path; an outside account is asked" {
+  unset AGENT_ASK_NO_JUDGE
+  printf '%s\n' '# Credentials' '' '| Service | Admin path | Steps |' '|---|---|---|' \
+    '| mem0 API keys | `POST /api-keys` with the admin JWT | x |' '' '## Other accounts' '| Steam | the human | x |' \
+    > "$BATS_TEST_TMPDIR/credentials.md"
+  export AGENT_ASK_CREDENTIALS_DOC="$BATS_TEST_TMPDIR/credentials.md"
+  touch "$NOTES_FIXTURE/locked"
+  fake_judge "$(SCORE_TYPE=credential_or_account score knowledge)"
+  run --separate-stderr "$AGENT_ASK" post --project demo 'mint me a MEM0 key for the panel?'
+  assert_failure 2
+  assert_output ''
+  [[ "$stderr" == *'a credential for mem0, a service we run'*'(POST /api-keys with the admin JWT)'* ]]
+  run cat "$(the_ask)"
+  assert_line 'status: cancelled'
+  assert_line --regexp '^closed_reason: refused at post: a credential for mem0'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative controls: a gate and a resume ask each need the ask, so a held service does not cancel them
+  run "$AGENT_ASK" post --project demo --kind gate 'mint me a MEM0 key for the panel?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  run "$AGENT_ASK" post --project demo --resume 'echo go' 'mint me a MEM0 key for the panel?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative controls: a service named only past the first table, a word that only contains a
+  # service's name, a service named only in the context, and a missing doc are no match
+  for q in 'log in to Steam on the mini?' 'add mem0x to the panel?'; do
+    run "$AGENT_ASK" post --project demo "$q"
+    assert_success
+    run cat "$(the_ask)"
+    assert_line 'status: pending'
+    rm -rf "$HOME/.agent/asks/demo"
+  done
+  run "$AGENT_ASK" post --project demo --context 'for the mem0 mirror' 'a Steam partner login?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  export AGENT_ASK_CREDENTIALS_DOC="$BATS_TEST_TMPDIR/absent.md"
+  run "$AGENT_ASK" post --project demo 'mint me a mem0 key?'
+  assert_success
+  # and the same text under another type is not a credential ask
+  rm -rf "$HOME/.agent/asks/demo"
+  export AGENT_ASK_CREDENTIALS_DOC="$BATS_TEST_TMPDIR/credentials.md"
+  fake_judge "$(SCORE_TYPE=ship_deploy score knowledge)"
+  run "$AGENT_ASK" post --project demo 'mint me a mem0 key?'
+  assert_success
+}
+
+@test "post: a credential held in rbw is refused with its rbw get; a locked vault or a bare word is asked" {
+  unset AGENT_ASK_NO_JUDGE
+  export AGENT_ASK_CREDENTIALS_DOC="$BATS_TEST_TMPDIR/absent.md"
+  printf '%s\n' github github-runner-exporter-pat > "$NOTES_FIXTURE/rbw.list"
+  fake_judge "$(SCORE_TYPE=credential_or_account score knowledge)"
+  run --separate-stderr "$AGENT_ASK" post --project demo 'can I have the GitHub-Runner-Exporter-PAT?'
+  assert_failure 2
+  [[ "$stderr" == *'a credential we hold in rbw: rbw get github-runner-exporter-pat'* ]]
+  run cat "$(the_ask)"
+  assert_line 'status: cancelled'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: a bare item name is too broad to match
+  run "$AGENT_ASK" post --project demo 'a github token for the runner?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: a locked vault matches nothing
+  touch "$NOTES_FIXTURE/locked"
+  run "$AGENT_ASK" post --project demo 'can I have the github-runner-exporter-pat?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+}
+
+@test "post: a physical action becomes a hold and a sheet row, with no ask; a blocker or resume stays an ask" {
+  unset AGENT_ASK_NO_JUDGE
+  printf '%s\n' '- [ ] chore(demo): plug in the drive <!-- id:sh-9 -->' > "$NOTES_FIXTURE/ptask.added"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$BATS_TEST_TMPDIR/hold.calls" > "$BATS_TEST_TMPDIR/hold"
+  chmod +x "$BATS_TEST_TMPDIR/hold"
+  export AGENT_ASK_HOLD_CMD="$BATS_TEST_TMPDIR/hold"
+  fake_judge "$(SCORE_TYPE=human_physical_action score knowledge)"
+  run --separate-stderr "$AGENT_ASK" post --project demo 'plug in the drive?'
+  assert_failure 2
+  local f; f="$(the_ask)"
+  local id; id="$(basename "$f" .md)"
+  assert_output ""
+  [[ "$stderr" == *"Filed sheet row sh-9 and hold human-$id"* ]]
+  assert_called 'notes ptask demo add'
+  assert_called "agent-hold release human-$id"
+  run cat "$BATS_TEST_TMPDIR/hold.calls"
+  assert_output "set human-$id --kind resource --by agent-ask the human must: plug in the drive? (agent-ask $id, a row on the demo sheet); release when done"
+  run cat "$f"
+  assert_line 'status: cancelled'
+  assert_line --regexp '^closed_reason: routed at post: .*sheet row sh-9, hold human-'
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/hold.calls"
+  : > "$NOTES_FIXTURE/calls.log"
+  # negative controls: a resume runs on the answer and a gate is the asker's to read, so each
+  # stays an ask
+  run "$AGENT_ASK" post --project demo --resume 'echo go' 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  run "$AGENT_ASK" post --project demo --kind gate 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  assert_line 'kind: gate'
+  assert [ ! -e "$BATS_TEST_TMPDIR/hold.calls" ]
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: a row that cannot be added takes the hold back and leaves the ask
+  echo 1 > "$NOTES_FIXTURE/ptask.add.rc"
+  run "$AGENT_ASK" post --project demo 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  run tail -n1 "$BATS_TEST_TMPDIR/hold.calls"
+  assert_output --regexp '^release human-'
+  rm -rf "$HOME/.agent/asks/demo" "$NOTES_FIXTURE/ptask.add.rc"
+  # negative control: a hold that cannot be set adds no row and leaves the ask
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$BATS_TEST_TMPDIR/hold"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AGENT_ASK" post --project demo 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  refute grep -q 'ptask demo add' "$NOTES_FIXTURE/calls.log"
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: another type is not routed
+  export AGENT_ASK_HOLD_CMD="$BATS_TEST_TMPDIR/hold-unused"
+  : > "$NOTES_FIXTURE/calls.log"
+  fake_judge "$(SCORE_TYPE=ci_capacity_ops score knowledge)"
+  run "$AGENT_ASK" post --project demo 'plug in the drive?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  refute grep -q 'ptask demo add' "$NOTES_FIXTURE/calls.log"
+}
+
+@test "judge: a human_fact verdict is judged once more with what the human already said; no hits, one call" {
+  unset AGENT_ASK_NO_JUDGE
+  printf '#!/usr/bin/env bash\necho "the razer monitor runs at 144 Hz"\n' > "$BATS_TEST_TMPDIR/mem0"
+  chmod +x "$BATS_TEST_TMPDIR/mem0"
+  export AGENT_ASK_MEM0_CMD="$BATS_TEST_TMPDIR/mem0"
+  fake_judge "$(SCORE_TYPE=human_fact score knowledge)"
+  "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  run grep -c '^## What the human already said' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '2'
+  grep -qF -- '- mem0: the razer monitor runs at 144 Hz' "$BATS_TEST_TMPDIR/judge.calls"
+  local f; f="$(the_ask)"
+  run cat "$f"
+  assert_line 'status: pending'
+  assert_line 'judge_human_said: 1 lines'
+  # a later pass judges it with the section, in one call
+  : > "$BATS_TEST_TMPDIR/judge.calls"
+  "$AGENT_ASK" judge "$(basename "$f" .md)"
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+  grep -q '^## What the human already said' "$BATS_TEST_TMPDIR/judge.calls"
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/judge.calls"
+  # a second call that fails leaves the first verdict
+  cat > "$BATS_TEST_TMPDIR/judge-once" <<SH
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$BATS_TEST_TMPDIR/judge.calls"
+[ "\$(grep -c 'what refresh rate' "$BATS_TEST_TMPDIR/judge.calls")" -le 1 ] || exit 7
+printf '%s\n' '$(SCORE_TYPE=human_fact score knowledge "" "first verdict")'
+SH
+  chmod +x "$BATS_TEST_TMPDIR/judge-once"
+  AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge-once" "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '2'
+  run cat "$(the_ask)"
+  assert_line 'judge: human'
+  assert_line 'judge_reason: first verdict'
+  refute_line --partial 'judge_human_said'
+  assert [ ! -e "$(the_ask).first" ]
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/judge.calls"
+  # the project's lessons are the other source, with pick's heading left out
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$BATS_TEST_TMPDIR/mem0"
+  mkdir -p "$BATS_TEST_TMPDIR/lessons"
+  printf '%s\n' '# demo' '' '- **2026-11-01** The razer desk monitor is a 1440p panel at 144 Hz.' > "$BATS_TEST_TMPDIR/lessons/demo.md"
+  export AGENT_ASK_LESSONS_DIR="$BATS_TEST_TMPDIR/lessons" AGENT_ASK_LESSONS_CMD="$REPO_ROOT/.local/bin/lessons"
+  "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  grep -qF -- '- lesson: **2026-11-01** The razer desk monitor is a 1440p panel at 144 Hz.' "$BATS_TEST_TMPDIR/judge.calls"
+  refute grep -q 'lesson: ## ' "$BATS_TEST_TMPDIR/judge.calls"
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/judge.calls" "$BATS_TEST_TMPDIR/lessons"
+  # negative control: no hits, one call and no section
+  "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+  refute grep -q 'What the human already said' "$BATS_TEST_TMPDIR/judge.calls"
+  rm -rf "$HOME/.agent/asks/demo" "$BATS_TEST_TMPDIR/judge.calls"
+  # negative control: another type with hits is judged once
+  printf '#!/usr/bin/env bash\necho "the razer monitor runs at 144 Hz"\n' > "$BATS_TEST_TMPDIR/mem0"
+  fake_judge "$(SCORE_TYPE=ship_deploy score knowledge)"
+  "$AGENT_ASK" post --project demo 'what refresh rate is the razer monitor?' >/dev/null
+  run grep -c 'what refresh rate is the razer monitor?' "$BATS_TEST_TMPDIR/judge.calls"
+  assert_output '1'
+}
+
 @test "post runs the judge before it returns, unless AGENT_ASK_NO_JUDGE is set" {
   fake_judge "$(score taste "" taste)"
   unset AGENT_ASK_NO_JUDGE
@@ -3267,6 +3477,22 @@ live_answer_file() {
   assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
 }
 
+@test "override: standing-order answers overridden by the human are not in a judge cell's window" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 AGENT_ASK_LIVE_BAR=5 AGENT_ASK_DEMOTE_MIN=3 AGENT_ASK_DEMOTE_PRECISION=75
+  local d="$HOME/.agent/asks/demo" i
+  for i in 1 2 3 4 5; do live_answer_file "$i" "$i" kept; done
+  # two newer answers of a standing order, both overridden: counted, the window 4-8 would be 3 of 5 over
+  for i in 7 8; do live_answer_file "$i" "$i" wait; echo 'standing_order: demo/question/x' >> "$d/L0000$i.md"; done
+  printf 'id: L00006\nproject: demo\nclaude_session: sid-9\nstatus: answered\noptions: fix|wait\nanswer: fix\nanswered_by: judge\nanswered_at: 2026-11-05T09:06:00+0000\njudge_rule: ship_deploy\njudge_level: repo\n' > "$d/L00006.md"
+  "$AGENT_ASK" settle-session sid-9 answered "wait"
+  assert [ ! -e "$HOME/.local/state/agent-ask/demoted" ]
+  # negative control: without the standing_order lines the same files demote the cell
+  sed -i '/^standing_order/d' "$d"/L0000[78].md
+  sed -i '/^judge_override/d' "$d/L00006.md"
+  "$AGENT_ASK" settle-session sid-9 answered "wait"
+  assert [ -s "$HOME/.local/state/agent-ask/demoted" ]
+}
+
 @test "precedents: a disagreement older than the ask reaches the judge, a newer one and an agreement do not" {
   local d="$HOME/.agent/asks/demo"
   mkdir -p "$d"
@@ -3701,4 +3927,136 @@ SH
   run "$AGENT_ASK" list demo
   assert_success
   assert_output ''
+}
+
+# -- standing orders from precedent --
+
+# seed_answered <project> <kind> <question> <answer> [<answered_by>] [<resume>] [<days old>] [<status>]: one answered ask file.
+seed_answered() {
+  local d="$HOME/.agent/asks/$1" id; mkdir -p "$d"
+  id="s$(find "$HOME/.agent/asks" -name 's*.md' | wc -l)"
+  printf 'id: %s\nproject: %s\nkind: %s\nstatus: %s\nquestion: %s\noptions: yes|no\nrecommend: yes\nanswer: %s\nanswered_by: %s\nanswered_at: %s\nresume: %s\ncreated: %s\n' \
+    "$id" "$1" "$2" "${8-answered}" "$3" "$4" "${5-human}" "$(date -d "${7-0} days ago" +%Y-%m-%dT%H:%M:%S%z)" "${6-}" "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$d/$id.md"
+}
+
+@test "standing: the same human answer three times running to one ask shape is a candidate; nothing else is" {
+  local n
+  for n in 11 12 13; do seed_answered demo approval "Start board row demo-$n again after its last $n runs failed?" yes; done
+  # negative controls: two answers only; the last three differ; the judge's answers; a resume of its own;
+  # an answer the human gave in another kind; a shape that is already an order
+  for n in 1 2; do seed_answered two approval "Open the door $n?" yes; done
+  for n in yes no yes; do seed_answered mixed approval "Pick a door $n?" "$n"; done
+  for n in 1 2 3; do seed_answered judged question "Merge PR $n?" yes judge; done
+  for n in 1 2 3; do seed_answered resumed approval "Send the post \"title $n\"?" yes human 'run: mkt answer x'; done
+  for n in 1 2 3; do seed_answered ordered approval "Rebase branch $n?" yes; done
+  # ... another kind; answers older than STANDING_DAYS; a cancelled ask; long questions that differ only past 140 characters
+  for n in 1 2 3; do seed_answered notice info "Read the notice $n?" yes; done
+  for n in 1 2 3; do seed_answered stale approval "Prune cache $n?" yes human '' 90; done
+  for n in 1 2 3; do seed_answered gone approval "Drop table $n?" yes human '' 0 cancelled; done
+  local long="Start the very long board row again after the flaky test in the shared harness failed in its last runs on the nightly and the fix is still waiting on review from the owner so"
+  for n in alpha beta gamma; do seed_answered longq approval "$long $n?" yes; done
+  printf '%s\n' 'ordered/approval/rebase branch N?=yes' > "$BATS_TEST_TMPDIR/standing.conf"
+  export AGENT_ASK_STANDING_FILE="$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" standing
+  assert_success
+  assert_equal "$(grep -c . <<<"$output")" 1
+  assert_output --regexp '^demo	approval	start board row demo-N again after its last N runs failed\?	yes	3	'
+  # the bar is the conf's: at 4 the three are not enough
+  AGENT_ASK_STANDING_BAR=4 run "$AGENT_ASK" standing
+  assert_success
+  assert_output ''
+}
+
+@test "standing --propose files each candidate once as a queue-verb proposal; nothing reaches the conf" {
+  local n
+  for n in 11 12 13; do seed_answered demo approval "Start board row demo-$n again after its last $n runs failed?" yes; done
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\n' "$BATS_TEST_TMPDIR/propose.calls" > "$BATS_TEST_TMPDIR/propose"
+  chmod +x "$BATS_TEST_TMPDIR/propose"
+  export AGENT_ASK_PROPOSE_CMD="$BATS_TEST_TMPDIR/propose" AGENT_ASK_STANDING_FILE="$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" standing --propose
+  assert_success
+  assert_output ''
+  run cat "$BATS_TEST_TMPDIR/propose.calls"
+  assert_equal "$(grep -c . <<<"$output")" 1
+  assert_output --partial 'add --stream standing-orders --project agent-runtime --verb queue --key standing/demo/approval/'
+  assert_output --partial 'demo/approval/start board row demo-N again after its last N runs failed?=yes'
+  assert [ ! -e "$BATS_TEST_TMPDIR/standing.conf" ]
+}
+
+@test "post: a standing order answers a plain ask of its shape at post; a resume, a critical ask, a floor ask or an answer outside the options stays the human's" {
+  unset AGENT_ASK_NO_JUDGE
+  fake_judge "$(score ship_deploy "" "fine")"
+  export AGENT_ASK_STANDING_FILE="$BATS_TEST_TMPDIR/standing.conf"
+  printf '%s\n' 'demo/approval/start board row demo-N again after its last N runs failed?=YES' \
+    'demo/question/start board row demo-N again after its last N runs failed?=yes' > "$BATS_TEST_TMPDIR/standing.conf"
+  run --separate-stderr "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  local f; f="$(the_ask)"
+  [[ "$output" == "$(basename "$f" .md)" ]]
+  [[ "$stderr" == *"Answered by a standing order (demo/approval/start board row demo-N again after its last N runs failed?): yes."* ]]
+  run cat "$f"
+  assert_line 'status: answered'
+  assert_line 'answer: yes'
+  assert_line 'answered_by: judge'
+  assert_line --partial 'standing_order: demo/approval/start board row demo-N'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: an ask with a resume of its own is a send or a step, so the human answers it
+  run "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' --resume 'echo go' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: another project's ask of the same words
+  run "$AGENT_ASK" post --project other --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask other)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/other"
+  # negative control: the judge sent it to the human as critical (external), whatever the order says
+  fake_judge "$(score external "" "it posts")"
+  run "$AGENT_ASK" post --project demo --options 'yes=go|no=stop' --recommend yes \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: an answer that is not one of the ask's options
+  fake_judge "$(score ship_deploy "" "fine")"
+  printf '%s\n' 'demo/approval/start board row demo-N again after its last N runs failed?=maybe' > "$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: a row with no answer
+  printf '%s\n' 'demo/approval/start board row demo-N again after its last N runs failed?=' > "$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+  rm -rf "$HOME/.agent/asks/demo"
+  # negative control: no order file, no answer
+  rm -f "$BATS_TEST_TMPDIR/standing.conf"
+  run "$AGENT_ASK" post --project demo --kind approval --options 'yes=go|no=stop' \
+    'Start board row demo-14 again after its last 4 runs failed?'
+  assert_success
+  run cat "$(the_ask)"
+  assert_line 'status: pending'
+}
+
+@test "judge-eval and the demote check leave a standing order's answer out" {
+  local d="$HOME/.agent/asks/demo"; mkdir -p "$d"
+  printf 'id: so1\nproject: demo\nkind: question\nstatus: answered\nquestion: pick?\noptions: yes|no\nrecommend: yes\nanswer: yes\nanswered_by: judge\nanswered_at: %s\njudge: human\njudge_rule: external\njudge_type: ship_deploy\njudge_level: repo\njudge_call: c1\njudged_at: %s\nstanding_order: demo/question/pick?\ncreated: %s\n' \
+    "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(date +%Y-%m-%dT%H:%M:%S%z)" > "$d/so1.md"
+  # the human overrides it in the session: recorded, and no cell is demoted for it
+  run "$AGENT_ASK" answer --by human so1 no
+  assert_success
+  run cat "$d/so1.md"
+  assert_line 'judge_override: no'
+  assert [ ! -s "$HOME/.local/state/agent-ask/demoted" ]
 }

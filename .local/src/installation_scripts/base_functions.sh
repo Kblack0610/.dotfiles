@@ -367,22 +367,35 @@ setup_kubernetes() {
     fi
 }
 
-# Install Rust
+# Install Rust: rustup, the one Rust installer on every OS but Termux. The guard is
+# rustup, not rustc or cargo: a distro rust has both but cannot honor
+# tests/rust-toolchain, so tests/rust.sh fails on it (razer-laptop, hc-1096).
 install_rust() {
     log_section "Installing Rust"
-    
-    if command -v rustc &>/dev/null; then
-        log_info "Rust already installed ($(rustc --version))"
+
+    # A shell that never read .zshrc or .zprofile (a unit, sudo, ssh -c) lacks ~/.cargo/bin:
+    # an installed rustup there counts, so it is not installed again over the live toolchain.
+    [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+    if command -v rustup &>/dev/null; then
+        log_info "rustup already installed ($(rustup --version 2>/dev/null))"
         return 0
     fi
-    
-    log_info "Downloading and installing Rust..."
-    if curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; then
-        # Source cargo environment
-        source "$HOME/.cargo/env"
-        log_info "✓ Rust installed successfully"
+
+    # A distro rust stays: other packages may depend on it. ~/.cargo/env puts rustup's
+    # proxies first on PATH; removing the package is the human's call.
+    if command -v pacman &>/dev/null && pacman -Q rust &>/dev/null; then
+        log_warning "Distro package rust is installed; rustup's toolchain shadows it. Remove it with: sudo pacman -R rust"
+    elif command -v dpkg &>/dev/null && dpkg -s rustc &>/dev/null; then
+        log_warning "Distro package rustc is installed; rustup's toolchain shadows it. Remove it with: sudo apt remove rustc cargo"
+    fi
+
+    log_info "Downloading and installing rustup..."
+    # pipefail: a failed curl would otherwise feed sh an empty script that exits 0
+    if (set -o pipefail; curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y) &&
+        source "$HOME/.cargo/env" && command -v rustup &>/dev/null; then
+        log_info "rustup installed ($(rustup --version 2>/dev/null))"
     else
-        log_error "Failed to install Rust"
+        log_error "Failed to install rustup"
         return 1
     fi
 }
@@ -402,7 +415,7 @@ build_local_rust_tools() {
     mkdir -p "$HOME/.local/bin"
 
     # name:relative-source-dir pairs
-    local tools=("agent-panel:.local/src/agent-panel" "agent-web:.local/src/agent-web" "hub:.local/src/hub-tui" "timebox:.local/src/timebox")
+    local tools=("agent-panel:.local/src/agent-panel" "agent-web:.local/src/agent-web" "hub:.local/src/hub-tui" "hub-cases:.local/src/hub-core" "timebox:.local/src/timebox")
     local entry name src
     for entry in "${tools[@]}"; do
         name="${entry%%:*}"
@@ -469,8 +482,16 @@ install_agent_harnesses() {
     if [[ -x "$HOME/.local/bin/claude" ]]; then
         log_info "claude already installed ($("$HOME/.local/bin/claude" --version 2>/dev/null))"
     else
-        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0
-        (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) || { log_error "claude install failed"; return 1; }
+        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0. Three
+        # tries with the npm loop's backoff below: the download drops now and then (image run
+        # 46116188081, curl 56 mid-transfer).
+        local claude_try
+        for claude_try in 1 2 3; do
+            (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) && break
+            [[ $claude_try -eq 3 ]] && { log_error "claude install failed"; return 1; }
+            log_warning "claude install failed, try $claude_try of 3"
+            sleep $((claude_try * ${HARNESS_NPM_BACKOFF_S:-15}))
+        done
     fi
     local entry bin pkg try out got failed=0
     for entry in codex:@openai/codex opencode:opencode-ai; do

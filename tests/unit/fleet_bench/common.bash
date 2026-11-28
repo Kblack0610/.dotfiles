@@ -67,6 +67,10 @@ setup() {
   export BENCH_JUDGE_CMD=judge-stub JUDGEKPI="$SANDBOX/judgekpi"
   printf '#!/usr/bin/env bash\n[ "$*" = "kpi --json" ] && cat "%s" 2>/dev/null\n' "$JUDGEKPI" > "$SANDBOX/bin/judge-stub"
   chmod +x "$SANDBOX/bin/judge-stub"
+  # fact-owners count --json, canned: serves $OWNERSKPI when it exists, else fails like a checkout with no Owners table
+  export BENCH_OWNERS_CMD=owners-stub OWNERSKPI="$SANDBOX/ownerskpi"
+  printf '#!/usr/bin/env bash\n[ "$*" = "count --json" ] && cat "%s" 2>/dev/null\n' "$OWNERSKPI" > "$SANDBOX/bin/owners-stub"
+  chmod +x "$SANDBOX/bin/owners-stub"
   # agent-ask list --all, canned: serves $ASKSALL when it exists, else nothing (no asks)
   export BENCH_ASKS_ALL_CMD=asks-all-stub ASKSALL="$SANDBOX/asksall"
   printf '#!/usr/bin/env bash\ncat "%s" 2>/dev/null; exit 0\n' "$ASKSALL" > "$SANDBOX/bin/asks-all-stub"
@@ -225,9 +229,9 @@ log_triage_setup() {
   chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
   # the ask stub logs each call; post prints the id agent-ask would, show the status ASKSTATUS names
-  # and, when set, the closed_at ASKCLOSED and closed_reason ASKWHY name
+  # and, when set, the closed_at ASKCLOSED, closed_reason ASKWHY and answered_at ASKANSWERED name
   ASKLOG="$SANDBOX/ask.log"; export TRIAGE_ASK_CMD=ask-stub
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\ncase $1 in post) echo Ask123 ;; show) echo "status: ${ASKSTATUS:-pending}"; [ -z "${ASKCLOSED:-}" ] || echo "closed_at: $ASKCLOSED"; [ -z "${ASKWHY:-}" ] || echo "closed_reason: $ASKWHY" ;; esac\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\ncase $1 in post) echo Ask123 ;; show) echo "status: ${ASKSTATUS:-pending}"; [ -z "${ASKCLOSED:-}" ] || echo "closed_at: $ASKCLOSED"; [ -z "${ASKWHY:-}" ] || echo "closed_reason: $ASKWHY"; [ -z "${ASKANSWERED:-}" ] || echo "answered_at: $ASKANSWERED" ;; esac\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
   chmod +x "$SANDBOX/bin/promote-stub" "$SANDBOX/bin/ask-stub"
   # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
   # outside the window, and a range the log rotation took away

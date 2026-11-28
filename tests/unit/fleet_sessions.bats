@@ -496,6 +496,76 @@ load 'fleet_sessions/common'
   assert_output 'NEEDS 1 pending ask(s)'
 }
 
+@test "an open PR another open item names in its pr: is handed to it: DONE naming the item, close --self now (ar-5184)" {
+  # 2026-11-24: agent-60 handed red #3320 to the re-gate item ucp-3413 and read STALLED CI red, close --self keep
+  local h='handed:ucp-3413 pr 9'
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$h"
+  assert_output 'DONE PR #9 handed to item ucp-3413, which owns it'
+  session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$h"
+  [ -z "$(work_blockers '' idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - "$h")" ]
+  [ "$(SELF=s1 verdict '{session_id: "s1", bucket: "DONE", idle_min: 30, reason: "PR #9 handed to item ucp-3413, which owns it"}' | cut -d: -f1)" = now ]
+  # negative controls: dirt, HEAD past the PR, a live gate or queue job, or the item naming another PR
+  run b idle 0 0 0 30 1 3 2 9 OPEN FAIL 1 - - - - - - - "$h"
+  assert_output 'STALLED PR #9 CI red'
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 0 - - - - - - - "$h"
+  assert_output 'STALLED PR #9 CI red'
+  local j
+  for j in 'gate' 'queue'; do
+    run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - "$j" - - "$h"
+    assert_output 'STALLED PR #9 CI red'
+  done
+  run b idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - 'handed:ucp-3413 pr 5'
+  assert_output 'STALLED PR #9 CI red'
+  ! session_finished idle 0 0 0 30 1 0 2 9 OPEN FAIL 1 - - - - - - - 'handed:ucp-3413 pr 5'
+  # pr_owner: an open item whose pr: lists <repo>#<pr>, the repo the clone's origin (any case) or a sibling repo's
+  git init -q "$SANDBOX/c"; git -C "$SANDBOX/c" remote add origin 'git@github.com:O/c.git'
+  local q
+  q="$(jq -nc '{slug: "own", state: "done", pr: "o/c#9"}, {slug: "bare", state: "queued", pr: "9"},
+    {slug: "other", state: "queued", pr: "o/c#90 o/d#9"}, {slug: "ucp-3413", state: "queued", pr: "o/x#1 O/C#9"},
+    {slug: "sib", state: "running", pr: "o/s#9"}')"
+  run pr_owner "$q" "$SANDBOX/c" - 9
+  assert_output 'ucp-3413'
+  run pr_owner "$q" "$SANDBOX/c" o/s 9
+  assert_output 'sib'
+  # no open item names it: a done one, a bare number, another repo's or another number's
+  run pr_owner "$(grep -v ucp-3413 <<<"$q")" "$SANDBOX/c" - 9
+  assert_output ''
+  run pr_owner "$q" - - 9
+  assert_output ''
+  run pr_owner "$q" "$SANDBOX/c" - -
+  assert_output ''
+  # an item running, waiting or parked in this session is its own even when item_of could not join it; a queued
+  # one that last ran here was requeued and owns the PR, and a stateless row stops nothing
+  local mine
+  mine="$(jq -nc '{slug: "x"}, {slug: "r1", state: "running", session: "lab:s1", pr: "o/c#9"},
+    {slug: "r2", state: "waiting", sessions: "sid-1 sid-9", pr: "o/c#9"}, {slug: "q1", state: "queued", session: "lab:s1", pr: "o/c#9"}')"
+  run pr_owner "$mine" "$SANDBOX/c" - 9 sid-9 lab:s1
+  assert_output 'q1'
+  run pr_owner "$(grep -v q1 <<<"$mine")" "$SANDBOX/c" - 9 sid-9 lab:s1
+  assert_output ''
+  run pr_owner "$(grep -v q1 <<<"$mine")" "$SANDBOX/c" - 9 sid-2 lab:s2
+  assert_output 'r1'
+  # handed_item: only an open PR of a session whose item is - or moved on is handed, and only when handed_off passes on
+  # it; a running or parked item keeps its own, and a moved: one keeps its relation while the PR is still this session's
+  local m='moved:a moved on (queued)'
+  run handed_item - - OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
+  assert_output 'handed:ucp-3413 pr 9'
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
+  assert_output 'handed:ucp-3413 pr 9'
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 2 1 - sid-9 lab:s1
+  assert_output "$m"
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 0 0 - sid-9 lab:s1
+  assert_output "$m"
+  run handed_item "$m" moved OPEN "$q" "$SANDBOX/c" - 9 0 1 gate sid-9 lab:s1
+  assert_output "$m"
+  run handed_item 'own:a' own OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
+  assert_output 'own:a'
+  run handed_item 'review:a pr 9' review OPEN "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
+  assert_output 'review:a pr 9'
+  run handed_item - - MERGED "$q" "$SANDBOX/c" - 9 0 1 - sid-9 lab:s1
+  [ "$output" = - ]
+}
+
 @test "item_of: sessions: matches by Claude session, session: only for a lone claude, a done one only after it started" {
   local start=1000 t=$'\t'
   qi() { printf '%s\n' "$@"; }
@@ -893,6 +963,31 @@ load 'fleet_sessions/common'
   pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
 }
 
+@test "live_wait reads a time-use.conf line only where it starts the argv, never inside another command's arguments (ar-3521)" {
+  # 2026-11-18 ar-1284 review: the short lines (bats, make test, gh pr view) matched as a substring of any command line,
+  # so `vim x.bats` and `grep make test` read as a test run. The shipped conf, as the other three readers match it.
+  # `exec -a <argv0> bash <script> <args>` makes /proc show exactly `<argv0> <script> <args>`, the argv a real run has.
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  local row a0 script rest want pid
+  # argv0|script|args|class: first the commands that only name a test or a gate, then the real runs, wrapped and not
+  for row in 'vim|x.bats||' 'grep|make|test|' 'grep|gh|pr view|' 'less|pytest.log||' 'vim|scripts/test/run.sh||' \
+             'bats|x.bats||test' 'make|test||test' 'gh|pr|view 3|gate' '/bin/bash|scripts/test/run.sh||test' \
+             'python3|pytest|-q|test' 'node|vitest|run|test' 'env|gh-run-wait|12 checks|gate'; do
+    IFS='|' read -r a0 script rest want <<<"$row"
+    printf 'sleep 60\n' > "$SANDBOX/wt/$script"
+    # shellcheck disable=SC2086  # rest is a word list
+    (cd "$SANDBOX/wt" && exec -a "$a0" bash "$script" $rest) >/dev/null 2>&1 3>&- &
+    pid=$!
+    # the process is the event: wait until /proc shows the exec, not for a delay
+    until grep -qa "$script" "/proc/$pid/cmdline" 2>/dev/null; do kill -0 "$pid" || fail "the $row stand-in exited before it started"; done
+    run live_wait "$SANDBOX/wt"
+    assert_output "$want"
+    kill "$pid"; wait "$pid" 2>/dev/null || true
+    rm -f "$SANDBOX/wt/$script"
+  done
+}
+
 @test "live_wait finds a gate or test process running in the session worktree, and only there" {
   # 2026-11-07 unity-core-playground-agent-30: a gate detached with & left only its until-loop in the
   # transcript (open job jobs), so a Tests run in progress read STALLED.
@@ -1089,7 +1184,7 @@ MD
   printf 'sleep 60\n' > "$SANDBOX/wt/scripts/authoring/unity-method.sh"
   printf 'gate agent-land\ntest bats\nbuild unity-method.sh\n' > "$SANDBOX/time-use.conf"
   export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
-  (cd "$SANDBOX/wt" && exec -a x bash scripts/authoring/unity-method.sh RenderCli) >/dev/null 2>&1 3>&- &
+  (cd "$SANDBOX/wt" && exec bash scripts/authoring/unity-method.sh RenderCli) >/dev/null 2>&1 3>&- &
   local pid=$!
   # the process is the event: wait until /proc shows its exec, not for a delay
   until grep -q unity-method.sh "/proc/$pid/cmdline" 2>/dev/null; do kill -0 "$pid" || fail "the build stand-in exited before it started"; done
@@ -1123,8 +1218,8 @@ MD
   export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
   local pid
   # a gate that is not queue-shaped stays a gate: gh-run-wait is a conf gate line, not a queue gate
-  printf 'sleep 60\n' > "$SANDBOX/wt/waiter.sh"
-  (cd "$SANDBOX/wt" && exec -a x bash waiter.sh gh-run-wait) >/dev/null 2>&1 3>&- &
+  printf 'sleep 60\n' > "$SANDBOX/wt/gh-run-wait"
+  (cd "$SANDBOX/wt" && exec bash gh-run-wait 12 checks) >/dev/null 2>&1 3>&- &
   pid=$!
   until grep -q gh-run-wait "/proc/$pid/cmdline" 2>/dev/null; do :; done
   run live_wait "$SANDBOX/wt"
@@ -2649,10 +2744,69 @@ SH
   # exit 3, a repo the ledger does not sync, is no runs: no NIGHTLY row and nothing unreadable
   rm "$LEDGER_DIR/FAIL"
   # (runs only: a GitHub repo the PR store does not list is unreadable by design)
-  printf '#!/usr/bin/env bash\n[ "$1" = runs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
+  ss_script '[ "$1" = runs ] && exit 3; echo "[]"'
   FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   [ "$(jq -r '.main | length' "$SANDBOX/state.json")" = 0 ]
   [ "$(jq -r '.unreadable | length' "$SANDBOX/state.json")" = 0 ]
+}
+
+@test "a run ledger down for every repo (a gh rate limit) is one NIGHTLY row naming its reset, never a CI unreadable row per repo (ar-230)" {
+  # 2026-10-26 13:32: one 403 left all 3 repos' ledger entries stale, and each became a NIGHTLY
+  # "main CI unreadable" row, three urgent due lines the shepherd would page high for one cause.
+  local i red reset rows
+  git init -q --bare "$SANDBOX/origin1.git"
+  git clone -q "$SANDBOX/origin1.git" "$SANDBOX/wt1" 2>/dev/null
+  git -C "$SANDBOX/wt1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$SANDBOX/wt1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m 'feat: x (#875)'
+  red="$(git -C "$SANDBOX/wt1" rev-parse HEAD)"
+  git -C "$SANDBOX/wt1" push -q origin HEAD:main 2>/dev/null
+  for i in 2 3; do
+    git init -q --bare "$SANDBOX/origin$i.git"
+    git -C "$SANDBOX/wt1" push -q "$SANDBOX/origin$i.git" HEAD:main 2>/dev/null
+    git clone -q "$SANDBOX/origin$i.git" "$SANDBOX/wt$i" 2>/dev/null
+  done
+  rows=""
+  for i in 1 2 3; do
+    git -C "$SANDBOX/wt$i" fetch -q origin
+    git -C "$SANDBOX/wt$i" checkout -q -b feat/x
+    rows+="$(printf '{"target":"lab/s%s:1","pane":"lab/%%%s","status":"idle","plan_mode":false,"session_id":"sid-%s","cwd":"%s","idle_since":%s,"context_tokens":5,"plan_file":""}' \
+      "$i" "$i" "$i" "$SANDBOX/wt$i" "$(( $(date +%s) - 3600 ))")"$'\n'
+  done
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/panel.jsonl" > "$SANDBOX/bin/agent-panel"
+  printf '%s' "$rows" > "$SANDBOX/panel.jsonl"
+  ledger main "[$(r Tests failure "$red" 2)]"
+  gh_script 'exit 1'
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
+  chmod +x "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/fleet-assess"
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+
+  # a good read: each repo red on its own row
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(jq -r '[.main[].reason | select(endswith(" red: Tests (no green in window)"))] | length' "$doc")" = 3 ]
+  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/state.ok"
+  : > "$FLEET_SHEPHERD_DIR/watch.log"
+
+  # rate limited: one row, its reset in local time, nothing per repo
+  reset="$(date -u -d '+20 min' +%FT%TZ)"
+  echo "ledger down: GitHub API rate limit hit, resets $reset" > "$LEDGER_DIR/DOWN"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -r '.main | length' "$doc")" = 1 ]
+  [ "$(jq -r '.main[0].id' "$doc")" = main-run-ledger ]
+  [ "$(jq -r '.main[0].fact' "$doc")" = "NIGHTLY CI run ledger unreadable: GitHub API rate limit hit, resets $(date -d "$reset" +%H:%M)" ]
+  [ "$(jq -r '.main[0].reason' "$doc")" = "CI run ledger unreadable: GitHub API rate limit hit, resets $(date -d "$reset" +%H:%M) (main CI of origin1, origin2, origin3 waits on it)" ]
+  [ "$(jq -r '.main[0].wait_until' "$doc")" = "$(( $(date -d "$reset" +%s) + 15 * 60 ))" ]
+  [ "$(jq -r '[.main[].reason | select(test("CI unreadable"))] | length' "$doc")" = 0 ]
+  [ "$(jq -c '[.unreadable[] | select(startswith("run ledger"))]' "$doc")" = '["run ledger: GitHub API rate limit hit, resets '"$reset"'"]' ]
+  # each repo's session rows keep their last cells: the tick logs no blink for them
+  cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+
+  # negative control: one repo stale for its own reason is still its own CI unreadable row
+  rm "$LEDGER_DIR/DOWN"; touch "$LEDGER_DIR/FAIL"
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  [ "$(jq -r '[.main[].reason | select(endswith("main CI unreadable (the run ledger has no fresh sync of it)"))] | length' "$SANDBOX/state.json")" = 3 ]
+  [ "$(jq -r '[.main[] | select(.id == "main-run-ledger")] | length' "$SANDBOX/state.json")" = 0 ]
 }
 
 @test "a session working a queue item carries the item as dispatch; others carry null" {
@@ -3866,8 +4020,7 @@ SH
   # the ledger syncs the Forgejo repo only: the GitHub mirror is not in it (exit 3)
   ledger master "[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
   cp "$LEDGER_DIR/master.json" "$SANDBOX/fj-runs.json"; rm "$LEDGER_DIR/master.json"
-  cat > "$SCHEDULES_SYNC" <<SS
-#!/usr/bin/env bash
+  ss_script <<SS
 echo "\$*" >> "$LEDGER_DIR/calls"
 [ "\$1 \$2" = "runs forgejo:o/r" ] && { cat "$SANDBOX/fj-runs.json"; exit 0; }
 exit 3

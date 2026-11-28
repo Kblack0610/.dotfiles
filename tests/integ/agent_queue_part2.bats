@@ -1484,6 +1484,31 @@ notes --profile work ptask level run lv-8'
   assert_output 0
 }
 
+@test "a row two active items name closes with the last of them, not under the other (ar-6417)" {
+  story_notes
+  "$AQ" add --project game --from board:game:gm-8 --running --slug first-apply "chore(x): apply one" >/dev/null
+  "$AQ" add --project game --from board:game:gm-8 --running --slug second-apply "chore(x): apply two" >/dev/null
+  "$AQ" add --project game --from board:game:gm-8 --running --slug third-apply "chore(x): apply three" >/dev/null
+  "$AQ" move third-apply waiting >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move first-apply done --status ok
+  assert_success
+  assert_line 'first-apply: board row gm-8 left open, second-apply still works it'
+  run grep -c ' ptask .* done ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # an item waiting on the human still works the row
+  run "$AQ" move second-apply done --status ok
+  assert_success
+  assert_line 'second-apply: board row gm-8 left open, third-apply still works it'
+  # NEGATIVE CONTROL: the last one closes it
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move third-apply done --status ok
+  assert_success
+  assert_line 'third-apply: board row gm-8 closed'
+  run grep ' ptask .* done ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes ptask game --agent done gm-8 --proof item:third-apply'
+}
+
 @test "a row already closed stays quiet on an ok close; one the close missed, or a board that cannot be read, is named on stderr" {
   story_notes
   touch "$NOTES_FIXTURE/done.rc"
@@ -1635,24 +1660,9 @@ notes --profile work ptask level run lv-8'
 
 @test "add writes its story row with the queue lock free, and a slug or a cause owner queued meanwhile stops it (ar-5606)" {
   story_notes
-  # The stub notes the call when the queue lock is held; a race file makes its row write queue the slug first.
-  # The item's own event record is written under the lock by every writer (item_event), so it is not counted.
-  # lock-holders names who held the queue lock when the stub saw it held, so a failure says which add and which process.
-  # Only a conflict (flock -E 75) counts: before the first lock the queue dir, and so .lock, may not exist yet, and flock exits 66 on a file it cannot open.
-  cat > "$SANDBOX/bin/lock-holders" <<'EOS'
-#!/usr/bin/env bash
-# <caller pid>: the caller's command line, the kernel's locks on .lock's inode and every fd open on it.
-ino=$(stat -c %i "$AGENT_QUEUE_DIR/.lock")
-printf ' caller=[%s] locks=[%s] fds=[' "$(tr '\0' ' ' < "/proc/$1/cmdline" | cut -c1-120)" "$(grep ":$ino " /proc/locks | tr '\n' ';')"
-for fd in /proc/[0-9]*/fd/*; do
-  [ "$(stat -L -c %i "$fd" 2>/dev/null)" = "$ino" ] || continue
-  p=${fd#/proc/}; p=${p%%/*}
-  printf ' %s:%s' "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)"
-done
-printf ']'
-EOS
-  chmod +x "$SANDBOX/bin/lock-holders"
-  sed -i '2i [ "$1 $2" = "ingest record" ] || { flock -n -x -E 75 "$AGENT_QUEUE_DIR/.lock" true 2>/dev/null; [ $? != 75 ]; } || printf "locked %s:%s\\n" "$*" "$(lock-holders $PPID)" >> "$NOTES_FIXTURE/underlock.log"\ncase " $* " in *" add "*) [ ! -e "$NOTES_FIXTURE/race" ] || { mkdir -p "$AGENT_QUEUE_DIR/queued"; printf "slug: raced\\nproject: level\\ntags: red cause:abc12345\\n---\\nx\\n" > "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"; } ;; esac' "$SANDBOX/bin/notes"
+  notes_lock_probe
+  # A race file makes the stub's row write queue the slug first.
+  sed -i '3i case " $* " in *" add "*) [ ! -e "$NOTES_FIXTURE/race" ] || { mkdir -p "$AGENT_QUEUE_DIR/queued"; printf "slug: raced\\nproject: level\\ntags: red cause:abc12345\\n---\\nx\\n" > "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"; } ;; esac' "$SANDBOX/bin/notes"
   run "$AQ" add --project level --slug free "feat(menu): free"
   assert_success
   assert_line "story lv-9 on the level agent board"
@@ -1675,6 +1685,37 @@ EOS
   [ -z "$(find "$AGENT_QUEUE_DIR" -name '*-owner2.md')" ]
   # NEGATIVE CONTROL: the stub does see a held lock.
   flock -x "$AGENT_QUEUE_DIR/.lock" "$SANDBOX/bin/notes" ptask level --agent board >/dev/null
+  [ "$(grep -c '^locked ' "$NOTES_FIXTURE/underlock.log")" = 1 ]
+}
+
+@test "move, set and claim write the board row with the queue lock free, so a notes waiting on its ptask.lock holds no queue writer (ar-3025)" {
+  story_notes
+  notes_lock_probe
+  "$AQ" add --project level --slug moved "feat(menu): moved" >/dev/null
+  [ "$(field "$(item queued moved)" row)" = level:lv-9 ]
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" set moved priority=normal
+  assert_success
+  grep -q -- '--agent tag --add normal lv-9' "$NOTES_FIXTURE/calls.log"
+  # A session's claim of a queued item moves it under its own hold of the lock, and marks the row after.
+  CLAUDE_CODE_SESSION_ID=claim-sess run "$AQ" claim moved
+  assert_success
+  grep -q -- '--agent run lv-9' "$NOTES_FIXTURE/calls.log"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move moved queued
+  assert_success
+  grep -q -- '--agent start lv-9' "$NOTES_FIXTURE/calls.log"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move moved running
+  assert_success
+  grep -q -- '--agent run lv-9' "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move moved done --status ok
+  assert_success
+  assert_line "moved: board row lv-9 closed"
+  grep -q -- '--agent done lv-9' "$NOTES_FIXTURE/calls.log"
+  [ ! -s "$NOTES_FIXTURE/underlock.log" ] || fail "notes ran with the queue lock held: $(cat "$NOTES_FIXTURE/underlock.log")"
+  # NEGATIVE CONTROL: the stub does see a held lock.
+  flock -x "$AGENT_QUEUE_DIR/.lock" "$SANDBOX/bin/notes" ptask level --agent run lv-9 >/dev/null
   [ "$(grep -c '^locked ' "$NOTES_FIXTURE/underlock.log")" = 1 ]
 }
 

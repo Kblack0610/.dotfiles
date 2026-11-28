@@ -1314,8 +1314,8 @@ impl App {
         let (runs, items) = (b.rows.clone(), self.queue_items());
         let (project, version) = (project.to_string(), version.to_string());
         self.rv.ver.busy = true;
-        let (jobs, tx, runner) = (
-            self.files.builds.jobs.clone(),
+        let (paths, tx, runner) = (
+            self.files.builds.clone(),
             self.tx.clone(),
             self.runner.clone(),
         );
@@ -1325,7 +1325,7 @@ impl App {
                 &rel,
                 &runs,
                 &items,
-                &jobs,
+                &paths,
                 &project,
                 &version,
             )
@@ -8417,6 +8417,10 @@ mod tests {
         let rel = Arc::new(Rel::default());
         a.runner = rel.clone();
         a.releases = Some(hub_core::releases::read(rel.as_ref(), &[]));
+        // The page reads take the PR store and job archive from here, never the real ones: the
+        // human's 11 MB PR store outran the answer wait under load (ar-6139).
+        a.files.builds.prs = "/nonexistent/prs".into();
+        a.files.builds.jobs = "/nonexistent/ci/jobs.jsonl".into();
         (a, rel, rx)
     }
 

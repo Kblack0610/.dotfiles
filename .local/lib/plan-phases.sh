@@ -175,6 +175,28 @@ plan_overlap_ids() {
     on' "$@" | grep -oE '\b[a-z][a-z0-9]*-[0-9]+\b' | sort -u
 }
 
+# plan_owners_line [<plan file>] -> the plan's `Owners:` line under `## Reviewed` (planning.md, Owners:), its
+# continuation lines joined: `none: <search>` when it says none, else each name on it, one a line, backticks
+# stripped, split on commas and spaces. Status 1 when the plan has no such line (an empty one prints nothing, status 0). The names are checked against
+# `fact-owners names`. Reads stdin with no file.
+plan_owners_line() {
+  [ $# -eq 0 ] || [ -f "$1" ] || return 1
+  local txt
+  txt=$(awk '/^```/ { f = !f; next } f { next }
+    /^## / { inr = ($0 ~ /^## Reviewed([[:space:]]|$)/); on = 0; next }
+    !inr { next }
+    { lab = $0; sub(/^[[:space:]]*([-*][[:space:]]+)?(\*\*)?/, "", lab)
+      if (lab ~ /^Owners:/) { on = 1; got = 1; sub(/^Owners:(\*\*)?[[:space:]]*/, "", lab); line = lab; next }
+      if (lab ~ /^[A-Z][A-Za-z ]*:/) on = 0 }
+    on && !NF { on = 0 }
+    on { line = line " " $0 }
+    END { if (got) print "x " line }' "$@") || return 1
+  [ -n "$txt" ] || return 1
+  txt=$(sed -E 's/^x //; s/`//g; s/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$txt")
+  if [[ "$txt" == none:* ]]; then printf '%s\n' "$txt"; return 0; fi
+  tr ', ' '\n\n' <<<"${txt%.}" | awk 'NF'
+}
+
 # plan_project [<plan file>] -> the project whose rows the plan names: the id on its `epic: <id>` line,
 # else, for an `epic: new` proposal, the ids on its Overlap: line, each read by its code (project_of_code,
 # so the caller has sourced project-name.sh). Overlap counts only there, because elsewhere it lists other
@@ -227,7 +249,7 @@ plan_epic_verdict() {
 }
 
 # plan_epic_settle <plan file> <id>: the plan's `epic: new` line becomes `epic: <id>`, so the epic reads
-# from the plan itself once settled, not from a log that keeps 30 days (notes log --trace).
+# from the plan itself once settled, not from a log that keeps a week (notes log --trace).
 plan_epic_settle() {
   local tmp
   [ -f "$1" ] && [[ "$2" =~ ^[a-z][a-z0-9]*-[0-9]+$ ]] || return 1
@@ -285,14 +307,14 @@ plan_taken_rows() {
   { phase_takes "$(awk -v mode=list -v sup=0 "$_PLAN_PHASES_AWK" "$1" | cut -f2-)"; plan_rows "$1"; } | sort -u
 }
 
-# item_filed_rows <item> -> each agent-lane board row queue item <item> filed in the record's 30 days, one id
+# item_filed_rows <item> -> each agent-lane board row queue item <item> filed in the record's week (KEEP_DAYS in notes-cli ingest.rs), one id
 # a line: one it added itself (`added`, by it) and one inbox-triage filed from its outbox line (`filed`, the
 # line's `#from/<item>`). The board keeps no `#from/` tag (triage strips it), so the ingest record (`notes
 # log`) is the one place that says who filed a row. Fails when the record cannot be read.
 item_filed_rows() {
   local out st
-  # Streamed, not held in a variable: the record's 30 days run to tens of MB.
-  out="$(notes log --days 30 --json 2>/dev/null | jq -r --arg i "$1" 'select((.id // "") != "" and .lane == "agent")
+  # Streamed, not held in a variable: the record's week runs to tens of MB.
+  out="$(notes log --days 7 --json 2>/dev/null | jq -r --arg i "$1" 'select((.id // "") != "" and .lane == "agent")
     | select((.action == "added" and .by == $i)
         or (.action == "filed" and any((.text // "") | splits("\\s+"); . == "#from/" + $i)))
     | .id'; st=("${PIPESTATUS[@]}"); [ "${st[0]}" = 0 ] && [ "${st[1]}" = 0 ])" || return 1

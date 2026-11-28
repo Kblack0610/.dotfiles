@@ -39,3 +39,9 @@ zone() { mkdir -p "$CPU_TEMP_THERMAL/thermal_zone$1"; echo "$2" > "$CPU_TEMP_THE
   run env FLEET_HOT_TCTL=90 bash -c ". '$ROOT/.local/lib/cpu-temp.sh'; echo \$FLEET_HOT_TCTL"
   assert_output 90
 }
+
+@test "the critical mark defaults to 100, over the throttle point, and an override stands" {
+  assert_equal "$FLEET_CRIT_TCTL" 100
+  run env FLEET_CRIT_TCTL=98 bash -c ". '$ROOT/.local/lib/cpu-temp.sh'; echo \$FLEET_CRIT_TCTL"
+  assert_output 98
+}

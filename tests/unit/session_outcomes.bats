@@ -5,7 +5,7 @@
 # Fixture: three registry sessions in one project. A opened PR #10 (merged, kept) and
 # closed a board row with --proof. B opened #11, which #12 reverted a day later. C hit an
 # API error, was interrupted, had a tool call rejected, and wrote a lesson. D is a headless
-# runner (entrypoint sdk-cli) that wrote a lesson. `ss-stub` stands in for schedules-sync, serving
+# runner (entrypoint sdk-cli) that wrote a lesson. The shared schedules-sync stub (ss_script) serves
 # the PR store from canned `gh pr list`-shaped JSON (`$GH_FIXTURE/prs.<owner>-<repo>`) turned into
 # store rows by the real pr_row; nothing here reaches the network.
 
@@ -42,8 +42,7 @@ rows = [ss.pr_row(forge, repo, {"number": p["number"], "state": "open" if p["sta
                    None, p["state"] == "MERGED") for p in json.load(sys.stdin)]
 print(json.dumps(sorted(rows, key=lambda r: -r["number"])))
 STUB
-  cat > "$SANDBOX/bin/ss-stub" <<STUB
-#!/usr/bin/env bash
+  ss_script <<STUB
 [ "\$1" = prs ] || exit 2
 echo "\$*" >> "$SANDBOX/ss.calls"
 f="$GH_FIXTURE/prs.\${2//\//-}"
@@ -52,8 +51,7 @@ f="$GH_FIXTURE/prs.\${2//\//-}"
 [ -f "\$f" ] || { echo '[]'; exit 0; }
 gh2store "$REPO_ROOT/.local/bin/schedules-sync" "\$2" < "\$f"
 STUB
-  chmod +x "$SANDBOX/bin/gh2store" "$SANDBOX/bin/ss-stub"
-  export SCHEDULES_SYNC=ss-stub
+  chmod +x "$SANDBOX/bin/gh2store"
   # No fleet worker unless a test names one: the real roster is the workstation's.
   export SO_WORKERS=true
   # 2026-10-20T00:00:00Z; every fixture session stopped 2026-10-19.
@@ -578,7 +576,7 @@ activity_of() {
 {"type":"assistant","message":{"id":"m3","usage":{"output_tokens":7},"content":[{"type":"tool_use","id":"d","name":"Bash","input":{"command":"gh pr checks 5 --watch"}},{"type":"tool_use","id":"e","name":"Write","input":{"file_path":"/home/u/.agent/lessons/p.md"}}]}}
 EOF
   run activity_of "$TR/act.jsonl"
-  assert_output '{"tool_calls":5,"test_runs":1,"ci_polls":1,"api_messages":3,"tokens":123,"tokens_after_last_edit":7,"compactions":{"auto":0,"manual":0}}'
+  assert_output '{"tool_calls":5,"edit_calls":2,"test_runs":1,"ci_polls":1,"api_messages":3,"tokens":123,"tokens_after_last_edit":7,"compactions":{"auto":0,"manual":0}}'
 }
 
 @test "plan_gate: counts every ExitPlanMode and only the gate's own denials" {
@@ -685,6 +683,21 @@ EOF
 EOF
   run activity_of "$TR/act.jsonl"
   assert_output --partial '"tokens_after_last_edit":7'
+}
+
+@test "activity: edit_calls counts edit tool calls only, not lines or Bash that name an edit tool" {
+  cat > "$TR/act.jsonl" <<'EOF'
+{"type":"system","subtype":"api-request-shape","tools":[{"name":"Edit"},{"name":"Write"},{"name":"MultiEdit"},{"name":"NotebookEdit"}]}
+{"type":"user","message":{"content":"use the Edit and Write tools"}}
+{"type":"assistant","message":{"id":"m1","usage":{"output_tokens":9},"content":[{"type":"text","text":"Edit Write"},{"type":"tool_use","id":"a","name":"Bash","input":{"command":"echo Edit Write"}}]}}
+EOF
+  run activity_of "$TR/act.jsonl"
+  assert_output --partial '"edit_calls":0'
+  cat >> "$TR/act.jsonl" <<'EOF'
+{"type":"assistant","message":{"id":"m2","usage":{"output_tokens":1},"content":[{"type":"tool_use","id":"b","name":"Edit","input":{"file_path":"/r/a.sh"}},{"type":"tool_use","id":"c","name":"MultiEdit","input":{"file_path":"/r/b.sh"}}]}}
+EOF
+  run activity_of "$TR/act.jsonl"
+  assert_output --partial '"edit_calls":2'
 }
 
 @test "uses: agents by subagent_type, Skill calls and typed /commands; quoted or tool-result tags do not count" {

@@ -21,7 +21,7 @@
 #                                    an urgent one from the human even under a dispatch hold or load,
 #                                    or board rows no pass has judged in that time (the human here or away; not at a full fleet),
 #                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that,
-#                                    or a trainee pool dry that long while a trainee harness has a slot
+#                                    (a trainee pool dry that long is printed, and trips nothing)
 #   fleet-dispatch sprint-stalled    rc 1 naming each agent row of an open sprint with no queue item, session or open gate
 #                                    for DISPATCH_STARVED_MIN (watch sprint-stalled); rc 2 when a read fails
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
@@ -169,6 +169,8 @@ BOARD_KEY_JQ=$(jq -rn --arg e "$BOARD_KEY_ERE" '$e | tojson')   # that ERE as a 
 # The fleet worker roster (home-config's `fleet_workers` group) and the one ssh path to a worker.
 # shellcheck source=../lib/fleet-hosts.sh
 . "${FLEET_HOSTS_LIB:-$HERE/../lib/fleet-hosts.sh}"
+# shellcheck source=../lib/cpu-temp.sh
+. "$HERE/../lib/cpu-temp.sh"   # FLEET_CRIT_TCTL, the mark host_why skips a worker at
 : "${DISPATCH_WORKERS:=$HOME/.config/fleet-dispatch/workers.json}"
 : "${DISPATCH_KINDS:=$HOME/.config/fleet-dispatch/kinds.json}"   # per row type: rank, entry, rung, exit, enabled (load_kinds)
 : "${DISPATCH_CLASSES:=$HOME/.config/fleet-dispatch/classes.json}"   # its `idle_pool` knob: the pools whose idle slots rank rows (load_pool_idle)
@@ -644,7 +646,8 @@ def row_area($d; $games): ((.text // "") | split("<!--") | .[0] // "" | ascii_do
 detail_sig_set() { if [ "$1" = '""' ]; then DSIG=none; else sig_set "$1"; DSIG=$SIG; fi; }
 detail_sig() { detail_sig_set "$1"; echo "$DSIG"; }
 
-# load_gates -- GATE_ST, GATE_WHY, GATE_Q and GATE_STACK by board gate tag: its state (clear, pending or dead),
+# load_gates -- SCOPE_HOLDS, `agent-hold scopes` (resource, repo, path, granted per --scope entry of a hold in
+# force, which scope_off_set reads), and GATE_ST, GATE_WHY, GATE_Q and GATE_STACK by board gate tag: its state (clear, pending or dead),
 # hold_for's words, its queue form, and the slug of the item an #after/ gate cleared as stacked on (its open PR), for every gate an open row carries, from one
 # `agent-queue gate --json --all` (the one evaluator; it reads rbw and the board once). Once a pass:
 # each entry point calls it before its subshells, as fleet_hosts, and load_extras when none did. A
@@ -653,22 +656,34 @@ detail_sig() { detail_sig_set "$1"; echo "$DSIG"; }
 load_gates() {
   [ -z "${GATES_LOADED:-}" ] || return 0
   declare -gA GATE_ST=() GATE_WHY=() GATE_Q=() GATE_STACK=()
-  GATES_LOADED=1 GATES_FAILED=''
-  local out rc=0 t s w q k
+  GATES_LOADED=1 GATES_FAILED='' SCOPE_HOLDS=''
+  local out rc=0
+  SCOPE_HOLDS=$("${DISPATCH_AGENT_HOLD:-$HERE/agent-hold}" scopes 2>/dev/null) || {
+    GATES_FAILED="agent-hold scopes failed"
+    say "$GATES_FAILED, so no board row starts this pass"
+    return 0
+  }
   out=$(agent-queue gate --json --all 2>/dev/null) || rc=$?
   if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
     GATES_FAILED="agent-queue gate --all failed (exit $rc)"
     say "$GATES_FAILED, so no board row starts this pass"
     return 0
   fi
+  gates_record "$out"
+}
+
+# gates_record <agent-queue gate --json lines> -- GATE_ST, GATE_WHY, GATE_Q and GATE_STACK from each line; a
+# tag that is no gate (state none) is left out.
+gates_record() {
+  local t s w q k r
   # A unit separator, not a tab: a tab is IFS whitespace, and read folds an empty why into the next field.
   # A line naming a row (a held #hold/ the hold grants that row by its row, epic or plan id) is keyed
   # <tag>@<row id>, which gate_wait reads for that row before the tag's own state.
   while IFS=$'\x1f' read -r t s w q k r; do
-    [ -n "$t" ] || continue
+    [ -n "$t" ] && [ "$s" != none ] || continue
     [ -z "$r" ] || t="$t@$r"
     GATE_ST[$t]=$s GATE_WHY[$t]=$w GATE_Q[$t]=$q GATE_STACK[$t]=$k
-  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)\u001f\(.stack // "")\u001f\(.row // "")"' <<<"$out")
+  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)\u001f\(.stack // "")\u001f\(.row // "")"' <<<"$1")
 }
 
 # gate_wait <gate tags> [<row id>] -> why the row may not start yet, one clause a gate that is not clear;
@@ -685,6 +700,26 @@ gate_wait() {
     esac
   done
   printf '%s' "$out"
+}
+
+# gates_reread <row hashtag>... -- the pass's gates (load_gates), and read again when the row's fresh line carries a gate
+# that read did not see, a return's #at/ (ar-5954: promote dropped it and the item started past the gate). agent-queue
+# says which unseen tags are gates (state none for the rest); one is enough to re-read every gate, as the pass made it.
+# Returns 1 with GATE_ERR when a gate cannot be read, so the row does not start.
+gates_reread() {
+  local g gout grc=0
+  local -a unseen=()
+  load_gates
+  GATE_ERR=$GATES_FAILED
+  [ -z "$GATE_ERR" ] || return 1
+  for g in "$@"; do [[ "$g" == desk/?* || -n "${GATE_ST[$g]+x}" ]] || unseen+=("$g"); done
+  [ "${#unseen[@]}" -gt 0 ] || return 0
+  gout=$(agent-queue gate --json "${unseen[@]}" 2>/dev/null) || grc=$?
+  { [ "$grc" = 0 ] || [ "$grc" = 3 ]; } || { GATE_ERR="agent-queue gate exit $grc on ${unseen[*]}"; return 1; }
+  jq -e 'select(.state != "none")' <<<"$gout" >/dev/null || return 0
+  GATES_LOADED=''; load_gates
+  GATE_ERR=$GATES_FAILED
+  [ -z "$GATE_ERR" ]
 }
 
 # load_extras -- fill the caller's `local -A DET PLN PAR RNK RLD GAT` from one board read, by "<project>\t<lane>\t<id>":
@@ -829,6 +864,39 @@ row_off_set() {
   row_kind_set "$3"; kind_off_set "$KIND"
   OFF=$KIND_OFF
   [ -n "$OFF" ] || [ -z "${PAR[$2]:-}" ] || OFF="a parent: open rows name it in #of/"
+  [ -n "$OFF" ] || [ -z "${SCOPE_HOLDS:-}" ] || scope_off_set "$1" "$2" "$3"
+}
+
+# scope_off_set <project> <key> <text> -> sets OFF to the hold whose --scope the row's work lands in
+# (SCOPE_HOLDS, load_gates), whatever project the row is on: a whole-repo entry covers each row of a
+# project whose repo it is (item_repo, SCOPE_REPO keeps one per project) and each row whose text names
+# that repo; a path entry each row whose text names the path or its last segment. A hold that grants
+# the row by its id or an #of/ epic passes it, as agent-hold check --for does. Its text is all a row
+# says before the work, so agent-land's hold_gate, on the PR's changed files, refuses the rest. Why:
+# home-config #1333, a unity-core-playground row's work, changed apps/ci-runner-governor 40 minutes
+# after the human locked home-config by #hold/ tags on its own rows (2026-11-20, ar-4187).
+declare -gA SCOPE_REPO=()
+scope_off_set() {
+  local res repo path granted t g w b='(^|[^[:alnum:]_-])' e='([^[:alnum:]_-]|$)' gs
+  t=${3%%<!--*}; t=${t,,}
+  while IFS=$'\t' read -r res repo path granted; do
+    [ -n "$res" ] || continue
+    IFS=, read -ra gs <<<"$granted"
+    for g in "${gs[@]}"; do
+      [ "$g" = "$2" ] || [[ " $t " == *" #of/${g,,} "* ]] && continue 2
+    done
+    [ "$path" != - ] || path=''
+    w=${path,,}
+    # A full path named in the text holds a row of any project; a whole repo, or a path's last
+    # segment alone, only a row of that repo's project or one whose text names the repo.
+    if [ -z "$w" ] || ! [[ "$t" =~ $b"$w"$e ]]; then
+      [ -n "${SCOPE_REPO[$1]+x}" ] || SCOPE_REPO[$1]=$(item_repo "$1")
+      [ "${SCOPE_REPO[$1],,}" = "${repo,,}" ] || [[ "$t" =~ $b"${repo,,}"$e ]] || continue
+      [ -z "$w" ] || { w=${w##*/}; [[ "$t" =~ $b"$w"$e ]]; } || continue
+    fi
+    OFF="held by the $res hold, whose scope $repo${path:+:$path} its work lands in (agent-hold show $res)"
+    return 0
+  done <<<"$SCOPE_HOLDS"
 }
 
 # held_load <judged> -- the judged_keys lines into HELD, which held reads; a walk loads them once.
@@ -3490,13 +3558,13 @@ trainee_diff_why() {
 }
 
 # row_paths <text> <repo> -> the files and directories a row names, one a line: each word with a slash
-# or a file extension (no URL, no #tag, no id comment, no <placeholder> or glob, no word of digits
+# or a file extension (no URL, no #tag, one in brackets or quotes too, no id comment, no <placeholder> or glob, no word of digits
 # and punctuation such as 0/5 or 11-20/21), and each bare word that is a .local/bin command the repo tracks.
 # A leading ~/ or ./, trailing punctuation and a :line, :line-line or :line:col suffix go, so
 # fleet-sessions:1751 names its file (ar-5747).
 row_paths() {
   local words cmds
-  words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:]])#[A-Za-z0-9_/:.-]+//g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
+  words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:](\[`"'"'"'])#[A-Za-z0-9_/:.-]+/\1/g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
     sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s/(:[0-9]+(-[0-9]+)?)+$//; s#/+$##' | grep -vE '^[a-z]+://|[<>*{}$]|^[0-9/.:-]*$' | sort -u)
   cmds=$(git -C "$2" ls-files -- '.local/bin/*' 2>/dev/null | sed 's#.*/##')
   grep -E '/|\.[A-Za-z0-9]+$' <<<"$words"
@@ -4320,13 +4388,16 @@ worker_store_pull() {
   [ "$st" = running ] || say "start: the store on $1 reads $2 as ${st:-unreadable}, not running (did this machine's store-sync reach origin?); a close there before its next sync conflicts"
 }
 
-# stack_base <item json> <project> <slug> [host] -> the head commit of the open PR the item is stacked on (its
-# `after:` item is live with an open PR, agent-queue stack_pr), the base its worktree is cut from, so the
-# phase builds on its dependency's code while that PR waits for its checks. Nothing for an item that
-# is not stacked. rc 1, and the item stays queued, when the head cannot be read or it is stacked on
-# several PRs (one worktree has one base). agent-land merges it only after the dependency closed ok.
+# stack_base <item json> <project> <slug> [host] -- sets the caller's (cmd_start's) `base` to the head commit of the
+# open PR the item is stacked on (its `after:` item is live with an open PR, agent-queue stack_pr), the base its
+# worktree is cut from, so the phase builds on its dependency's code while that PR waits for its checks; and its
+# `cwd` to that PR's checkout when it is another repo, normally only a validate item's (agent-queue holds a phase on
+# such a PR, ar-5124): the head is a commit of the PR's repo, and a validate item lands the PR from its worktree. Leaves both for an item that is not stacked. rc 1, and
+# the item stays queued, when the head cannot be read or it is stacked on several PRs (one worktree has one
+# base). agent-land merges it only after the dependency closed ok. Why: validate-ask-du3ev0 (agent-runtime), stacked on
+# home-config#1666, was cut in its project's repo, where wt found no such commit, and failed every pass (2026-11-27, ar-2940).
 stack_base() {
-  local on sha ref host=${4:-}
+  local on sha ref dir pk ck host=${4:-}
   on=$(jq -r '.stacked_on // empty' <<<"$1")
   [ -n "$on" ] || return 0
   [ -z "$host" ] || { say "start: $3 is stacked on an open PR, which only a worktree here builds on; start it without --host"; return 2; }
@@ -4334,11 +4405,21 @@ stack_base() {
   set -- $on "$2" "$3"
   [ $# -eq 3 ] || { say "start: ${!#} is stacked on ${on// /, }: one worktree builds on one open PR; it starts once all but one have merged"; return 1; }
   ref=${1#*=}
-  sha=$(so_pr_view "$ref" "$(pr_repo_dir "$ref" "$2")" headRefOid .headRefOid) && [ -n "$sha" ] ||
+  dir=$(pr_repo_dir "$ref" "$2")
+  sha=$(so_pr_view "$ref" "$dir" headRefOid .headRefOid) && [ -n "$sha" ] ||
     { say "start: could not read the head of $ref, which $3 is stacked on; it stays queued"; return 1; }
-  say "start: $3 is stacked on ${1%%=*}'s open PR $ref, so its worktree is cut from ${sha:0:12}"
-  echo "$sha"
+  if [ -n "$dir" ] && pk=$(repo_key "$dir") && ck=$(repo_key "$cwd") && [ "$pk" != "$ck" ]; then
+    say "start: $3 is stacked on ${1%%=*}'s open PR $ref, so its worktree is cut from ${sha:0:12} in $dir, that PR's repo"
+    cwd=$dir
+  else
+    say "start: $3 is stacked on ${1%%=*}'s open PR $ref, so its worktree is cut from ${sha:0:12}"
+  fi
+  base=$sha
 }
+
+# repo_key <dir> -> one name for the repo <dir> is in: its git common dir, which its worktrees share; rc 1 when
+# <dir> is no git checkout, so stack_base moves nothing it cannot tell apart.
+repo_key() { [ -n "$1" ] && git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null; }
 
 # start_host_checks <host> <harness> <hjson> <item json> <cwd> <slug> -> rc 2 with the reason said when the worker's kit cannot take this start: a needs:cluster item, a harness its fleet_harnesses does not list, a codex thread that lives on this machine, a repo it has no clone of.
 start_host_checks() {
@@ -4529,7 +4610,7 @@ cmd_start() {
       # agent-queue refuses to move a held item to running (ar-3260): asked before the launch, so a
       # refused start leaves no session working an item still queued.
       hold=$(jq -r '.hold // empty' <<<"$it")
-      [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }
+      [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }; start_merged "$item" "$it" && { exec 7>&-; return 4; }
     fi
     project=$(jq -r .project <<<"$it")
     [ -n "$area" ] || area=$(jq -r '.area // empty' <<<"$it")
@@ -4586,7 +4667,7 @@ cmd_start() {
     # lists (harness_prep refuses an opencode one it cannot run there).
     [ -z "$host" ] || hwhy=$(host_start_why "$host" "$item" "$harness") || { say "start: $hwhy"; return 2; }
     [ -z "$host" ] || start_host_checks "$host" "$harness" "$hjson" "$it" "$cwd" "$item" || return 2
-    base=$(stack_base "$it" "$project" "$item" "$host") || return $?
+    stack_base "$it" "$project" "$item" "$host" || return $?
     if [ "$harness" = claude ]; then
       # A pin is not the lane's pick, so like --model it logs no lane run.
       [ -n "$model" ] || { model=$(claude_pin "$it"); [ -z "$model" ] || verdict=''; }
@@ -4867,7 +4948,7 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # meanwhile stays owed. Each reopened pane is tagged @fleet_restored with the record's time, when its
 # server was last seen alive, so fleet-sessions runs its close timer on from the quiet it had then.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked alive
+  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said out gone failed=0 opened=0 owed=0 walked alive
   walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
   alive=$(date -d "$(jq -r '.at // empty' "$f")" +%s 2>/dev/null) || alive=
@@ -4876,7 +4957,7 @@ restore_world() {
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
     if claude_pid_live "$id"; then echo "$srv:$sess:$win: already running, skipped"; continue; fi
-    if [ ! -d "$cwd" ]; then echo "$srv:$sess:$win: $cwd is gone, skipped (claude --resume $id)"; continue; fi
+    gone=''; [ -d "$cwd" ] || gone=1
     item=$(agent-queue mine --sid "$id" --newest 2>/dev/null) || item=''
     it=''; [ -z "$item" ] || it=$(agent-queue show "$item" --json 2>/dev/null) || it=''
     mode=$(resume_mode "$id" "$(jq -r '.mode // empty' <<<"$it" 2>/dev/null)")
@@ -4884,12 +4965,22 @@ restore_world() {
     if [ "$(jq -r '[.state, .agent // "claude"] | join(" ")' <<<"$it" 2>/dev/null)" = 'running claude' ]; then
       prompt=${RESTORE_PROMPT//\%s/$item}; said=', prompted to carry on'
     fi
-    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}$said${prompt:+, in a wake batch}"; continue; fi
+    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd${gone:+ (gone: wt revive is tried first)} ($mode)${item:+ for queue item $item}$said${prompt:+, in a wake batch}"; continue; fi
     # A prompted reopen is a wake: it reruns the session's gate, suite or Unity run. It waits on the
     # lost record for a batch (wake_take) and comes back with its prompt then, never at an empty one
     # nobody nudges.
     if [ -n "$prompt" ] && ! wake_take restore "$id"; then
       echo "$srv:$sess:$win: waits for a wake batch${item:+ (queue item $item)}"; RESTORE_OWED+=("$id"); owed=$((owed + 1)); continue
+    fi
+    # A reaped worktree is put back first (wt revive, as agent-ask reopen does): claude --resume finds the
+    # conversation by the directory it ran in. Only once its wake batch is due, so an owed pane's tree is not
+    # cut early. A folder wt cannot put back (or one it puts back without this subdirectory) is listed, not reopened.
+    if [ -n "$gone" ]; then
+      if ! out=$(wt revive "$cwd" --branch "$("$HERE/sessions" _branch "$id")" </dev/null 2>&1); then
+        echo "$srv:$sess:$win: $cwd is gone and wt could not put it back (${out##*$'\n'}), skipped (claude --resume $id)"; continue
+      fi
+      echo "$srv:$sess:$win: ${out##*$'\n'}"
+      [ -d "$cwd" ] || { echo "$srv:$sess:$win: wt put the tree back but $cwd is not in it, skipped (claude --resume $id)"; continue; }
     fi
     project=$(resolve_project_name "$cwd")
     if cmd_start --project "$project" --server "$srv" --session "$sess" --window "$win" \
@@ -5222,7 +5313,7 @@ item_brief() {
     no_human "$slug"
     return
   fi
-  ask_rule
+  ask_rule "$key"
 }
 
 # plan_stage <slug> <tags> -- what a headless plan item does first: write the plan, post it as an
@@ -5341,14 +5432,20 @@ land_brief() {
   if headless "$2"; then no_human "$slug"; else echo "If the verdict is the human's call (a product decision, or a repo that needs their approval to merge), file it with agent-ask post (options land and close, your recommendation in --recommend) and end: the item waits on the answer."; fi
 }
 
-# ask_rule -- a question blocks only the step that needs it. Reap moves the item to waiting/ once the
-# session stops with its ask pending, so the session never moves it itself.
+# ask_rule [<row>] -- a question blocks only the step that needs it. Reap (settle_item) returns a
+# session's item to its board row behind the ask once the session is gone, so the session never moves it
+# itself; an item with no row fails there, so with no <row> the window stays open. With a row the session
+# ends with /wind-down auto, whose teardown reopens it on the answer (agent-ask reopen-on-answer).
 # no_human <slug> -- the same for a headless harness, whose run ends when it stops: the item goes back
 # in the queue behind the ask, and the answer starts it again with the decision in its brief.
 no_human() { echo "If a step needs a decision from the human, file it with agent-ask post (your recommendation in --recommend), run agent-queue requeue $1 --ask <id>, and stop: the answer starts this item again. Nobody watches this run, and one that stops with its item still running counts as failed."; }
 
 ask_rule() {
-  echo "If a step needs a decision from the human, only that step is blocked, not the task: ask it here and file it with agent-ask post (your recommendation in --recommend), build the rest with that step switched off, and end your turn on the question only when nothing else is left, leaving this window open."
+  local rule="If a step needs a decision from the human, only that step is blocked, not the task: ask it here and file it with agent-ask post (your recommendation in --recommend), build the rest with that step switched off, and "
+  if [ -n "${1:-}" ]; then
+    rule+="once the ask is all that is left, run /wind-down auto: the teardown sets the ask to reopen this conversation on the answer. If wind-down will not close, end your turn on the question and leave this window open."
+  else rule+="end your turn on the question only when nothing else is left, leaving this window open."; fi
+  echo "$rule"
 }
 
 # proof_brief <slug> <kind> <item_row> <project> <harness> -- how a proof kind (kinds.json `exit`:
@@ -5364,7 +5461,7 @@ proof_brief() {
   echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, a $kind row: it ends on live proof, never a PR or agent-land."
   headless "$5" || wd='; then /wind-down auto'
   echo "Close in one turn: agent-queue set $slug note=\"<proof>\"${key:+; notes$pf ptask $project$flag done \"$key\" --proof \"<proof>\"}; agent-queue move $slug done --status ok$wd."
-  if headless "$5"; then no_human "$slug"; else ask_rule; fi
+  if headless "$5"; then no_human "$slug"; else ask_rule "$key"; fi
 }
 
 # doc_ask_brief <slug> <kind> <item_row> <project> -- how a doc+ask kind (kinds.json `exit`, the
@@ -5542,6 +5639,25 @@ item_pr_state() {
   if [[ "$pr" == */*#* ]]; then so_pr_view "$pr" "$(pr_repo_dir "$pr" "$project")" "$PR_STATE_JSON" "$PR_STATE_JQ"; return; fi
   so_pr_view "$pr" "$(repo_dir "$project")" "$PR_STATE_JSON,body" \
     "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | $PR_STATE_JQ"
+}
+
+# start_merged <slug> <item json> -- a queued item whose recorded pr: its forge reads MERGED (item_pr_state, with a
+# merge commit) is done ok with that merge recorded, and its row closes on merge proof (close_row): returns 0.
+# Returns 1 when the PR is open, closed unmerged, unreadable or has no merge commit, so the start goes on; cmd_start
+# then exits 4 (no session started, the item taken: start_item reads that as another start's), and a validate item,
+# which reviews its author's PR, is never closed by it.
+# Why: an item on a PR another session had already merged started a session that found nothing to do (#2539).
+start_merged() {
+  local info state oid
+  [ -n "$(jq -r '.pr // ""' <<<"$2")" ] && ! jq -e '(.tags // "") | split(" ") | index("validate")' <<<"$2" >/dev/null || return 1
+  info=$(item_pr_state "$1" "$2") || return 1
+  read -r state oid _ <<<"$info"; oid=${oid#-} oid=${oid//,/ }
+  [ "$state" = MERGED ] && [ -n "$oid" ] && own_record "$1" "$2" || return 1
+  agent-queue set "$1" "merged=$oid" >/dev/null || return 1
+  agent-queue move "$1" done --status ok --if queued >/dev/null || { agent-queue set "$1" merged= >/dev/null; return 1; }
+  logline "start: queue item $1 not started: its PR $(jq -r .pr <<<"$2") merged; closed done"
+  say "start: $1 not started: its PR $(jq -r .pr <<<"$2") already merged; closed done"
+  close_row "$1" || true
 }
 
 # own_record <slug> <item json> -- the slug names this record: agent-queue show and set read a reused
@@ -7123,9 +7239,10 @@ unpark_preempted() {
 # worker), its MemAvailable as a whole percent of MemTotal (-1 when it cannot say, so no later field shifts
 # into its place), whether its store is in a merge conflict with origin (.sync/conflict: a session
 # there cannot push its queue writes), whether ~/.notes is a clone there (without it every notes and
-# board command fails and git-sync-notes.service fails CHDIR: razer-laptop, 2026-11-19, ar-3784), and after a "kit" line its
+# board command fails and git-sync-notes.service fails CHDIR: razer-laptop, 2026-11-19, ar-3784), its CPU temperature from
+# its own cpu-temp.sh read_tctl ("-" with no sensor or no lib), and after a "kit" line its
 # `fleet-dispatch kit` (claude, codex, opencode, srt), so a worker with no claude still takes an item
-# on a harness it has: HOST_PROBE[<name>] is "<load> <cores> <ready 0|1> <mem %> <conflict 0|1> <notes 0|1>", or "unreachable",
+# on a harness it has: HOST_PROBE[<name>] is "<load> <cores> <ready 0|1> <mem %> <conflict 0|1> <notes 0|1> <tctl C|->", or "unreachable",
 # and HOST_KIT[<name>] the kit, empty from an older fleet-dispatch there (no kit verb). HOST_MAX[<name>] is its fleet_max_live and HOST_FREE[<name>] that less the run units its live sessions hold,
 # and start_items takes each start there off it; HOST_RUNS is the runs that count, the given ones,
 # each gateway run on a worker (live_runs --gateway) and each hand start (live_hand; one here names no worker). After the kit, a "missing" line lists each roster repo (fleet_repos, fleet_repos_extra, passed as
@@ -7146,7 +7263,7 @@ probe_hosts() {
     HOST_MAX[$name]=$max
     HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$HOST_RUNS") ))
     # shellcheck disable=SC2016,SC2086 # the worker's shell expands these, not this one; listed splits into names
-    if out=$(fleet_host_run "$name" env FLEET_PROBE_REPOS="$repos" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}'\'' /proc/meminfo; test -e "$HOME/.agent/.sync/conflict" && echo 1 || echo 0; test -e "$HOME/.notes/.git" && echo 1 || echo 0; echo kit; fleet-dispatch kit 2>/dev/null || :; echo missing; for d in $FLEET_PROBE_REPOS; do test -e "$d/.git" || echo "$d"; done; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
+    if out=$(fleet_host_run "$name" env FLEET_PROBE_REPOS="$repos" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && test -f "$HOME/.agent/.sync/peer" && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {print t ? int(a * 100 / t) : -1}'\'' /proc/meminfo; test -e "$HOME/.agent/.sync/conflict" && echo 1 || echo 0; test -e "$HOME/.notes/.git" && echo 1 || echo 0; bash -c ". $HOME/.local/lib/cpu-temp.sh && read_tctl" 2>/dev/null || echo -; echo kit; fleet-dispatch kit 2>/dev/null || :; echo missing; for d in $FLEET_PROBE_REPOS; do test -e "$d/.git" || echo "$d"; done; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
       HOST_PROBE[$name]=$(sed '/^kit$/,$d' <<<"$out" | tr '\n' ' ')
       HOST_KIT[$name]=$(sed '1,/^kit$/d; /^missing$/,$d' <<<"$out" | tr '\n' ' ')
       HOST_MISSING[$name]=$(sed '1,/^missing$/d; /^harnesses$/,$d' <<<"$out")
@@ -7180,7 +7297,7 @@ host_runs() {
 # nothing. Its pace is this runner's (MAX_LOAD) over its own load and cores; its units are its own
 # fleet_max_live, a heavy item holding 2 and a light one 1 (weight_units), as they do here.
 host_why() {
-  local p="${HOST_PROBE[$1]:-}" need="${2:-1}" load cores ready mem conflict notes
+  local p="${HOST_PROBE[$1]:-}" need="${2:-1}" load cores ready mem conflict notes tctl
   [ -n "$p" ] || { echo "$1 is not placed (fleet_place false, or not in $FLEET_HOSTS_GROUP)"; return; }
   if [ "$p" = unreachable ]; then
     echo "$1 did not answer over ssh"
@@ -7188,7 +7305,7 @@ host_why() {
   fi
   [ "${HOST_FREE[$1]:-0}" -gt 0 ] || { echo "$1 is at its fleet_max_live"; return; }
   [ "${HOST_FREE[$1]}" -ge "$need" ] || { echo "$1 has ${HOST_FREE[$1]} of its fleet_max_live run units free, and a heavy item needs $need"; return; }
-  read -r load cores ready mem conflict notes <<<"$p"
+  read -r load cores ready mem conflict notes tctl <<<"$p"
   [ "$ready" = 1 ] || { echo "$1 has no wt, or a store that is not a peer clone (store-sync join)"; return; }
   [ "${conflict:-0}" = 0 ] || { echo "$1: its store is in a merge conflict with origin (~/.agent/.sync/conflict), so a session's queue writes cannot reach origin: resolve it there (QUEUE.md, Troubleshooting)"; return; }
   # notes is empty only from a probe older than this field, which reads as having a clone.
@@ -7196,6 +7313,12 @@ host_why() {
   [ -n "${HOST_KIT[$1]// /}" ] || { echo "$1 reports no harness it runs (fleet-dispatch kit there: claude with every account signed in, codex, opencode; an older fleet-dispatch has no kit verb: pull its ~/.dotfiles; an unsigned account: fleet-node signin there)"; return; }
   [[ "$mem" =~ ^[0-9]+$ ]] || { echo "$1 did not report its free memory (/proc/meminfo)"; return; }
   [ "$mem" -ge "$DISPATCH_HOST_MEM_MIN_PCT" ] || { echo "$1: ${mem}% memory free is under the ${DISPATCH_HOST_MEM_MIN_PCT}% floor"; return; }
+  # tctl is empty from a probe older than this field and - with no sensor: neither holds. At the critical mark a
+  # worker holds at any load: tuf-b550 powered off at 110 C at under 1x cores (2026-11-25, ar-6357).
+  if [[ "${tctl:-}" =~ ^[0-9]+([.][0-9]+)?$ ]] && awk -v t="$tctl" -v c="$FLEET_CRIT_TCTL" 'BEGIN { exit !(t + 0 >= c + 0) }'; then
+    echo "$1: CPU at $tctl C is at or over the $FLEET_CRIT_TCTL C critical mark"
+    return
+  fi
   over_pace "$load" "${cores:-1}" && echo "$1: load $load on $cores cores is over the $MAX_LOAD pace"
   return 0
 }
@@ -7887,9 +8010,11 @@ cmd_starved() {
     echo "board rows gated on what can never clear: (notes ptask <project> --agent tag --remove <gate> <id>, plus --add the gate that replaced it, or drop the row)"
     sed 's/^/  /' <<<"$dead"
   fi
+  # A dry trainee pool is named but does not trip: only the board's supply clears it, and an idle free
+  # key costs nothing (ask 0BQraJ, 2026-11-27: it re-tripped six times from 11-24 with nothing to fix, ar-5747).
   dry=$(trainee_dry "$cut")
   [ -z "$dry" ] || echo "$dry"
-  side=$dead$dry
+  side=$dead
   # A run start in the window proves the passes move the queue, which clears the high items they work
   # through in order. It does not clear an urgent item they passed over: that one sits first in the
   # order, so a pass that started others and not it is held by something specific to it (2026-11-10:
@@ -7969,7 +8094,7 @@ cmd_starved() {
 
 # trainee_dry <cut epoch> -> one line per harness dry since before <cut>: it had a slot and found no
 # queued or board row it takes on every pass since (TRAINEE_DRY, trainee_dry_mark), so its free key
-# sit idle. A dry pool is a supply fault no run start clears, so starved reports it beside the dead holds.
+# sit idle. A dry pool is a supply level no run start clears: starved prints it beside the dead holds, and it trips nothing.
 trainee_dry() {
   local h since
   [ -s "$TRAINEE_DRY" ] || return 0
@@ -8351,6 +8476,31 @@ store_fresh() {
     fi
   fi
   [ "$REAP_FRESH" = yes ]
+}
+
+# board_fresh -- the board and queue this machine reads hold origin as of now, once a process: a fill reads
+# the board to promote a row, so a clone behind origin promotes a row another host just gated (#at/) or
+# started, and the item it makes has none of the gate (ar-5954: five reaps on one host said their store could
+# not be brought up to origin, and its fill a minute later promoted a row gated #at/ a week out). Both
+# stores: ~/.agent holds the queue, ~/.notes the board. A full sync, never `--now`: with nothing dirty and
+# the local origin ref at HEAD, `--now` exits at once with no fetch and no COMPLETE line, so it proves
+# nothing. The two run side by side, each bounded by WORKER_PULL_SECS. The check, not store-sync's exit
+# code, is the verdict (store_fresh): a SKIP or BACKUP exits 0.
+board_fresh() {
+  if [ -z "${BOARD_FRESH:-}" ]; then
+    local pa pn ok=1
+    timeout "$WORKER_PULL_SECS" store-sync </dev/null >/dev/null 2>&1 & pa=$!
+    timeout "$WORKER_PULL_SECS" store-sync --store notes </dev/null >/dev/null 2>&1 & pn=$!
+    wait "$pa" || ok=0
+    wait "$pn" || ok=0
+    if [ "$ok" = 1 ] && store-sync-age --notes --max-min 2 </dev/null >/dev/null 2>&1; then
+      BOARD_FRESH=yes
+    else
+      BOARD_FRESH=no
+      logline "fill held: this store could not be brought up to origin, so its board may be behind"
+    fi
+  fi
+  [ "$BOARD_FRESH" = yes ]
 }
 
 # cmd_reap -- reap_once under $DIR/.reap, so one reap runs at a time: a pass reaps under its own lock,
@@ -8926,20 +9076,22 @@ load_why() {
 # assess_why <red 0|1> -> "fleet-assess says HOLD" while fleet-assess puts this machine over its high
 # mark (load, memory, stall, temperature, a local load hold), or nothing; the red floor goes past it.
 # It reads only this machine, so like load_why it holds a start here, not one a fleet worker takes.
-# <1> is 1 on the red floor, which goes past every HOLD, and 2 on the plan load floor, which goes past a
-# HOLD on load alone: its probe puts load's mark out of reach, as fleet-assess's verdict names only its
-# first reason and load comes first, so memory, stall and temperature still hold by its own thresholds,
-# and "HOLD held, load ..." is load's low mark.
+# <1> is 1 on the red floor, which goes past every HOLD but a critical CPU temperature, and 2 on the plan
+# load floor, which goes past a HOLD on load alone: its probe puts load's mark out of reach, as
+# fleet-assess's verdict names only its first reason and load comes first, so memory, stall and
+# temperature still hold by its own thresholds, and "HOLD held, load ..." is load's low mark. The verdict
+# names a critical Tctl (cpu-temp.sh FLEET_CRIT_TCTL) ahead of every other reason, so no floor starts work
+# on a host near its thermal shutdown (tuf-b550 powered off at 110 C, 2026-11-25, ar-6357).
 assess_why() {
   local v
-  [ "$1" != 1 ] || return 0
   if [ "$1" = 2 ]; then
     v=$(FLEET_HOLD_LOAD_X=1000000 fleet-assess --watch-probe 2>/dev/null) && return 0
     [[ "$v" == "HOLD held, load "* ]] && return 0
   else
-    fleet-assess --watch-probe >/dev/null 2>&1 && return 0
+    v=$(fleet-assess --watch-probe 2>/dev/null) && return 0
   fi
-  echo "fleet-assess says HOLD"
+  if [[ "$v" == "HOLD tctl "*" critical"* ]]; then echo "fleet-assess says ${v%% (*}"; return; fi
+  [ "$1" = 1 ] || echo "fleet-assess says HOLD"
 }
 
 # machine_why -> this machine's own holds (assess_why, load_why), "; "-joined, or nothing.
@@ -9359,7 +9511,7 @@ cmd_run() {
   local let_go; let_go=$(share_let_go "$only" "$FILLED") || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
-  [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
+  [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass${FILL_HELD:+; the fill held: $FILL_HELD}"; return 0; }
   SHARE_LET_GO=$let_go start_items "$(pass_order "$items")" "$room"   # the one unfiltered start the project share cap may let go in
 }
 
@@ -9452,7 +9604,10 @@ fill_day() {
   [[ " ${2:-} " != *" sprint "* ]] || SPRINT_ONLY=1
   local ASK_ONLY=${ASK_ONLY:-}
   [[ " ${2:-} " != *" ask "* ]] || ASK_ONLY=1
-  FILLED=0
+  FILLED=0 FILL_HELD=''
+  # A real fill reads a board brought up to origin first; a dry run names what the board says. The human's fresh
+  # asks (the `ask` floor) run now and never wait on a sync; promote still reads the gates on their row's own line.
+  [ "$DRY" = 1 ] || [[ " ${2:-} " == *" ask "* ]] || board_fresh || { FILL_HELD="this store could not be brought up to origin, so no row is promoted from a board that may be behind"; say "fill: $FILL_HELD"; return 0; }
   # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
   load_pool_idle   # once, before the judge's and the picks' subshells
   [ "${2:-}" = gated ] || judge_once || return 1
@@ -9676,7 +9831,7 @@ row_restart() {
 # row's: its add --plan --repeat would re-queue the phases that landed.
 promote() {
   local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
-  local g q gwait gates=() rm=() stacks=''
+  local g q gwait gates=() rm=() stacks='' htags=()
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
@@ -9690,9 +9845,9 @@ promote() {
       { say "skip $project: ${restart:-row no longer open: $key}"; return 1; }
     read -r restart closed <<<"$restart"
   fi
-  load_gates
-  [ -z "$GATES_FAILED" ] || { say "skip $project: $GATES_FAILED, so its gates cannot be read: $key"; return 1; }
-  for g in $(grep -oE '(^|[[:space:]])#[A-Za-z0-9_./-]+' <<<"${line%%<!--*}" | sed 's/^[[:space:]]*#//'); do
+  mapfile -t htags < <(grep -oE '(^|[[:space:]])#[A-Za-z0-9_./-]+' <<<"${line%%<!--*}" | sed 's/^[[:space:]]*#//')
+  gates_reread "${htags[@]}" || { say "skip $project: $GATE_ERR, so its gates cannot be read: $key"; return 1; }
+  for g in "${htags[@]}"; do
     # A returned hold:'s desk class rides as #desk/<class> (agent-queue pending_gates): back on the item, off the row.
     case "$g" in desk/?*) tags="${tags:+$tags }desk:${g#desk/}" rm+=(--remove "$g"); continue ;; esac
     [ -z "${GATE_ST[$g]+x}" ] || gates+=("$g")
