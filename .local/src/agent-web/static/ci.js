@@ -254,24 +254,23 @@ function ciPaint(el, t, ...more) {
   seekSection();
 }
 
-// The opened run's title, header line and rates (/api/builds/detail, hub_core::run_detail): its Summary.
+// The opened run's title and header line (/api/builds/detail, hub_core::run_detail): its Summary.
 function runHeader(o) {
   if (o.err) return `<div class="cline down">${esc(o.err)}</div>`;
   const d = o.d;
   if (!d) return `<div class="cline">Loading jobs...</div>`;
-  return `<div class="cline"><b>${esc(d.title)}</b></div><div class="cline">${esc(d.header)}</div>` +
-    (d.rates_error ? `<div class="cline warn">no rates: ${esc(d.rates_error)}</div>` : "");
+  return `<div class="cline"><b>${esc(d.title)}</b></div><div class="cline">${esc(d.header)}</div>`;
 }
 
-// The opened run's Jobs: the stage graph, then every job with its price and the steps (read when
+// The opened run's Jobs: the stage graph, then every job and its steps (read when
 // the row opens). Each cell carries its label, so a phone stacks a job into labelled lines.
 function runJobs(o, folds, page, owner, r) {
   const d = o.d;
   const k = o.key;
   const cell = (label, v, cls = "") => `<td data-label="${label}"${cls ? ` class="${cls}"` : ""}>${esc(v)}</td>`;
   const job = (j) => `<tr>${cell("job", j.name, "wrap")}${cell("class", j.class, "muted")}${cell("wait", j.wait_text, "n")}` +
-    `${cell("took", j.took_text, "n")}${cell("runner", j.runner, "wrap muted")}${cell("$", j.price.text, "n")}</tr>`;
-  const head = "<tr><th>job</th><th>class</th><th>wait</th><th>took</th><th>runner</th><th>$ basis</th></tr>";
+    `${cell("took", j.took_text, "n")}${cell("runner", j.runner, "wrap muted")}</tr>`;
+  const head = "<tr><th>job</th><th>class</th><th>wait</th><th>took</th><th>runner</th></tr>";
   const jobs = (d.jobs || []).length
     ? `<table class="tbl rdjobs">${head}${d.jobs.map(job).join("")}</table>` : "";
   const steps = (d.jobs || []).filter((j) => j.steps_text).map((j) => `<div class="cline"><b>${esc(j.name)}</b> ${esc(j.steps_text)}</div>`).join("");
