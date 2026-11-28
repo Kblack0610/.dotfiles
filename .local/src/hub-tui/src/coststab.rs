@@ -2671,7 +2671,15 @@ mod tests {
 
     #[test]
     fn no_claude_acct_data_says_so_and_still_shows_the_spend() {
-        let s = screen(&on("limits"), 80);
+        let mut c = costs();
+        c.burn = burn::build(&[], Default::default(), 1_000_000);
+        let s = on("limits")
+            .lines(&c, Palette::default(), 1_000_000, 80)
+            .0
+            .iter()
+            .map(crate::fit::plain)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(s.contains("\nBURN  no data from claude-acct"), "{s}");
         assert!(screen(&on("spend"), 80).contains("window:"));
     }
