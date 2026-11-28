@@ -5069,7 +5069,7 @@ alert_setup() {
   route '^check\(watch\): alertmanager-fleet tripped' agent fix-red 'fallback' -
   watch alertmanager-fleet TRIP -25200 high
   # the probe's `page:` line (its trip's level, watch-companion-loop) is not an alert row
-  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
+  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\nsystems: ConvergenceDrift=deploy HomelabCronJobFailed=deploy,ci TraderRunFailed=Bad!\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
     > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
 }
 
@@ -5089,6 +5089,30 @@ alert_setup() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial '4 queued as red fixes'
+}
+
+@test "triage: each alert's red loads its rule's system skills, else the watch's system" {
+  alert_setup
+  export BENCH_SKILLS_DIR="$SANDBOX/skills"
+  mkdir -p "$BENCH_SKILLS_DIR"/{fix-red,k8s-ops,ci-failures,sentinel}
+  printf -- '---\nname: fix-red\nmetadata:\n  system: [any]\n---\n' > "$BENCH_SKILLS_DIR/fix-red/SKILL.md"
+  printf -- '---\nname: k8s-ops\nmetadata:\n  system: [deploy]\n---\n' > "$BENCH_SKILLS_DIR/k8s-ops/SKILL.md"
+  printf -- '---\nname: ci-failures\nmetadata:\n  system: [ci]\n---\n' > "$BENCH_SKILLS_DIR/ci-failures/SKILL.md"
+  printf -- '---\nname: sentinel\nmetadata:\n  system: [telemetry]\n---\n' > "$BENCH_SKILLS_DIR/sentinel/SKILL.md"
+  printf 'system: telemetry\n' >> "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, .*; fix with fix-red: fix this alert; system deploy: load fix-red and k8s-ops #high'
+  # a label naming two ids loads both systems' skills
+  assert_line --regexp '^check\(alert\): HomelabCronJobFailed nas/bark-archive firing, .*; system ci deploy: load fix-red and ci-failures, k8s-ops #high'
+  # an id that is not lowercase is dropped, so that alert falls back to the watch's own system
+  assert_line --regexp '^check\(alert\): TraderRunFailed trader-web/walkforward firing, .*; system telemetry: load fix-red and sentinel #high'
+  # negative control: no systems line and no watch system names none
+  sed -i '/^systems: /d' "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"; sed -i '/^system:/d' "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, '
+  refute_line --regexp '^check\(alert\): .*system'
 }
 
 @test "triage: an alert row files at the trip's level, not the watch's fixed severity" {
