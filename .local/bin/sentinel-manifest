@@ -44,6 +44,11 @@ Verbs
   parts          one name per line: each part of the fleet a watch may claim to probe,
                  read from the architecture doc (the headings above its Flows table, then
                  the Flows table's first column), less the parts `health-exclude` names.
+  labels [DIR]   "<watch>, TAB, <bookkeeping>, TAB, <systems>" for each manifest in DIR (also a
+                 paused one): `true` when the manifest says `bookkeeping: true`, else `false`,
+                 then its `system:` ids sorted and comma-joined (empty when none; last, because
+                 a shell `read` on a tab folds an empty middle field away). One call for the
+                 whole dir: agent-mqtt-publish reads it once a pass, for the series labels.
   tags [DIR]     "<watch>, TAB, <part>" for each name in each manifest's `flows:` list (DIR
                  is ~/.agent/watches by default). `fleet-bench health` joins these with the
                  watch state; an unreadable manifest tags nothing, so its parts show
@@ -54,6 +59,10 @@ Verbs
 `metadata.system` uses). `validate --strict` requires it and checks the ids; plain `validate` checks only
 its shape, for the same reason it never checks `flows:` names. `fleet-bench triage` reads it to name the
 skills of that system in a tripped watch's red item.
+
+`bookkeeping: true` marks a watch that tracks work posture (release links, pts bands, deploy drift),
+not the health of a running system. It is optional and false when absent; the Command Center caps such
+a watch at a warning. `validate --strict` requires a boolean.
 
 `flows:` is an optional list of part names: which parts of the fleet the watch probes. Plain
 `validate` checks its shape; `validate --strict` also checks each name is in `parts`. Plain
@@ -400,6 +409,18 @@ def systems_of(doc):
     return [v.strip() for v in items if isinstance(v, str) and v.strip()]
 
 
+def bookkeeping_of(doc):
+    """True only for a manifest that says `bookkeeping: true` (a YAML boolean)."""
+    return doc.get("bookkeeping") is True
+
+
+def bookkeeping_errors(doc):
+    """--strict only: `bookkeeping:` is a boolean, so a quoted "true" is not read as false."""
+    if "bookkeeping" in doc and not isinstance(doc["bookkeeping"], bool):
+        return ["bookkeeping must be true or false (a YAML boolean)"]
+    return []
+
+
 def system_shape_errors(doc):
     if "system" not in doc:
         return []
@@ -454,6 +475,24 @@ def cmd_tags(directory):
             continue
         for name in names:
             print(f"{f[:-5]}\t{name}")
+    return 0
+
+
+def cmd_labels(directory):
+    directory = directory or os.path.expanduser("~/.agent/watches")
+    try:
+        files = sorted(f for f in os.listdir(directory) if f.endswith((".yaml", ".yaml.paused")))
+    except OSError as exc:
+        print(f"sentinel-manifest: {exc}", file=sys.stderr)
+        return 1
+    for f in files:
+        name = f[: -len(".paused")] if f.endswith(".paused") else f
+        try:
+            doc = load(os.path.join(directory, f))
+        except ValueError:
+            continue  # an unreadable manifest labels nothing: the publisher's default is none
+        systems = ",".join(sorted(set(systems_of(doc))))
+        print(f"{name[:-5]}\t{'true' if bookkeeping_of(doc) else 'false'}\t{systems}")
     return 0
 
 
@@ -543,6 +582,7 @@ def cmd_validate(path, strict=False):
         errors.extend(pagination_errors(doc))
         errors.extend(prom_series_errors(doc))
         errors.extend(flows_name_errors(doc))
+        errors.extend(bookkeeping_errors(doc))
         if not system_shape_errors(doc):
             errors.extend(system_name_errors(doc))
 
@@ -657,7 +697,7 @@ def cmd_validate(path, strict=False):
     return 0
 
 
-USAGE = "usage: sentinel-manifest {env|validate [--strict]} FILE | parts | tags [DIR]"
+USAGE = "usage: sentinel-manifest {env|validate [--strict]} FILE | parts | tags [DIR] | labels [DIR]"
 
 
 def main(argv):
@@ -668,6 +708,8 @@ def main(argv):
         return cmd_parts()
     if args[:1] == ["tags"] and len(args) <= 2 and not strict:
         return cmd_tags(args[1] if len(args) == 2 else "")
+    if args[:1] == ["labels"] and len(args) <= 2 and not strict:
+        return cmd_labels(args[1] if len(args) == 2 else "")
     if len(args) != 2 or args[0] not in ("env", "validate"):
         print(USAGE, file=sys.stderr)
         return 2

@@ -35,6 +35,8 @@ CACHE="${AGENT_MQTT_CACHE:-$HOME/.local/state/agent-mqtt}"
 READER_TIMEOUT="${AGENT_MQTT_READER_TIMEOUT:-25}"
 [[ "$READER_TIMEOUT" =~ ^[1-9][0-9]*$ ]] || READER_TIMEOUT=25
 READER_TTL=45 # seconds: under fleet-state.timer's minute, so the slow readers render at least once a tick
+# The manifest reader: next to this script unless a test or a host names another.
+SENTINEL_MANIFEST="${SENTINEL_MANIFEST:-$(dirname "$(realpath "$0")")/sentinel-manifest}"
 # Same staleness rule fleet.sh uses (one lib, so the two never disagree).
 _WATCH_LIB="${SENTINEL_WATCH_LIB:-$HOME/.local/lib/sentinel-watch.sh}"
 [ -r "$_WATCH_LIB" ] || _WATCH_LIB="$(dirname "$(realpath "$0")")/../lib/sentinel-watch.sh"
@@ -284,6 +286,13 @@ snapshot() {
 
     # Watches: the registry is the manifest dir; a paused manifest stays visible as paused.
     local qnow; qnow="$(date +%s)"   # once a pass: each watch's quarantine is in force while UNTIL is ahead
+    # The manifests' system: ids and bookkeeping: flag, read in one call: the Command Center groups
+    # watches by them (ar-6154). A host with no sentinel-manifest labels none.
+    local -A w_systems=() w_bookkeeping=()
+    local lname lsys lbook
+    while IFS=$'\t' read -r lname lbook lsys; do
+        w_systems[$lname]="$lsys"; w_bookkeeping[$lname]="$lbook"
+    done < <("$SENTINEL_MANIFEST" labels "$WATCHES" 2>/dev/null)
     for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
         [ -f "$f" ] || continue
         name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"
@@ -300,6 +309,7 @@ snapshot() {
             --arg severity "$(watch_trip_level "$f" "$WSTATE")" \
             --arg since "$(iso "$since")" --argjson since_epoch "$(num "$since")" \
             --arg lastrun "$(iso "$lr")" --argjson quarantined "$quarantined" \
+            --arg system "${w_systems[$name]:-}" --argjson bookkeeping "${w_bookkeeping[$name]:-false}" \
             '{state: $state, paused: $paused,
               since: (if $since == "" then null else $since end),
               last_run: (if $lastrun == "" then null else $lastrun end),
@@ -308,7 +318,12 @@ snapshot() {
               # catch-all reads mqtt_severity_rank to warn on a tripped low watch instead of going red.
               severity: $severity, severity_rank: {low: 1, normal: 2, high: 3, urgent: 4}[$severity],
               # A red its owner took on with an expiry: the rollup counts it a warning, not down.
-              quarantined: ($quarantined and ($state == "TRIP" or $state == "ERROR"))}')"
+              quarantined: ($quarantined and ($state == "TRIP" or $state == "ERROR")),
+              # The manifest system: ids, sorted and comma-joined (empty when it has none), and its
+              # bookkeeping: flag. mqtt2prom drops the text, so each id also rides as a system_<id>
+              # boolean (a hyphen is an underscore): Prometheus reads the system from the name of that key.
+              system: $system, bookkeeping: $bookkeeping}
+             + ($system | split(",") | map(select(length > 0) | {key: ("system_" + gsub("-"; "_")), value: true}) | from_entries)')"
     done
 
     # Open asks: questions an agent is blocked on until the human answers.

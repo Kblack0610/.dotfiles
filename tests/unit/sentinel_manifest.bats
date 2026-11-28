@@ -551,3 +551,28 @@ own_map() { printf '{"paths":{},"trackers":{"agent-runtime":{"systems":{"dispatc
   assert_failure
   assert_output --partial 'system must be a system id or a list'
 }
+
+# -- labels: what the Command Center groups a watch by (ar-6154) ----------------
+
+@test "labels prints each manifest's sorted system ids and its bookkeeping flag, paused ones too" {
+  local d="$BATS_TEST_TMPDIR/watches"; mkdir -p "$d"
+  printf 'name: a\nprobe: http\nsystem: [tests, ci]\nbookkeeping: true\n' > "$d/a.yaml"
+  printf 'name: b\nprobe: http\nsystem: deploy\n' > "$d/b.yaml"
+  printf 'name: c\nprobe: http\nbookkeeping: "true"\n' > "$d/c.yaml.paused"
+  printf 'name: [unclosed\n' > "$d/broken.yaml"
+  run "$SM" labels "$d"
+  assert_success
+  assert_output "$(printf 'a\ttrue\tci,tests\nb\tfalse\tdeploy\nc\tfalse\t')"
+}
+
+@test "--strict refuses a bookkeeping value that is not a boolean, which plain validate accepts" {
+  legible; without system; printf 'system: ci\nbookkeeping: "true"\n' >> "$M"
+  run "$SM" validate "$M"
+  assert_success
+  run "$SM" validate --strict "$M"
+  assert_failure
+  assert_output --partial 'bookkeeping must be true or false'
+  without bookkeeping; echo 'bookkeeping: true' >> "$M"
+  run "$SM" validate --strict "$M"
+  assert_success
+}
