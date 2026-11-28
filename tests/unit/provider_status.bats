@@ -67,6 +67,18 @@ inc() { printf '{"name":"%s","impact":"%s","components":[%s]}' "$1" "$2" "$3"; }
   refute_line --partial 'Magic Transit degraded'
 }
 
+@test "a Cloudflare Dashboard-only incident stays clear, Dashboard plus API trips" {
+  feed www.cloudflarestatus.com "[$(inc 'Email Delivery Delays' critical '{"name":"Dashboard"}')]"
+  run "$REPO_ROOT/.local/bin/provider-status"
+  assert_success
+  assert_output ''
+
+  feed www.cloudflarestatus.com "[$(inc 'Dashboard and API issues' major '{"name":"Dashboard"},{"name":"API"}')]"
+  run "$REPO_ROOT/.local/bin/provider-status"
+  assert_failure 1
+  assert_line 'Cloudflare: Dashboard and API issues (major)'
+}
+
 @test "an unreadable page is UNREACHABLE, never clear, and an incident outranks it" {
   rm "$SANDBOX/feeds/status.claude.com.json"
   echo 'not json' > "$SANDBOX/feeds/www.cloudflarestatus.com.json"
