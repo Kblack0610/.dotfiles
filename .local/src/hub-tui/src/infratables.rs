@@ -215,8 +215,9 @@ impl InfraTables {
                     infra
                         .ci
                         .glance
-                        .pending_line()
-                        .map(|l| Line::styled(l, p.warn())),
+                        .pending_line
+                        .as_ref()
+                        .map(|l| Line::styled(l.clone(), p.warn())),
                 );
                 out
             }
@@ -434,10 +435,10 @@ fn booked(m: &Machine, p: crate::fmt::Palette) -> Cell {
         }
         None => m.booked_cell(),
     };
-    match (m.off, share >= 1.0) {
-        (0, false) => text.into(),
-        (0, true) => cell(text, p.warn()),
-        (n, _) => cell(format!("{text} +{n} off"), p.warn()),
+    let style = p.hue(m.levels().booked);
+    match m.off {
+        0 => cell(text, style),
+        n => cell(format!("{text} +{n} off"), style),
     }
 }
 
@@ -455,32 +456,28 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
                 hub_core::reading::NO_DATA => p.dim(),
                 _ => p.warn(),
             };
+            let lv = m.levels();
             let load = match (m.load, m.cores) {
                 (None, _) => "-".into(),
-                (Some(l), c) => {
-                    let s = format!("{l:.1}/{}", c.map_or("?".into(), |c| format!("{c:.0}")));
-                    if c.is_some_and(|c| l > c * 1.5) {
-                        cell(s, p.warn())
-                    } else {
-                        s.into()
-                    }
-                }
+                (Some(l), c) => cell(
+                    format!("{l:.1}/{}", c.map_or("?".into(), |c| format!("{c:.0}"))),
+                    p.hue(lv.load),
+                ),
             };
             let temp = match m.temp {
                 None => "-".into(),
-                Some(t) if t >= hub_core::host_now::HOT_C => cell(format!("{t:.0}C"), p.warn()),
-                Some(t) => format!("{t:.0}C").into(),
+                Some(t) => cell(format!("{t:.0}C"), p.hue(lv.temp)),
             };
             vec![
                 m.host.clone().into(),
                 cell(&m.state, state),
                 booked(m, p),
-                pct(m.cpu).into(),
+                cell(pct(m.cpu), p.hue(lv.cpu)),
                 pct(m.cpu6h).into(),
                 load,
-                pct(m.mem).into(),
+                cell(pct(m.mem), p.hue(lv.mem)),
                 temp,
-                pct(m.disk).into(),
+                cell(pct(m.disk), p.hue(lv.disk)),
                 dash(m.running.join(", ")).into(),
                 m.next
                     .as_ref()
@@ -529,7 +526,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
                 num(r.done_5h),
                 num(r.done),
                 r.usual.map_or("-".into(), |s| dur_secs(s).into()),
-                cell(pct(r.pass), p.pass(r.pass)),
+                cell(pct(r.pass), p.hue(r.pass_level)),
                 dash(shown(r, "machines")).into(),
             ]
         },
