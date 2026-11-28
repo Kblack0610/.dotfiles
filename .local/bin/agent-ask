@@ -111,6 +111,10 @@
 #                                       park still idle (park.conf). One line per ask it acts on
 #   agent-ask precedents <before>       the human's latest disagreements answered before an ISO
 #                                       time, newest first: what the judge reads with an ask
+#   agent-ask standing [--propose]      the ask shapes the human answered the same way STANDING_BAR
+#                                       times running (project, kind, shape, answer, count, ids; TSV);
+#                                       --propose files each as one agent-propose, which on accept
+#                                       queues the standing-orders.conf row. assume-due runs it hourly
 #   agent-ask trace <id> [--json]       the ask's Full log: its timeline, the judge's call line
 #                                       (model, time, cost, prompt sha, raw) and Langfuse link
 #
@@ -240,6 +244,12 @@ ASKS_ROOT="$(ask_root)"
 : "${AGENT_ASK_HOLD_CMD:=agent-hold}"
 : "${AGENT_ASK_LESSONS_CMD:=lessons}"
 : "${AGENT_ASK_LESSONS_DIR:=$HOME/.agent/lessons}"
+# STANDING ORDERS (post, after route_knowledge). The human answering one ask shape the same way
+# STANDING_BAR times running is a precedent: `standing --propose` files it as one agent-propose, and
+# accepting that queues a row in standing-orders.conf, which settles later asks of the shape.
+: "${AGENT_ASK_STANDING_FILE:=${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/standing-orders.conf}"
+: "${AGENT_ASK_PROPOSE_CMD:=agent-propose}"
+: "${AGENT_ASK_STANDING_STAMP:=$HOME/.local/state/agent-ask/standing-pass}"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
 
@@ -1822,6 +1832,7 @@ cmd_assume_due() {
   done < <(ask_files --all | xargs -r -d '\n' grep -l '^assume_at: .' 2>/dev/null |
     ask_open_files)
   cmd_expire
+  standing_pass
   # Last, so a stalled call never holds expiry.
   rejudge_timed_out
 }
@@ -2613,7 +2624,8 @@ review_judge_answer() {
   if [ -n "$pick" ] && [ "${pick,,}" != "${said,,}" ]; then
     set_field "$f" judge_override "$pick" judge_override_note "$where: $text" judge_override_at "$(now_iso)"
     queue_changed
-    judge_demote_check "$f"
+    # A standing order's answer is the human's own rule, not a judge cell: nothing to demote.
+    [ -n "${ASK[standing_order]:-}" ] || judge_demote_check "$f"
   elif [ -n "$pick" ]; then
     set_field "$f" judge_override kept judge_override_note "$where: $text" judge_override_at "$(now_iso)"
     queue_changed
@@ -3146,8 +3158,8 @@ post_settle() {
     return
   fi
   route_knowledge "$f" "$2" "$3" || rc=$?
-  [ "$rc" -eq 1 ] && return 10
-  return "$rc"
+  [ "$rc" -eq 1 ] || return "$rc"
+  standing_settle "$f" "$3" "$4" || return 10
 }
 
 # route_knowledge <file> <kind> <extra>: route a judged knowledge ask away from the human. Returns
@@ -3205,6 +3217,106 @@ route_physical() {
     return 1
   fi
   echo "agent-ask post: no ask filed: a physical action is the human's to do, not to decide. Filed sheet row ${rid:-on $project} and hold $hold; work that needs it waits on 'agent-hold check $hold', released when the human has done it." >&2
+}
+
+# The shape of a question, so two asks that differ only in a quoted title, an id or a number are one:
+# lowercased, each quoted or backticked span `Q`, each token that opens with a digit `N`. Defined in jq
+# once: `standing` groups by it and post matches by it.
+JQ_SHAPE='def shape: ascii_downcase | gsub("\"[^\"]*\"|`[^`]*`"; "Q") | gsub("[0-9][0-9a-z._:-]*"; "N") | gsub("[ \t\n]+"; " ") | .[0:140];'
+ask_shape() { jq -Rrn "$JQ_SHAPE"'input | shape' <<<"$1"; }
+
+# standing_orders: the rows of standing-orders.conf, `<project>/<kind>/<shape>=<answer>` a line, comments
+# and blanks dropped. A plain file, not ask-judge.conf (which is sourced): a shape holds quotes and `$`.
+standing_orders() { sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; /^(#|$)/d' "$AGENT_ASK_STANDING_FILE" 2>/dev/null; }
+
+# standing_order_for <file>: the standing-orders.conf row that settles this ask, `<row key><TAB><answer>`,
+# or fail. The human accepted each row as a proposal, so it is their word for that shape. It never settles an ask that has a resume of its
+# own (the answer starts work: a post to send), an audit, one at the human floor, one the judge sent
+# to the human as critical, or one whose answer is not among its options.
+standing_order_for() {
+  local f="$1" kind key row ans opt orders
+  orders="$(standing_orders)"
+  [ -n "$orders" ] || return 1
+  kind="$(field "$f" kind)"
+  case "$kind" in question|gate|approval) ;; *) return 1 ;; esac
+  [ -z "$(field "$f" audit_of)" ] && [ -z "$(field "$f" resume)" ] || return 1
+  [ "$(field "$f" judge_level)" != critical ] && [ "$(field "$f" judge_human_only)" != true ] || return 1
+  ! human_floor "$(ask_text "$f")" "$f" >/dev/null || return 1
+  key="$(field "$f" project)/$kind/$(ask_shape "$(field "$f" question)")"
+  while IFS= read -r row; do
+    [ "${row%=*}" = "$key" ] || continue
+    ans="${row##*=}"
+    if [ -n "$(field "$f" options)" ]; then
+      opt="$(tr '|' '\n' <<<"$(field "$f" options)" | grep -ixF -m1 -- "$ans")" || return 1
+      ans="$opt"
+    fi
+    printf '%s\t%s\n' "$key" "$ans"
+    return 0
+  done <<<"$orders"
+  return 1
+}
+
+# standing_settle <file> <extra> <wait>: answer a freshly judged ask by its standing order, as a live
+# judge answer is at post (answer_live): recorded `answered_by: judge` with `standing_order:` naming
+# the row, and told to the asker on stderr. <extra> is non-empty for a blocker or resume ask, which
+# needs the human. Fails, changing nothing, when no order settles it.
+standing_settle() {
+  local f="$1" row ans key
+  [ -z "$2" ] || return 1
+  row="$(standing_order_for "$f")" || return 1
+  key="${row%%$'\t'*}"; ans="${row#*$'\t'}"
+  record_answer "$f" judge "$ans" standing_order "$key" || return 1
+  told_at_post "$f" "Answered by a standing order ($key): $ans. The human accepted it after answering the same way every time; they can override in this session."
+  if [ "$3" -eq 1 ]; then field "$f" answer; else field "$f" id; fi
+}
+
+# cmd_standing [--propose]: the ask shapes the human answered the same way the last STANDING_BAR times
+# within STANDING_DAYS, none already a standing-orders.conf row: `<project><TAB><kind><TAB><shape><TAB>
+# <answer><TAB><n><TAB><ids>`. Only the human's own answers count (never the judge's or an agent's),
+# of asks with no resume or audit of their own, and an option answer counts by the option it names.
+# The floor and level checks of standing_order_for run at post, on the ask itself. --propose files each as one agent-propose, verb queue, so accepting it queues the row's PR
+# and rejecting it is remembered: nothing is added to the conf without the human's accept.
+cmd_standing() {
+  local propose="" asks rows project kind shape answer n ids key title row
+  case "${1:-}" in --propose) propose=1 ;; '') ;; *) echo "usage: agent-ask standing [--propose]" >&2; return 2 ;; esac
+  asks="$(judge_ask_docs "$ASKS_ROOT" | jq -c 'select(.status == "answered"
+    and ((.answered_by // "") | IN("", "human")) and ((.kind // "") | IN("question", "gate", "approval"))
+    and (.audit_of // "") == "" and (.resume // "") == "" and (.answer // "") != "")')"
+  [ -n "$asks" ] || return 0
+  rows="$(jq -sr --argjson picks "$(answer_picks "$asks")" --argjson bar "$(judge_conf STANDING_BAR 3)" \
+      --argjson days "$(judge_conf STANDING_DAYS 60)" --arg orders "$(standing_orders)" \
+      "$JQ_EPOCH$JQ_SHAPE"'
+    ($orders | split("\n") | map(sub("=[^=]*$"; ""))) as $have
+    | map(select((.answered_at | epoch) as $t | $t != null and $t >= (now - $days * 86400))
+        | . + {pick: ($picks[.id] // (if (.options // "") == "" then .answer else null end)), shape: (.question | shape)}
+        | select(.pick != null))
+    | group_by([.project, .kind, .shape])[]
+    | sort_by(.answered_at | epoch) | .[-$bar:] as $last
+    | select(length >= $bar and ($last | map(.pick | ascii_downcase) | unique | length) == 1)
+    | select("\(.[0].project)/\(.[0].kind)/\(.[0].shape)" as $k | any($have[]; . == $k) | not)
+    | [.[0].project, .[0].kind, .[0].shape, $last[-1].pick, ($last | length), ($last | map(.id) | join(","))] | @tsv' <<<"$asks")" || return 1
+  while IFS=$'\t' read -r project kind shape answer n ids; do
+    [ -n "$project" ] || continue
+    if [ -z "$propose" ]; then printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$project" "$kind" "$shape" "$answer" "$n" "$ids"; continue; fi
+    key="standing/$project/$kind/$(printf '%s' "$shape" | sha256sum | cut -c1-12)"
+    row="$project/$kind/$shape=$answer"
+    title="Standing order: answer '$answer' to $project $kind asks like '$shape'"
+    # The queue project is the one that owns the conf, not the ask's. A repeat is the open or the
+    # decided proposal (a rejected shape is not proposed again); a cap hit is retried next pass.
+    $AGENT_ASK_PROPOSE_CMD add --stream standing-orders --project agent-runtime --verb queue --key "$key" \
+      --why "The human answered the same way $n times running (asks $ids). Accepting queues one PR adding the row to standing-orders.conf in the private repo; later asks of this shape then settle with '$answer' at post, never one with a resume of its own, a critical one or one at the human floor. Delete the row to undo." \
+      --evidence "$ids" \
+      --arg "feat(asks): add the standing order \`$row\` to standing-orders.conf in the private repo, .config/agentctl/agents (the human accepted it after $n same answers: asks $ids) #size/s" \
+      "$title" >/dev/null 2>&1 || true
+  done <<<"$rows"
+}
+
+# standing_pass: cmd_standing --propose at most once an hour, from each assume-due pass. It reads every
+# ask file, so a pass each minute would repeat that read for nothing new: precedents grow by answers.
+standing_pass() {
+  find "$AGENT_ASK_STANDING_STAMP" -mmin -60 2>/dev/null | grep -q . && return 0
+  mkdir -p "$(dirname "$AGENT_ASK_STANDING_STAMP")" 2>/dev/null && : > "$AGENT_ASK_STANDING_STAMP" || return 0
+  cmd_standing --propose || true
 }
 
 # older_asks <file>: the pending asks posted before this one that another can join (settle_by_verdict),
@@ -3424,6 +3536,7 @@ case "$sub" in
   settle-session) cmd_settle_session "$@" ;;
   judge)        cmd_judge "$@" ;;
   precedents)   cmd_precedents "$@" ;;
+  standing)     cmd_standing "$@" ;;
   sweep)        cmd_sweep "$@" ;;
   assume-due)   cmd_assume_due ;;
   expire)       cmd_expire "$@" ;;
