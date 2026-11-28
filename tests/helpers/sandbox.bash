@@ -116,7 +116,7 @@ sandbox_tool_files() {
   cp "$TESTS_DIR/fixtures/lanes.tsv" "$AGENTCTL_LANES_FILE"
   # hub-figure (a repo bin on PATH) keeps its cache in XDG_RUNTIME_DIR (the sandbox's by now:
   # sandbox_detach_env ran first) and asks the host's `hub` when it is stale: a test with no hub-figure stub read the workstation's
-  # live figure (agent_ask.bats count --all printed 31, not ?). Point both inside the sandbox; a
+  # live figure (agent_ask.bats count --all printed 31, not ?). Point both inside the sandbox;
   # hub-figure test sets its own after sandbox_init, and a `hub` stub in $SANDBOX/bin is the one it asks.
   export HUB_FIGURE_CACHE="$SANDBOX/tmp/hub-figure.json" HUB_FIGURE_HUB="$SANDBOX/bin/hub"
 }
@@ -195,12 +195,14 @@ sandbox_detach_env() {
   # exports for its agent: MODEL and HARNESS outrank the conf (agent_run_codex.bats read a Claude
   # model as Codex's), AGENTCTL_ACCOUNT and a Claude session's CLAUDE_CONFIG_DIR pick the account
   # (agent_run_route.bats), FLEET_SHEPHERD_HOLDER makes the lease the runner's (fleet_shepherd.bats),
-  # AGENTCTL_AGENT names the caller in the call log, DIR and FILE point at live state, caps at the conf.
+  # AGENTCTL_AGENT names the caller in the call log, DIR and FILE point at live state, caps at the conf,
+  # and SSH_AUTH_SOCK is the live ssh agent, which would let a test reach a real fleet worker.
   # sandbox_isolation.bats reads both launchers' exports, so a new one fails there until it is here; LANE comes from the
   # unit's EnvironmentFile conf, in no launcher, and turned fleet_dispatch's model-lane stub. A test that wants one sets it after sandbox_init.
   unset LANE MODEL HARNESS ROUTE DATA_CLASS AGENTCTL_ACCOUNT AGENTCTL_INBOX AGENTCTL_EXPLAIN CLAUDE_TELEMETRY_SERVICE \
     FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_HOLDER FLEET_SHEPHERD_LEASE_MIN CLAUDE_CONFIG_DIR BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR \
-    AGENTCTL_AGENT AGENT_PROMPT AGENT_PROMPT_SHA AGENT_PROMPT_RENDERED AGENT_SCHEMA AGENT_MAX_TOKENS AGENT_TEMPERATURE AGENT_CALL_CONTEXT ROUTE_FROM
+    AGENTCTL_AGENT AGENT_PROMPT AGENT_PROMPT_SHA AGENT_PROMPT_RENDERED AGENT_SCHEMA AGENT_MAX_TOKENS AGENT_TEMPERATURE AGENT_CALL_CONTEXT ROUTE_FROM \
+    SSH_AUTH_SOCK
 
   # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
   # that as "detach through systemd-run", which would start a real transient scope.
@@ -211,6 +213,11 @@ sandbox_detach_env() {
   # launch runs unscoped; claude_acct.bats gives one a socket, with busctl stubbed.
   export XDG_RUNTIME_DIR="$SANDBOX/run"
   mkdir -p "$XDG_RUNTIME_DIR"
+
+  # agent-queue's order ages a queued item from its ready time to the wall clock (AGENT_QUEUE_AGE_STEP),
+  # and fixtures carry fixed past dates, so the date a suite runs would decide their order. Off for
+  # every test; agent_queue.bats "ranks one tier higher" sets a step and a whole AGENT_QUEUE_NOW.
+  export AGENT_QUEUE_AGE_STEP=0
 
   # A runner shell that exports NO_COLOR or PANEL_NO_COLOR would blank every palette the
   # colour fixtures assert on (md_render, panel_lib, questions_panel). A test that wants no
@@ -419,6 +426,10 @@ EOF
   printf '%s' "$state" > "$WATCH_STATE_DIR/$name.state"
 }
 
+# unix_sock <path> -- a bound AF_UNIX socket file at <path> that no process listens on: what a tmux
+# server or the systemd user manager leaves for a reader that tests `-S`. One home for it (ar-4870).
+unix_sock() { python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$1"; }
+
 # fleet_field <type> <field-no> — the given field of every row of a type, ANSI stripped.
 fleet_field() {
   "$FLEET" --list 2>/dev/null | awk -F'\t' -v t="$1" -v n="$2" '$1==t { print $n }' | strip_ansi
@@ -432,6 +443,17 @@ fleet_field() {
 _stub_script() { local f="$1/$2.script"; shift 2; if [ $# -gt 0 ]; then printf '%s\n' "$1" > "$f"; else cat > "$f"; fi; chmod +x "$f"; }
 gh_script() { _stub_script "${GH_FIXTURE:-$NOTES_FIXTURE}" gh "$@"; }
 tmux_script() { _stub_script "$NOTES_FIXTURE" tmux "$@"; }
+
+# ss_stub -> the shared `schedules-sync` stub (helpers/stubs), the one reader of the ledger and the PR store: SCHEDULES_SYNC
+# points at it and its fixture dir is $SS_FIXTURE (default $GH_FIXTURE). Its header lists the ss.* files that answer a verb.
+# ss_answer <name> <value> writes one (ss_answer prs.out '[]', ss_answer sync-prs.rc 3, ss_answer prs.o_r.err 'stale');
+# ss_script <body> is a test's own behaviour, as gh_script, for what files cannot say.
+ss_stub() {
+  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" SS_FIXTURE="${SS_FIXTURE:-${GH_FIXTURE:-$NOTES_FIXTURE}}"
+  mkdir -p "$SS_FIXTURE"
+}
+ss_answer() { ss_stub; printf '%s\n' "$2" > "$SS_FIXTURE/ss.$1"; }
+ss_script() { ss_stub; _stub_script "$SS_FIXTURE" ss "$@"; }
 
 # The log of stub CLI invocations, one shell-quoted command per line.
 calls() { cat "$NOTES_FIXTURE/calls.log" 2>/dev/null; }

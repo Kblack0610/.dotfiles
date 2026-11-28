@@ -1,7 +1,7 @@
-//! The Reports tab's reader, for both hub surfaces: every file in the refs day folders, as
-//! `notes report list --json --all` prints them (notes-cli `report.rs` owns the contract, the
-//! kinds and the stream rule), shaped into the tab's sections. Today holds the reports that need
-//! the human, then the stream (today's reports and unread ones under a week old, the `stream`
+//! The Reports tab's reader, for both hub surfaces: every file in the inbox day folders (reports)
+//! and the refs day folders (digests and captures), as `notes report list --json --all` prints
+//! them (notes-cli `report.rs` owns the contract, the kinds and the stream rule), shaped into
+//! the tab's sections. Today holds the reports that need the human, then the stream (today's reports and unread ones under a week old, the `stream`
 //! flag the CLI sets), then today's digests and the human's own captures; Archive holds every
 //! other report by day. The one writer is `notes report read`, which agent-web calls when a
 //! report is opened ([`read_argv`]); this reader never changes a file.
@@ -85,7 +85,7 @@ impl Row {
             id: e.id.clone(),
             kind: e.kind.clone(),
             date: e.date.clone(),
-            title: Shown::title(&e.title),
+            title: Shown::name(&e.title),
             summary: Shown::sub(e.summary.lines().next().unwrap_or("")),
             from: e.from.clone(),
             at: e.created.clone(),
@@ -335,7 +335,7 @@ mod tests {
     // a read and an unread report today, an unread one from yesterday (still in the stream), a
     // read one and an unread one past the week (archive), a digest and a pasted capture.
     const LIST: &str = concat!(
-        r#"{"id":"2026-11-24-ups-switch","kind":"report","date":"2026-11-24","slug":"ups-switch","title":"UPS switch","summary":"Load fell 76% -> 41%\nUSB link still down","from":"ar-1","needs_you":true,"created":"2026-11-24T15:40:00-08:00","updated":"2026-11-24T15:40:00-08:00","read":null,"stream":true,"target":"journal/refs/2026-11-24/ups-switch","path":"/v/ups-switch.md"}"#,
+        r#"{"id":"2026-11-24-ups-switch","kind":"report","date":"2026-11-24","slug":"ups-switch","title":"UPS switch: did moving the CI boxes cut the load (ar-1)?","summary":"Load fell 76% -> 41%\nUSB link still down","from":"ar-1","needs_you":true,"created":"2026-11-24T15:40:00-08:00","updated":"2026-11-24T15:40:00-08:00","read":null,"stream":true,"target":"journal/refs/2026-11-24/ups-switch","path":"/v/ups-switch.md"}"#,
         "\n",
         r#"{"id":"2026-11-24-board-pass","kind":"report","date":"2026-11-24","slug":"board-pass","title":"Board cleanup pass 3","summary":"212 -> 168 open rows","from":"ar-2","needs_you":false,"created":"2026-11-24T11:15:00-08:00","updated":"","read":"2026-11-24T12:00:00-08:00","stream":true,"target":"journal/refs/2026-11-24/board-pass","path":"/v/board-pass.md"}"#,
         "\n",
@@ -387,6 +387,18 @@ mod tests {
         assert_eq!(ids(&v.sections[2].rows), ["2026-11-24-briefing"]);
         assert_eq!(ids(&v.sections[3].rows), ["2026-11-24-paste"]);
         assert!(v.sections[2].folded && v.sections[3].folded);
+    }
+
+    #[test]
+    fn a_report_title_is_shown_whole_not_cut_at_its_first_clause() {
+        // A board row's title stops at `: `; a report's is its author's words, the id-only
+        // bracket aside, as every title drops it.
+        let t = &view().sections[0].rows[0].title;
+        assert_eq!(
+            t.text(),
+            "UPS switch: did moving the CI boxes cut the load?"
+        );
+        assert_eq!(Shown::title("UPS switch: did it").text(), "UPS switch");
     }
 
     #[test]

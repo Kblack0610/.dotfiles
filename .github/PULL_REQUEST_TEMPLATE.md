@@ -11,7 +11,7 @@
      cannot fail is not a test. If something could not be verified, say so
      explicitly rather than leaving it implied. -->
 
-- [ ] CI `gate` green: it is red unless `fast` (what `tests/pick.sh` picks), `ui`, `rust`, `notes`, `skills` and `lint` all ran and passed, so a `.local/src/tmux/` change gets the ui tier without asking (an agent session runs no test on the workstation)
+- [ ] CI `gate` green: it is red unless `fast` (what `tests/pick.sh` picks), `ui`, `rust` (the crates `tests/pick.sh rust` picks), `notes` (its steps skip when `tests/pick.sh notes` picks nothing), `skills` and `lint` all ran and passed, so a `.local/src/tmux/` change gets the ui tier without asking (an agent session runs no test on the workstation)
 - [ ] A new test's negative control: the CI run that went red on the commit breaking its subject
 
 ## Skills

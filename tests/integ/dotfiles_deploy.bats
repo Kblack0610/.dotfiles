@@ -397,13 +397,15 @@ world_wt_private() {
 
 # The real tree, not a fixture: one tracked absolute symlink anywhere (a systemd enablement link)
 # aborts the whole `stow --no-folding .` apply_dotfiles runs, so stow deploys nothing at all.
-# Only TRACKED files are copied, so a clone's untracked runtime links cannot fail it.
+# Only TRACKED files are copied, so a clone's untracked runtime links cannot fail it. A sparse
+# checkout's skipped files (S in ls-files -t: CI's fast job leaves the binaries out) are not there.
 @test "stow deploys the real tracked tree with no conflict, .config/hypr included" {
   command -v stow >/dev/null || skip 'stow not installed'
   local src="$BATS_TEST_TMPDIR/tree" dst="$BATS_TEST_TMPDIR/target"
   mkdir -p "$src" "$dst"
   ( set -o pipefail
-    git -C "$REPO_ROOT" ls-files -z | tar -C "$REPO_ROOT" --null --no-recursion -T - -cf - \
+    git -C "$REPO_ROOT" ls-files -z -t | sed -z -n 's/^[^S] //p' \
+      | tar -C "$REPO_ROOT" --null --no-recursion -T - -cf - \
       | tar -xf - -C "$src" ) || fail 'copying the tracked tree failed'
   run stow --no-folding -n -v -d "$src" -t "$dst" .
   assert_success
@@ -411,7 +413,7 @@ world_wt_private() {
   local p
   while IFS= read -r p; do
     assert_output --partial "LINK: $p "
-  done < <(git -C "$REPO_ROOT" ls-files -- .config/hypr)
+  done < <(git -C "$REPO_ROOT" ls-files -t -- .config/hypr | sed -n 's/^[^S] //p')
 }
 
 @test "--missing: --check sees only MISSING, --apply links it and leaves a physical copy alone" {
@@ -759,6 +761,61 @@ systemd_fold() {
   assert_output --partial 'pruned    ~/.local/bin/gone'
   [ ! -L "$HOME/.local/bin/gone" ] || fail 'the stale link survived'
   [ -L "$HOME/.local/bin/foreign" ] || fail 'a link into no repo was pruned'
+}
+
+# settling_world - the public checkout on main, three commits: base, a second file, then
+# .local/bin/aq. ~/.local/bin/aq is linked, so any tree before the last commit leaves it dangling.
+settling_world() {
+  world
+  local g=(git -C "$PUB" -c user.email=t@example.com -c user.name=tester)
+  git -C "$PUB" symbolic-ref HEAD refs/heads/main
+  "${g[@]}" commit -qm base
+  radd "$PUB" .local/bin/second 'second'
+  "${g[@]}" commit -qm second
+  radd "$PUB" .local/bin/aq 'agent queue'
+  "${g[@]}" commit -qm aq
+  link .local/bin/second "$PUB"
+  link .local/bin/aq "$PUB"
+}
+
+@test "mid-rebase, a link that dangles only because the tree is unsettled is held, not pruned" {
+  settling_world
+  # Stops after replaying "second": the tree lacks aq and rebase-merge/ is present.
+  run git -C "$PUB" -c user.email=t@example.com -c user.name=tester rebase -q -x false HEAD~2
+  assert_failure
+  [ -d "$PUB/.git/rebase-merge" ] || fail 'the rebase did not stop'
+  [ ! -e "$PUB/.local/bin/aq" ] || fail 'the stopped tree still has aq: the fixture tests nothing'
+  run "$DEPLOY" --apply --missing
+  assert_output --partial 'HELD  1 dangling link(s) into public'
+  assert_output --partial 'mid-rebase'
+  refute_output --partial 'pruned    ~/'
+  [ -L "$HOME/.local/bin/aq" ] || fail 'the live link was pruned mid-rebase'
+  git -C "$PUB" rebase --abort
+  [ -e "$HOME/.local/bin/aq" ] || fail 'the link does not resolve once the rebase settles'
+}
+
+@test "on a detached HEAD or another branch, a dangling link is held; on main a removed file is pruned" {
+  settling_world
+  git -C "$PUB" checkout -q --detach HEAD~1
+  run "$DEPLOY" --apply --missing
+  assert_output --partial 'detached HEAD'
+  [ -L "$HOME/.local/bin/aq" ] || fail 'the live link was pruned on a detached HEAD'
+  # origin/HEAD names the default branch, as a clone records it.
+  git -C "$PUB" update-ref refs/remotes/origin/main main
+  git -C "$PUB" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+  git -C "$PUB" checkout -q -b feature
+  run "$DEPLOY" --apply --missing
+  assert_output --partial 'on feature, not main'
+  [ -L "$HOME/.local/bin/aq" ] || fail 'the live link was pruned on a feature branch'
+  # Settled on main, with aq truly removed: the prune runs.
+  git -C "$PUB" checkout -q main
+  git -C "$PUB" -c user.email=t@example.com -c user.name=tester rm -q .local/bin/aq
+  git -C "$PUB" -c user.email=t@example.com -c user.name=tester commit -qm 'drop aq'
+  run "$DEPLOY" --apply --missing
+  assert_success
+  assert_output --partial 'pruned    ~/.local/bin/aq'
+  refute_output --partial 'HELD'
+  [ ! -L "$HOME/.local/bin/aq" ] || fail 'a file removed on the settled default branch kept its link'
 }
 
 # -- RUNTIME: a directory link to a checkout directory no repo tracks --

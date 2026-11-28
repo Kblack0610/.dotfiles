@@ -10,9 +10,9 @@ on:
   workflow_call:
     inputs:
       runs-on:
-        description: "one runner label, or a JSON label list; the private repo passes [\"self-hosted\",\"light\"], a seat the governor lends, since GitHub bills hosted minutes there"
+        description: "one runner label, or a JSON label list; the private repo passes [\"self-hosted\",\"light\"], its ARC scale set arc-repo-dotfiles-private, since GitHub bills hosted minutes there"
         type: string
-        default: ubuntu-24.04
+        required: true
 
 permissions:
   contents: read

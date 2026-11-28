@@ -68,20 +68,15 @@ install_runtime() {
     # Node.js: NodeSource LTS (apt's nodejs is too stale); npm is bundled with it, so a box with apt nodejs and no npm gets it too
     if ! command -v node &>/dev/null || ! command -v npm &>/dev/null; then
         log_info "Installing Node.js (NodeSource LTS)..."
-        curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
-        sudo apt install -y nodejs &>/dev/null
+        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0
+        (set -o pipefail; curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -) || { log_error "NodeSource setup failed"; return 1; }
+        # apt's output stays visible, so a failed install logs its reason
+        sudo apt install -y nodejs
     fi
 
     # Python + pipx via catalog
     install_package_list install_apt_package debian \
         $PACKAGES_RUNTIME $PACKAGES_RUNTIME_DEBIAN
-
-    # Rust handled out-of-band (rustup, not apt)
-    if ! command -v cargo &>/dev/null; then
-        log_info "Installing Rust..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source "$HOME/.cargo/env"
-    fi
 }
 
 # Override: Install Zsh
@@ -426,6 +421,7 @@ install_all() {
     step dev        install_tmux
     step dev        install_lazygit
     step dev        install_kitty
+    step dev        install_rust
 
     fleet_steps
     step containers setup_docker

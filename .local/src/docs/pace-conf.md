@@ -6,7 +6,7 @@ The pace numbers live in `.config/claude-acct/pace.conf`: claude-acct's room ver
 2. else the key's standing override;
 3. else the pace.conf line.
 
-A window beats a standing override because it is the narrower, timed value: a 300% window inside a standing 100% applies while it runs. When a window ends, the next source is back the next time anything reads the key. No timer resets it (the same read-time expiry as `machine-mode release-lane`, [machine-mode.md](machine-mode.md)).
+A window beats a standing override because it is the narrower, timed value: a 300% window inside a standing 100% applies while it runs. When a window ends, the next source is back the next time anything reads the key. No timer resets it: the window expires when it is read.
 
 ## Use
 

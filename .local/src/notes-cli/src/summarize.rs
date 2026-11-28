@@ -12,6 +12,10 @@ use chrono::{Duration, Local, NaiveDate};
 use std::fs;
 use std::path::Path;
 
+/// Sections that carry the open task list forward day to day. A summary keeps only the tasks
+/// closed that day from these, so an entry says what happened, not what was still open.
+const CARRIED: &[&str] = &["Focus", "Carry Over"];
+
 /// (label shown in summary, heading searched in the note)
 pub const SECTIONS: &[(&str, &str)] = &[
     ("Focus", "Focus"),
@@ -83,7 +87,13 @@ pub fn build_summary(content: &str, date_s: &str) -> Option<String> {
     crate::daily::strip_backlog_footer(&mut body);
     let mut out: Vec<String> = vec![format!("### {date_s}")];
     for (label, heading) in SECTIONS {
-        if let Some(text) = md::section_text(&body, heading) {
+        let text = md::section_text(&body, heading);
+        let text = if CARRIED.contains(heading) {
+            text.and_then(|t| closed_tasks(&t))
+        } else {
+            text
+        };
+        if let Some(text) = text {
             out.push(format!("**{label}:**"));
             out.push(text);
         }
@@ -92,6 +102,17 @@ pub fn build_summary(content: &str, date_s: &str) -> Option<String> {
         return None;
     }
     Some(out.join("\n\n") + "\n\n---\n\n")
+}
+
+/// The closed (`- [x]`) task lines of a carried-forward section, or `None` when none closed.
+/// Open tasks, in-progress ones, sub-headings and rules are the carried list, not the day.
+fn closed_tasks(text: &str) -> Option<String> {
+    let kept: Vec<&str> = text.lines().filter(|l| md::is_checked(l)).collect();
+    if kept.is_empty() {
+        None
+    } else {
+        Some(kept.join("\n"))
+    }
 }
 
 fn ensure_header(path: &Path, month: &str) -> Result<()> {
@@ -119,9 +140,9 @@ mod tests {
 
     #[test]
     fn summary_drops_the_link_footer_from_the_last_section() {
-        let note = "# 2026-09-29\n\n## Notes\nhello\n\n## Focus\n- [ ] a task\n\n---\nBacklog: [[journal/backlogs/fun]] · Knowledge: [[journal/index/moc]]\n";
+        let note = "# 2026-09-29\n\n## Focus\n- [x] shipped it\n\n## Notes\nhello\n\n---\nBacklog: [[journal/backlogs/fun]] · Knowledge: [[journal/index/moc]]\n";
         let s = build_summary(note, "2026-09-29").unwrap();
-        assert!(s.contains("- [ ] a task"), "{s}");
+        assert!(s.contains("- [x] shipped it"), "{s}");
         assert!(s.contains("hello"), "{s}");
         assert!(
             !s.contains("Backlog:"),
@@ -131,13 +152,57 @@ mod tests {
 
     #[test]
     fn summary_extracts_sections() {
-        let note = "# 2026-06-03\n\n## Focus\n- did a thing\n\n## Notes\nhello\n";
+        let note = "# 2026-06-03\n\n## Focus\n- [x] did a thing\n\n## Notes\nhello\n";
         let s = build_summary(note, "2026-06-03").unwrap();
         assert!(s.starts_with("### 2026-06-03"));
         assert!(s.contains("**Focus:**"));
-        assert!(s.contains("- did a thing"));
+        assert!(s.contains("- [x] did a thing"));
         assert!(s.contains("**Notes:**"));
         assert!(s.trim_end().ends_with("---"));
+    }
+
+    #[test]
+    fn summary_keeps_closed_focus_tasks_and_drops_the_open_list() {
+        let note = "# 2026-11-02\n\n## Focus\n### Urgent\n- [ ] carried open\n- [/] carried in progress\n    - [ ] nested open\n\n### Done\n- [x] closed today\n\n## Notes\nwrote this\n";
+        let s = build_summary(note, "2026-11-02").unwrap();
+        assert!(s.contains("- [x] closed today"), "{s}");
+        assert!(s.contains("wrote this"), "{s}");
+        for open in [
+            "carried open",
+            "carried in progress",
+            "nested open",
+            "### Urgent",
+        ] {
+            assert!(
+                !s.contains(open),
+                "open Focus content leaked ({open}):\n{s}"
+            );
+        }
+    }
+
+    #[test]
+    fn summary_treats_carry_over_like_focus() {
+        let note = "# 2026-06-01\n\n## Carry Over\n- [ ] still open (21d)\n- [x] finished\n";
+        let s = build_summary(note, "2026-06-01").unwrap();
+        assert!(
+            s.contains("**Carry Over:**") && s.contains("- [x] finished"),
+            "{s}"
+        );
+        assert!(!s.contains("still open"), "{s}");
+    }
+
+    #[test]
+    fn summary_skips_a_focus_with_nothing_closed() {
+        let note = "# 2026-11-03\n\n## Focus\n- [ ] carried\n\n## Notes\nhello\n";
+        let s = build_summary(note, "2026-11-03").unwrap();
+        assert!(!s.contains("**Focus:**"), "{s}");
+        assert!(s.contains("hello"), "{s}");
+    }
+
+    #[test]
+    fn summary_none_when_only_open_tasks() {
+        let note = "# 2026-06-03\n\n## Focus\n- [ ] carried\n";
+        assert!(build_summary(note, "2026-06-03").is_none());
     }
 
     #[test]

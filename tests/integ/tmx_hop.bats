@@ -64,7 +64,7 @@ at() {
 @test "a running server with no manifest still hops" {
   export TMUX_TMPDIR="$SANDBOX/sockets"
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/stranded"
+  unix_sock "$TMUX_TMPDIR/tmux-$(id -u)/stranded"
   at hub daily 0
   run "$TMX" stranded
   assert_success
@@ -183,25 +183,32 @@ bound_command() {
 
 places() { cat "$XDG_STATE_HOME/tmx/places/${1//\//_}"; }
 
+# arrive <server> <session> <window> <tty> -- that terminal's client is now there, and its
+# arrival hook marks it. mark records only a client that list-clients shows at that window.
+arrive() {
+  printf '%s\t%s\n' "$4" "$3" > "$NOTES_FIXTURE/tmux.clients.$1"
+  "$TMX" mark "/tmp/tmux-1000/$1" "$2" "$3" "$4"
+}
+
 @test "mark keeps where you are now and where you were before" {
-  run "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
+  run arrive lab work @4 /dev/pts/3
   assert_success
-  "$TMX" mark /tmp/tmux-1000/hub dotfiles @7 /dev/pts/3
+  arrive hub dotfiles @7 /dev/pts/3
   run places /dev/pts/3
   assert_line --index 0 $'hub\tdotfiles\t@7'
   assert_line --index 1 $'lab\twork\t@4'
 }
 
 @test "a second mark of the same place does not lose where you were before" {
-  "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
-  "$TMX" mark /tmp/tmux-1000/hub dotfiles @7 /dev/pts/3
-  "$TMX" mark /tmp/tmux-1000/hub dotfiles @7 /dev/pts/3
+  arrive lab work @4 /dev/pts/3
+  arrive hub dotfiles @7 /dev/pts/3
+  arrive hub dotfiles @7 /dev/pts/3
   run places /dev/pts/3
   assert_line --index 1 $'lab\twork\t@4'
 }
 
 @test "a window change with no tty marks every terminal on that session" {
-  printf '/dev/pts/3\n/dev/pts/4\n' > "$NOTES_FIXTURE/tmux.clients.hub"
+  printf '/dev/pts/3\t@7\n/dev/pts/4\t@7\n' > "$NOTES_FIXTURE/tmux.clients.hub"
   "$TMX" mark /tmp/tmux-1000/hub dotfiles @7
   run places /dev/pts/3
   assert_line --index 0 $'hub\tdotfiles\t@7'
@@ -209,12 +216,70 @@ places() { cat "$XDG_STATE_HOME/tmx/places/${1//\//_}"; }
   assert_line --index 0 $'hub\tdotfiles\t@7'
 }
 
+@test "a mark for a client that has moved on is dropped" {
+  arrive lab work @4 /dev/pts/3
+  arrive hub notes @1 /dev/pts/3
+  # lab's window-change hook ran late: by then this terminal had hopped to hub.
+  : > "$NOTES_FIXTURE/tmux.clients.lab"
+  "$TMX" mark /tmp/tmux-1000/lab work @5
+  "$TMX" mark /tmp/tmux-1000/lab work @5 /dev/pts/3
+  run places /dev/pts/3
+  assert_output $'hub\tnotes\t@1\nlab\twork\t@4'
+}
+
+@test "a mark for a window the client has already left is dropped" {
+  arrive hub notes @1 /dev/pts/3
+  arrive hub notes @2 /dev/pts/3
+  # The jump to @3 marked late: the client was back on @2 by then.
+  "$TMX" mark /tmp/tmux-1000/hub notes @3 /dev/pts/3
+  "$TMX" mark /tmp/tmux-1000/hub notes @3
+  run places /dev/pts/3
+  assert_output $'hub\tnotes\t@2\nhub\tnotes\t@1'
+}
+
+# A hop fires arrival hooks on two servers at once, so marks for one tty overlap. Each server
+# here shows the client on its own window, so every mark is live; serialized, the file is two
+# whole lines and the place before is one of the marks, never the seed they all read first.
+# Each mark runs in a subshell that has sourced servers.sh and says so on `ready`, then waits
+# on `go`; once all have said so, one write to `go` releases them together.
+@test "concurrent marks for one tty leave two whole lines and lose none" {
+  local i n=24 pids=()
+  arrive seed work @0 /dev/pts/3
+  mkfifo "$BATS_TEST_TMPDIR/ready" "$BATS_TEST_TMPDIR/go"
+  exec 5<>"$BATS_TEST_TMPDIR/ready" 6<>"$BATS_TEST_TMPDIR/go"
+  for ((i = 1; i <= n; i++)); do
+    printf '/dev/pts/3\t@%s\n' "$i" > "$NOTES_FIXTURE/tmux.clients.w$i"
+    (
+      # shellcheck disable=SC1090
+      . "$TMX"
+      echo >&5
+      read -r _ <&6
+      cmd_mark "/tmp/tmux-1000/w$i" work "@$i" /dev/pts/3
+    ) & pids+=($!)
+  done
+  for ((i = 1; i <= n; i++)); do read -r _ <&5; done
+  printf '\n%.0s' $(seq "$n") >&6
+  # A mark that fails (a rename that lost the race for a shared temp file) is a lost mark.
+  local failed=0
+  for i in "${pids[@]}"; do wait "$i" || failed=$((failed + 1)); done
+  exec 5>&- 6>&-
+  assert_equal "$failed" 0
+  run places /dev/pts/3
+  assert_equal "${#lines[@]}" 2
+  assert_line --index 0 --regexp $'^w[0-9]+\twork\t@[0-9]+$'
+  assert_line --index 1 --regexp $'^w[0-9]+\twork\t@[0-9]+$'
+  [ "${lines[0]}" != "${lines[1]}" ]
+  # No temp file left beside it.
+  run find "$XDG_STATE_HOME/tmx/places" -name '_dev_pts_3?*'
+  assert_output ''
+}
+
 @test "back to a window in the same session selects it and switches, no re-attach" {
   export STUB_CLIENT_TTY=/dev/pts/3
   printf 'dotfiles\n' > "$NOTES_FIXTURE/tmux.sessions.hub"
   printf '@5\n@7\n' > "$NOTES_FIXTURE/tmux.window_ids"
-  "$TMX" mark /tmp/tmux-1000/hub dotfiles @5 /dev/pts/3
-  "$TMX" mark /tmp/tmux-1000/hub dotfiles @7 /dev/pts/3
+  arrive hub dotfiles @5 /dev/pts/3
+  arrive hub dotfiles @7 /dev/pts/3
   at hub dotfiles 2
   run "$TMX" back
   assert_success
@@ -227,8 +292,8 @@ places() { cat "$XDG_STATE_HOME/tmx/places/${1//\//_}"; }
   export STUB_CLIENT_TTY=/dev/pts/3
   printf 'work\nprojects\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   printf '@4\n' > "$NOTES_FIXTURE/tmux.window_ids"
-  "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
-  "$TMX" mark /tmp/tmux-1000/hub notes @1 /dev/pts/3
+  arrive lab work @4 /dev/pts/3
+  arrive hub notes @1 /dev/pts/3
   at hub notes 0
   run "$TMX" back
   assert_success
@@ -240,8 +305,8 @@ places() { cat "$XDG_STATE_HOME/tmx/places/${1//\//_}"; }
   export STUB_CLIENT_TTY=/dev/pts/3
   printf 'work\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   printf '@9\n' > "$NOTES_FIXTURE/tmux.window_ids"
-  "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
-  "$TMX" mark /tmp/tmux-1000/hub notes @1 /dev/pts/3
+  arrive lab work @4 /dev/pts/3
+  arrive hub notes @1 /dev/pts/3
   at hub notes 0
   run "$TMX" back
   assert_success
@@ -251,8 +316,8 @@ places() { cat "$XDG_STATE_HOME/tmx/places/${1//\//_}"; }
 
 @test "another terminal's moves are not this terminal's way back" {
   printf 'work\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
-  "$TMX" mark /tmp/tmux-1000/hub notes @1 /dev/pts/3
+  arrive lab work @4 /dev/pts/3
+  arrive hub notes @1 /dev/pts/3
   export STUB_CLIENT_TTY=/dev/pts/4
   at hub notes 0
   run "$TMX" back
@@ -265,8 +330,8 @@ places() { cat "$XDG_STATE_HOME/tmx/places/${1//\//_}"; }
 @test "back to a session that has gone says so instead of hopping" {
   export STUB_CLIENT_TTY=/dev/pts/3
   printf 'projects\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  "$TMX" mark /tmp/tmux-1000/lab work @4 /dev/pts/3
-  "$TMX" mark /tmp/tmux-1000/hub notes @1 /dev/pts/3
+  arrive lab work @4 /dev/pts/3
+  arrive hub notes @1 /dev/pts/3
   at hub notes 0
   run "$TMX" back
   assert_success
