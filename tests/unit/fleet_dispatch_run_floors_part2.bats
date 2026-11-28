@@ -103,6 +103,17 @@ load 'fleet_dispatch/fleet_dispatch_run_floors'
   assert_equal "$(outcome)" WORKED
 }
 
+# 2026-11-25: tuf-b550 powered off at 110 C; a critical CPU temperature is the one HOLD no floor goes past (ar-6357).
+@test "red floor: a critical CPU temperature still holds a red, and the skip names its temperature" {
+  red_held_machine
+  stub fleet-assess '[ "$1" = --watch-probe ] && { echo "HOLD tctl 105.0 C >= 100 C critical (load 0.5/24, tctl 105.0 C, mem 60% free, stall 0%)"; exit 1; }; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD tctl 105.0 C >= 100 C critical'
+  refute_output --partial 'on the red floor (DISPATCH_RED_FLOOR=2)'
+  assert_not_called 'wt new'
+}
+
 @test "red floor: a fleet past its pace target still starts a red, a tripped watch's first, up to the floor; a plain item waits" {
   # 2026-11-12: 58 live sessions against a target of 30 returned NOOP before the red floor, and no red started for 21h.
   project game beta "$SANDBOX/repos/game"
