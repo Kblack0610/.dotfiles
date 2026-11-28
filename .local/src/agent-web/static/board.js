@@ -135,18 +135,18 @@ function bRow(r, i) {
         `<button class="btn sm primary" data-formgo="${i}">Save</button>` + cancel;
     }
   } else {
-    // A playtest check has no version and no edit: notes takes add, done and drop there.
-    const versioned = r.lane !== "playtest";
+    // The buttons hub-core's `Row::actions` gives this row: a playtest check has no version and no edit.
+    const can = (a) => (r.actions || []).includes(a);
     acts = `<div class="opts">` +
-      (versioned && r.state === "open" ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
-      `<button class="btn sm" data-done="${i}">Done...</button>` +
-      (versioned ? `<button class="btn sm" data-promote="${i}" title="one release sooner">Sooner</button>` +
-        `<button class="btn sm" data-demote="${i}" title="one release later">Later</button>` +
-        `<button class="btn sm" data-move="${i}">Move...</button>` +
-        `<button class="btn sm" data-edit="${i}">Edit...</button>` +
-        `<button class="btn sm" data-prio="${i}">Priority...</button>` +
-        `<button class="btn sm" data-tag="${i}">Tags...</button>` : "") +
-      `<button class="btn sm" data-drop="${i}">Drop...</button></div>`;
+      (can("start") ? `<button class="btn sm" data-start="${i}">Start</button>` : "") +
+      (can("done") ? `<button class="btn sm" data-done="${i}">Done...</button>` : "") +
+      (can("promote") ? `<button class="btn sm" data-promote="${i}" title="one release sooner">Sooner</button>` : "") +
+      (can("demote") ? `<button class="btn sm" data-demote="${i}" title="one release later">Later</button>` : "") +
+      (can("move") ? `<button class="btn sm" data-move="${i}">Move...</button>` : "") +
+      (can("edit") ? `<button class="btn sm" data-edit="${i}">Edit...</button>` : "") +
+      (can("prio") ? `<button class="btn sm" data-prio="${i}">Priority...</button>` : "") +
+      (can("tag") ? `<button class="btn sm" data-tag="${i}">Tags...</button>` : "") +
+      (can("drop") ? `<button class="btn sm" data-drop="${i}">Drop...</button>` : "") + `</div>`;
   }
   return `<div class="card qitem brow"><div class="meta">${meta} ${tags}</div>` +
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
@@ -207,7 +207,7 @@ function bEpicLine(r, i) {
 function bBody() {
   const t = bst.feed.table, rows = bst.feed.rows, one = bScope() !== "all";
   // Lines still in an inbox are rows the triager has not filed: the Filed today chip is the ones it has.
-  const waiting = bst.feed.projects.filter((p) => !one || bProjKey(p) === bScope()).reduce((s, p) => s + (p.inbox || 0), 0);
+  const waiting = bst.feed.inbox || 0;
   // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
   const focus = one ? [] : bst.feed.focus || [];
   const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";

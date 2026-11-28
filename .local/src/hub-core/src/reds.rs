@@ -11,6 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::links::{Kind, Link};
 use crate::queue::{pr_links, ItemLink};
 use crate::session_actions::{self, Runner};
+use crate::vocab::Level;
 
 /// The window: fleet-bench's own default (`REDS_DAYS`), passed so the summary's "in 7d" is true.
 pub const DAYS: u32 = 7;
@@ -80,6 +81,9 @@ pub struct Red {
     /// Where the PR opens, when `pr` says enough to build it; filled here, never read.
     #[serde(default, skip_deserializing)]
     pub pr_url: Option<String>,
+    /// The hue of `outcome`, judged here for both surfaces; filled by `split`, never read.
+    #[serde(default, skip_deserializing)]
+    pub level: Level,
     /// The board row the fix works as, its id alone (`ar-5133`): the ticket. None when the item
     /// names no row.
     #[serde(default, deserialize_with = "text")]
@@ -126,6 +130,17 @@ pub fn pr_url(pr: &str) -> Option<String> {
 }
 
 impl Red {
+    /// The outcome's hue: broken (came back, still red, no fix) is red, a fix waiting on a merge
+    /// is amber, one in hand (queued, fixing) is grey, a settled one green.
+    pub fn outcome_level(&self) -> Level {
+        match self.outcome.as_str() {
+            "came back" | "still red" | "no fix" => Level::Bad,
+            "needs merge" => Level::Warn,
+            "queued" | "fixing" => Level::Neutral,
+            _ => Level::Ok,
+        }
+    }
+
     /// True while the red needs something: anything but fixed, cleared or cancelled.
     pub fn open(&self) -> bool {
         !SETTLED.contains(&self.outcome.as_str())
@@ -284,6 +299,7 @@ pub fn split(rows: Vec<Red>) -> Reds {
         .map(|mut r| {
             r.pr_url = r.pr.as_deref().and_then(pr_url);
             r.links = r.links();
+            r.level = r.outcome_level();
             r
         })
         .partition(Red::open);

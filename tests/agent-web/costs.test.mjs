@@ -46,10 +46,14 @@ const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "ru
 // A source row: a Claude account unless `o` says otherwise; used_text is what burn::used_text prints.
 const acct = (name, o) => {
   const a = { name, kind: "claude", unpaced: false, reserve: null, parent: null, state: "ok", room: { ok: true, reasons: [], headroom: 4.2, text: "room, 4 points spare" }, live: 0, used: 10, gone: 5, burn: 1, sustain: 2, over: 0.5, idle_at: 1794003600, burn_at: null, run_out: null, resets: 1794200000, ...o };
-  return { used_text: a.used == null ? "-" : `${Math.floor(a.used)}%`, ...a };
+  // What hub-core serves with the row (burn::Account): the note a figureless row says, and the two "back" cells.
+  const NOTES = { unreadable: ["usage unreadable", "bad"], stale: ["stale, claude-acct's textfile is not fresh (timer claude-acct-usage)", "bad"], idle: ["no usage read yet", "neutral"] };
+  const [note, note_level] = NOTES[a.state] || ["", "ok"];
+  const back = (at) => (a.unpaced ? { word: null, at: null } : at == null ? { word: "after reset", at: null } : { word: null, at });
+  return { used_text: a.used == null ? "-" : `${Math.floor(a.used)}%`, note, note_level, is_over: !a.unpaced && a.sustain != null && a.burn > a.sustain, burn_back: back(a.burn_at), idle_back: back(a.idle_at), ...a };
 };
 const burn = (o = {}) => ({
-  at: 1794000000, level: "bad", head: "4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live, carries ~11", drip_line: "15 started in 1h, 349 in 24h",
+  no_data: "no data from claude-acct", at: 1794000000, level: "bad", head: "4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live, carries ~11", drip_line: "15 started in 1h, 349 in 24h",
   accounts: [acct("alt", { live: 9, used: 55, gone: 25, burn: 1.04, sustain: 0.36 }), acct("bnb", { live: 17, used: 7, gone: 1, burn: 1.97, sustain: 0.56 }), acct("main", { live: 13, used: 33, gone: 12, burn: 1.51, sustain: 0.45, burn_at: 1794000600 })],
   fleet: { live: 39, burn: 4.52, sustain: 1.37, over: 3.3, rate: 0.116, carries: 11 },
   drip: { hour: 15, day: 349, held: "fleet-assess says HOLD" },
@@ -310,7 +314,7 @@ test("the room column prints claude-acct's verdict: points past the line, the re
   const h = show(board({ burn: b }));
   assert.match(h, /<td class="bad">no room: pace 20 points past the line<\/td>/);
   assert.match(h, /<td class="bad">no room: reserve, five hour<\/td>/);
-  assert.match(h, /<td>c<\/td><td colspan="16" class="bad">stale, claude-acct&#39;s textfile is not fresh<\/td>/);
+  assert.match(h, /<td>c<\/td><td colspan="16" class="bad">stale, claude-acct&#39;s textfile is not fresh \(timer claude-acct-usage\)<\/td>/);
   assert.match(h, /<td class="muted">-<\/td>/, "an account with no published verdict shows none, never a derived one");
 });
 
@@ -584,8 +588,8 @@ test("the fold keeps what paint remembered, fresh or stale, under one key", () =
 // What Langfuse sees: the newest snapshot's `.langfuse`, open until the reader folds it.
 const lfFigures = () => ({
   tools: [{ tool: "Bash", calls: 35243, p50_ms: 99, p95_ms: 17487, total_s: 224341 }],
-  tool_executions: 38947, tool_errors: 854, tool_error_share: 0.0219, tool_error_classes: [{ name: "ShellError", n: 781 }],
-  gateway_calls: 194, gateway_errors: 26, gateway_error_share: 0.134, gateway_error_classes: [{ name: "invalid_key", n: 16 }],
+  tool_executions: 38947, tool_errors: 854, tool_error_share: 0.0219, tool_error_classes: [{ name: "ShellError", n: 781 }], tool_error_line: "ShellError 781",
+  gateway_calls: 194, gateway_errors: 26, gateway_error_share: 0.134, gateway_error_classes: [{ name: "invalid_key", n: 16 }], gateway_error_line: "invalid_key 16",
   gateway_cost_usd: 3.59, gateway_tokens: 2271863, gateway_models: [{ model: "claude-sonnet-5.5", calls: 33, errors: 0, cost_usd: 3.45 }], gateway_other_models: 14, truncated: false,
 });
 const lfTail = (t) => { const f = run("cost"); f.open = {}; return ctx.langfuseSection({ tokens: t }); };

@@ -22,6 +22,7 @@ use crate::outcomes;
 use crate::reading::NOT_READ;
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
+use crate::vocab::Level;
 
 /// The window a skill's uses are counted over: a month of day snapshots.
 pub const USE_DAYS: usize = 30;
@@ -347,6 +348,8 @@ pub struct Rule {
     /// row restating a global one) or `moved` (its measured number
     /// disagrees with its recorded confidence).
     pub state: String,
+    /// The hue of `state`, judged once here (`Row::TONES`) for both surfaces.
+    pub level: Level,
     pub today: String,
     pub revisit: String,
     pub why: String,
@@ -364,6 +367,18 @@ pub const RULES_FORM: &str = "rules";
 pub const MECHANISMS: &str = "mechanisms";
 pub const MECHANISM: &str = "mechanism";
 
+impl Rule {
+    /// The hue of a verdict word: `ok` plain, a word `Row::TONES` names by its level, any other
+    /// word amber (a state fleet-bench adds is not read as fine).
+    pub fn level_of(state: &str) -> Level {
+        if state == OK {
+            Level::Ok
+        } else {
+            crate::vocab::tone(Self::TONES, state).unwrap_or(Level::Warn)
+        }
+    }
+}
+
 impl Row for Rule {
     const COLUMNS: &'static [&'static str] =
         &["rule", "kind", "number", "confidence", "state", "source"];
@@ -374,6 +389,14 @@ impl Row for Rule {
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "rule";
     const GLANCE: &'static [&'static str] = &["kind", "state"];
+    const TONES: &'static [(&'static str, Level)] = &[
+        (STALE, Level::Warn),
+        (MOVED, Level::Warn),
+        (RESTATES, Level::Warn),
+        (LAYER, Level::Warn),
+        (ABSENT, Level::Warn),
+        (DEAD, Level::Bad),
+    ];
     const LEGEND: &'static [(&'static str, &'static str)] = &[
         (
             RULES_FORM,
@@ -461,6 +484,8 @@ pub struct Flow {
     /// `ok`, `unchecked` (no test holds the doc to the code) or `broken` (a path, heading or
     /// test it names is gone).
     pub state: String,
+    /// The hue of `state`, judged once here (`Row::TONES`) for both surfaces.
+    pub level: Level,
     /// What is broken, one line each.
     pub why: Vec<String>,
     #[serde(skip)]
@@ -474,6 +499,17 @@ pub struct Flow {
 pub const UNCHECKED: &str = "unchecked";
 pub const BROKEN: &str = "broken";
 
+impl Flow {
+    /// The hue of a flow's state word: `ok` plain, `unchecked` amber, `broken` red.
+    pub fn level_of(state: &str) -> Level {
+        if state == OK {
+            Level::Ok
+        } else {
+            crate::vocab::tone(Self::TONES, state).unwrap_or(Level::Warn)
+        }
+    }
+}
+
 impl Row for Flow {
     const COLUMNS: &'static [&'static str] =
         &["flow", "question", "source", "picture", "checked", "state"];
@@ -481,6 +517,8 @@ impl Row for Flow {
     const FACETS: &'static [&'static str] = &["state"];
     const LEAD: &'static str = "flow";
     const GLANCE: &'static [&'static str] = &["checked", "state"];
+    const TONES: &'static [(&'static str, Level)] =
+        &[(UNCHECKED, Level::Warn), (BROKEN, Level::Bad)];
     const LEGEND: &'static [(&'static str, &'static str)] = &[
         (
             UNCHECKED,
@@ -678,6 +716,7 @@ fn read_flows(paths: &Paths, errors: &mut Vec<String>) -> Vec<Flow> {
                 picture,
                 checked,
                 state: state.to_string(),
+                level: Flow::level_of(state),
                 why,
                 doc,
                 anchor: anchor.to_string(),
@@ -1164,23 +1203,27 @@ fn read_rules(runner: &dyn Runner, errors: &mut Vec<String>) -> Vec<Rule> {
         o => o.to_string(),
     };
     rows.iter()
-        .map(|r| Rule {
-            rule: s(&r["rule"]),
-            kind: s(&r["kind"]),
-            source: s(&r["source"]),
-            form: s(&r["form"]),
-            // A measured rule shows what its measure read today beside its recorded number.
-            number: match (s(&r["number"]), r["value"].is_number()) {
-                (n, false) => n,
-                (n, true) if n.is_empty() => s(&r["value"]),
-                (n, true) => format!("{n} (now {})", s(&r["value"])),
-            },
-            confidence: s(&r["confidence"]),
-            // fleet-bench decides the state, the one verdict `rules --check` fails on too.
-            state: s(&r["state"]),
-            today: s(&r["today"]),
-            revisit: s(&r["revisit"]),
-            why: s(&r["why"]),
+        .map(|r| {
+            let state = s(&r["state"]);
+            Rule {
+                rule: s(&r["rule"]),
+                kind: s(&r["kind"]),
+                source: s(&r["source"]),
+                form: s(&r["form"]),
+                // A measured rule shows what its measure read today beside its recorded number.
+                number: match (s(&r["number"]), r["value"].is_number()) {
+                    (n, false) => n,
+                    (n, true) if n.is_empty() => s(&r["value"]),
+                    (n, true) => format!("{n} (now {})", s(&r["value"])),
+                },
+                confidence: s(&r["confidence"]),
+                // fleet-bench decides the state, the one verdict `rules --check` fails on too.
+                state: state.clone(),
+                level: Rule::level_of(&state),
+                today: s(&r["today"]),
+                revisit: s(&r["revisit"]),
+                why: s(&r["why"]),
+            }
         })
         .collect()
 }
@@ -1208,6 +1251,25 @@ fn read_rule_files(dir: &Path) -> Vec<RuleFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_verdict_word_has_one_level_for_both_surfaces() {
+        assert_eq!(Rule::level_of(OK), Level::Ok);
+        assert_eq!(Rule::level_of("dead"), Level::Bad);
+        for w in [
+            "stale",
+            "moved",
+            "restates",
+            "layer",
+            "absent",
+            "a word fleet-bench adds",
+        ] {
+            assert_eq!(Rule::level_of(w), Level::Warn, "{w}");
+        }
+        assert_eq!(Flow::level_of(OK), Level::Ok);
+        assert_eq!(Flow::level_of("unchecked"), Level::Warn);
+        assert_eq!(Flow::level_of("broken"), Level::Bad);
+    }
 
     struct Fixed(Result<String, String>);
     impl Runner for Fixed {

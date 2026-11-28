@@ -6,43 +6,45 @@
 //! page re-reads every minute while it shows (Prometheus has no push); a project page's checks
 //! line reads through the same keep.
 
-use crate::cache::failed;
+use crate::cache::{failed, ReadCache};
 use axum::extract::Query as UrlQuery;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use hub_core::queue::Item;
-use hub_core::releases::{self, App, Releases, STALE_SECS};
+use hub_core::releases::{self, App, Releases};
 use hub_core::session_actions::{Runner, System};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// How long one read of a set of apps' checks answers again.
-const CHECKS_SECS: i64 = 30;
+const CHECKS_SECS: u64 = 30;
 type Groups = Vec<(String, Vec<String>)>;
 type Checks = Result<HashMap<String, releases::Badge>, String>;
-/// Each asked-for set of groups (every app's for the tab, one app's for its project page) with
-/// when it was read and what it said.
-static CHECKS: Mutex<BTreeMap<Groups, (i64, Checks)>> = Mutex::new(BTreeMap::new());
+/// The last read, for the set of groups it was asked for (every app's for the tab, one app's for
+/// its project page).
+static CHECKS: ReadCache<HashMap<String, releases::Badge>, CHECKS_SECS, Groups> =
+    ReadCache::new("releases-checks");
 
 /// The checks of `groups` (`hub_core::app_status::badges`), from the last read of the same groups
-/// while it is under `CHECKS_SECS` old. The lock is held through a read, so requests that arrive
-/// together make one read and the rest take its answer.
+/// while it is under `CHECKS_SECS` old, refreshed behind once it is older. Called from a blocking
+/// task, so it waits on the runtime it runs beside.
 pub fn checks(groups: &[(String, Vec<String>)]) -> Checks {
-    let now = hub_core::jobs::now();
-    let mut held = CHECKS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some((at, r)) = held.get(groups) {
-        if now - at < CHECKS_SECS {
-            return r.clone();
+    let asked = groups.to_vec();
+    let read = {
+        let asked = asked.clone();
+        async move {
+            tokio::task::spawn_blocking(move || {
+                hub_core::app_status::badges(&System, &asked, hub_core::jobs::now())
+            })
+            .await
+            .map_err(|e| e.to_string())?
         }
-    }
-    let r = hub_core::app_status::badges(&System, groups, now);
-    held.retain(|_, (at, _)| now - *at < CHECKS_SECS);
-    held.insert(groups.to_vec(), (now, r.clone()));
-    r
+    };
+    tokio::runtime::Handle::current()
+        .block_on(CHECKS.get(asked, read))
+        .map(|kept| (*kept).clone())
 }
 
 /// The table view (`q`, `s`, `sort`, `dir`, the keys the page keeps in its URL) and the app whose
@@ -64,7 +66,8 @@ struct Shown<'a> {
     gaps: &'a str,
     /// `Releases::coverage`: how full each history column is, over every app.
     coverage: &'a str,
-    stale_after: i64,
+    /// `Releases::state`: whether the snapshot is older than the collector's cadence.
+    reading: hub_core::reading::State,
     rows: Vec<&'a App>,
     errors: &'a [String],
     /// `Releases::needs_look`: the count on the Apps inner tab.
@@ -94,7 +97,7 @@ fn render(s: &Releases, q: &Query) -> String {
         at: s.at,
         gaps: &s.gaps,
         coverage: &s.coverage,
-        stale_after: STALE_SECS,
+        reading: s.state(hub_core::jobs::now()),
         rows,
         errors: &s.errors,
         look: s.needs_look(),
@@ -411,7 +414,10 @@ mod tests {
         assert_eq!(v["gaps"], "1 channel not read: steam 403 (1)");
         assert_eq!(v["coverage"], "prev 2/2, deployed 1/2");
         assert_eq!(v["table"]["total"], 2);
-        assert_eq!(v["stale_after"], STALE_SECS);
+        assert_eq!(
+            v["reading"]["state"], "stale",
+            "a fixture snapshot is long past the cadence"
+        );
     }
 
     #[test]

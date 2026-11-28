@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::prom::Series;
+use crate::vocab::Level;
 
 /// Where the dispatch hold is explained (the Sessions header), as `costs::spend_badge` names Costs.
 pub fn hold_badge() -> String {
@@ -171,6 +172,12 @@ pub const AGE_KEY: &str = "textfile_age_seconds";
 /// token, so it has no state that waits on a launch.
 pub const IDLE_NOTE: &str = "no usage read yet";
 
+/// What an unreadable row says: claude-acct could not read the account's usage.
+pub const UNREADABLE_NOTE: &str = "usage unreadable";
+
+/// The source the Burn section reads, named where it has nothing to show.
+pub const SOURCE: &str = "claude-acct";
+
 /// What a source's kind is when its textfile carries no `kind` label (one written before sources).
 pub const DEFAULT_KIND: &str = "claude";
 
@@ -219,12 +226,45 @@ pub struct Account {
     pub five_hour_resets: Option<i64>,
     /// What the account's sessions cost at list price over the last 24 hours.
     pub cost_24h: Option<f64>,
+    /// Burning faster than the rest of its week can carry: the one verdict behind the amber BURN
+    /// cell on both surfaces (a dollar budget has no pace line, so no verdict).
+    pub is_over: bool,
+    /// What a row with no figures says in place of them (`state` unreadable, stale or idle), with
+    /// its hue; empty for a row with figures.
+    pub note: &'static str,
+    pub note_level: Level,
+    /// When it is back on pace at this burn and if it spends nothing, as `back` words them.
+    pub burn_back: Back,
+    pub idle_back: Back,
+}
+
+/// A back-on-pace cell: a word (`on pace`, `after reset`) or the time it gets there; empty for
+/// a dollar budget, which has no pace line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct Back {
+    pub word: Option<&'static str>,
+    pub at: Option<i64>,
 }
 
 impl Account {
-    /// Burning faster than the rest of its week can carry.
-    pub fn is_over(&self) -> bool {
-        self.sustain.is_some_and(|s| self.burn > s)
+    /// The cell for a back-on-pace time `at`: `on pace` when it already is (claude-acct publishes
+    /// now when so), the time, or `after reset` when the reset puts it on pace first.
+    pub fn back(&self, at: Option<i64>, now: i64) -> Back {
+        match at {
+            _ if self.unpaced => Back::default(),
+            Some(t) if t <= now => Back {
+                word: Some("on pace"),
+                at: None,
+            },
+            Some(t) => Back {
+                word: None,
+                at: Some(t),
+            },
+            None => Back {
+                word: Some("after reset"),
+                at: None,
+            },
+        }
     }
 
     /// claude-acct publishes the time it is back on pace as now when it already is, so the
@@ -233,14 +273,13 @@ impl Account {
         self.idle_at.is_none_or(|t| t > now)
     }
 
-    /// A back-on-pace cell: `on pace` when it already is, the time, or `after reset` when the
-    /// reset puts it on pace first. The surface words the time.
+    /// `back` as one string: the surface words the time.
     pub fn on_pace(&self, at: Option<i64>, now: i64, time: &dyn Fn(i64) -> String) -> String {
-        match at {
-            Some(t) if t <= now => "on pace".into(),
-            Some(t) => time(t),
-            None => "after reset".into(),
-        }
+        let b = self.back(at, now);
+        b.word
+            .map(String::from)
+            .or(b.at.map(time))
+            .unwrap_or_else(|| "-".into())
     }
 }
 
@@ -316,6 +355,8 @@ pub struct Burn {
     pub level: &'static str,
     /// Set when the textfile is not fresh: every figure below is then old, and the surfaces say so.
     pub stale: Option<&'static str>,
+    /// What the section says with no source to show (`reading::no_data_from`).
+    pub no_data: String,
     /// Every source, in reading order (`ordered`); the surfaces list the `nested` ones in the fold.
     pub accounts: Vec<Account>,
     /// The fold under the pool row; None when no source is nested.
@@ -472,14 +513,21 @@ fn account(name: &str, read: &Accounts, stale: bool) -> Account {
     } else {
         "ok"
     };
+    let (note, note_level) = match state {
+        "unreadable" => (UNREADABLE_NOTE, Level::Bad),
+        "stale" => (STALE_NOTE, Level::Bad),
+        "idle" => (IDLE_NOTE, Level::Neutral),
+        _ => ("", Level::Ok),
+    };
     let burn = get("burn_points_per_hour").unwrap_or(0.0);
     let sustain = get("sustain_points_per_hour");
     let (usd_used, usd_budget) = (get("usd_used"), get("usd_budget"));
+    let unpaced = get("paced") == Some(0.0);
     Account {
         name: name.into(),
         kind: read.kinds.get(name).unwrap_or(&DEFAULT_KIND).to_string(),
         // absent on a textfile written before sources, which held Claude accounts only
-        unpaced: get("paced") == Some(0.0),
+        unpaced,
         reserve: get("reserve_percent"),
         usd_used,
         usd_budget,
@@ -501,6 +549,10 @@ fn account(name: &str, read: &Accounts, stale: bool) -> Account {
         five_hour: get("five_hour_percent"),
         five_hour_resets: epoch("five_hour_resets_timestamp_seconds"),
         cost_24h: get("cost_24h_usd"),
+        note,
+        note_level,
+        is_over: !unpaced && sustain.is_some_and(|s| burn > s),
+        ..Default::default()
     }
 }
 
@@ -508,7 +560,10 @@ fn account(name: &str, read: &Accounts, stale: bool) -> Account {
 pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
     let read = Accounts::read(series);
     let stale = read.stale();
-    let accounts = ordered(read.by.keys().map(|n| account(n, &read, stale)).collect());
+    let mut accounts = ordered(read.by.keys().map(|n| account(n, &read, stale)).collect());
+    for a in &mut accounts {
+        (a.burn_back, a.idle_back) = (a.back(a.burn_at, at), a.back(a.idle_at, at));
+    }
     let keys = keys_fold(&accounts);
     // claude-acct's fleet sum (its FLEET_JQ, the same one its fleet line prints), never a second
     // sum of the rows here. It writes no burn or sustain when no account was summed, and a stale
@@ -563,7 +618,7 @@ pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
         // not the amber of burning over the sustainable rate while the allowance still starts.
         "bad"
     } else if burn > sustain
-        || accounts.iter().any(Account::is_over)
+        || accounts.iter().any(|a| a.is_over)
         || matches!(no_room(&accounts), (n, of) if of > 0 && n == of)
     {
         "warn"
@@ -572,6 +627,7 @@ pub fn build(series: &[Series], drip: Drip, at: i64) -> Burn {
     };
     let mut b = Burn {
         at,
+        no_data: crate::reading::no_data_from(SOURCE),
         stale: stale.then_some(STALE_NOTE),
         level,
         accounts,
@@ -724,6 +780,37 @@ pub fn drip(log: &str, at: i64, held: Option<String>) -> Drip {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_back_cell_is_a_word_or_a_time_and_nothing_for_an_unpaced_source() {
+        let a = Account::default();
+        assert_eq!(
+            a.back(Some(NOW - 1), NOW),
+            Back {
+                word: Some("on pace"),
+                at: None
+            }
+        );
+        assert_eq!(
+            a.back(Some(NOW + 60), NOW),
+            Back {
+                word: None,
+                at: Some(NOW + 60)
+            }
+        );
+        assert_eq!(
+            a.back(None, NOW),
+            Back {
+                word: Some("after reset"),
+                at: None
+            }
+        );
+        let key = Account {
+            unpaced: true,
+            ..Account::default()
+        };
+        assert_eq!(key.back(None, NOW), Back::default());
+    }
 
     const NOW: i64 = 1_800_000_000;
 

@@ -72,6 +72,7 @@ fn shown(f: &Feed, q: &BoardQuery) -> Value {
             let mut v = json!(r);
             v["label"] = json!(label);
             v["when"] = json!(r.when());
+            v["actions"] = json!(r.actions());
             v
         })
         .collect();
@@ -83,6 +84,7 @@ fn shown(f: &Feed, q: &BoardQuery) -> Value {
         "errors": f.errors,
         "totals": f.totals,
         "tiers": f.agent_tiers(q.scope.split_once('/')),
+        "inbox": f.inbox(q.scope.split_once('/')),
         "table": table,
     })
 }

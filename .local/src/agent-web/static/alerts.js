@@ -59,7 +59,6 @@ const ALERT_HUE = { red: "bad", warn: "warn", ok: "ok", nodata: "" };
 const ALERT_LEVEL = { red: "FIRING", warn: "WARN", ok: "ALL CLEAR", nodata: NO_DATA.toUpperCase() };
 // A health chip's level as Home's strip words it.
 const HEALTH_WORD = { red: "RED", warn: "WARN", ok: "OK", nodata: NO_DATA.toUpperCase() };
-const alertState = (s) => (s === "error" || s === "no owner" || s === "unfixed" ? "bad" : s === "fixing" || s === "queued" ? "running" : "");
 // Source, what and where: one Alertmanager rule fires once per place, under one summary.
 const alertKey = (a) => `${a.source}|${a.what}|${a.place}`;
 
@@ -89,9 +88,9 @@ function alertRow(a) {
   const open = alertKey(a) === alst.sel;
   const owner = a.owner_href ? `<a href="${esc(a.owner_href)}">${esc(a.owner)}</a>` : esc(a.owner);
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(alertKey(a))}">` +
-    `<td class="${a.sev === "urgent" || a.sev === "high" ? "bad" : "muted"}">${esc(a.sev || "-")}</td><td class="wrap">${esc(a.what)}${alertCount(a)}</td>` +
+    `<td class="${levelClass(a.sev_level)}">${esc(a.sev || "-")}</td><td class="wrap">${esc(a.what)}${alertCount(a)}</td>` +
     `<td class="muted">${esc(a.project || "-")}</td><td class="muted">${esc(a.system || "-")}</td><td class="muted">${esc(a.source)}</td><td class="n">${a.since ? ago(a.since) : "-"}</td><td class="wrap">${owner}</td>` +
-    `<td>${cchip(alertState(a.state), esc(a.state))}</td></tr>`;
+    `<td>${cchip(levelClass(a.state_level), esc(a.state))}</td></tr>`;
   return open ? row + alertDetail(a) : row;
 }
 
@@ -123,7 +122,7 @@ function alertsBody(d) {
 // worst first, with the description and what to do that are that alert's own.
 function alertPages(a) {
   const own = (p) => [!a.about && p.about, !a.action && p.action].filter(Boolean).map((t) => `<div class="muted">${esc(t)}</div>`).join("");
-  const rows = a.pages.map((p) => `<tr><td class="${p.sev === "high" ? "bad" : "muted"}">${esc(p.sev)}</td><td class="wrap">${esc(p.what)}${own(p)}</td>` +
+  const rows = a.pages.map((p) => `<tr><td class="${levelClass(p.sev_level)}">${esc(p.sev)}</td><td class="wrap">${esc(p.what)}${own(p)}</td>` +
     `<td class="wrap muted">${esc(p.place || "-")}</td><td class="n">${p.since ? ago(p.since) : "-"}</td></tr>`).join("");
   const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${esc(v)}</div>` : "");
   return `<tr class="wdet"><td colspan="8"><div class="sdet">` + line("What it checks", a.about) + line("What to do", a.action) +
@@ -131,8 +130,7 @@ function alertPages(a) {
 }
 
 // Fixes: each red the triage queued as a fix in the window, open worst first; the settled fold to a count.
-const ALERTS_FIX_COLOR = { "came back": "var(--b-needs)", "still red": "var(--b-needs)", "no fix": "var(--b-needs)", "needs merge": "var(--b-stalled)",
-  fixing: "var(--b-working)", queued: "var(--b-working)", fixed: "var(--b-done)", cleared: "var(--b-done)" };
+const FIX_LEVEL_COLOR = { bad: "var(--b-needs)", warn: "var(--b-stalled)", ok: "var(--b-done)", neutral: "var(--b-working)" };
 // A fix's row leads with its ticket (the board row id), then the run, session, PR and CI pages
 // hub-core's `Red::links` names.
 function alertsFixRow(r) {
@@ -140,7 +138,7 @@ function alertsFixRow(r) {
   const rest = links.filter((l) => l !== ticket).map((l) => `<span class="by">${l.what === "ci" ? "" : esc(l.what) + " "}${tblLink(l.href, l.text)}</span>`).join("");
   // Each PR that names no repo (a bare number) has no page, so it stays as its label.
   const bare = (r.pr || "").split(/[\s,]+/).filter((t) => t && !/^https?:/.test(t) && !t.includes("/")).map((t) => `<span class="by">PR ${esc(t)}</span>`).join("");
-  return `<div class="pr"><span class="chip sm" style="--c:${ALERTS_FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(r.outcome.toUpperCase())}</span>` +
+  return `<div class="pr"><span class="chip sm" style="--c:${FIX_LEVEL_COLOR[r.level] || "var(--c-other)"}">${esc(r.outcome.toUpperCase())}</span>` +
     `${ticket ? `<span class="by">${tblLink(ticket.href, ticket.text)}</span>` : ""}<span class="pt">${esc(r.red)}</span>${r.project ? `<span class="by">${esc(r.project)}</span>` : ""}${rest}${bare}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
 }
 
@@ -170,9 +168,8 @@ const alertsHistory = (d, html) => innerWrap("alerts", "history",
 const WATCH_COLS = { name: ["watch"], state: ["state"], severity: ["severity"], project: ["project"], system: ["system"], since: ["since", "n"], lastrun: ["last run", "n"], place: ["where"] };
 function watchesBody(d) {
   const t = d.watches_table, rows = d.watches || [];
-  const cls = (w) => (w.state === "TRIP" || w.state === "ERROR" ? "bad" : w.state === "OK" ? "" : "muted");
   return rows.length ? `<div class="panel scroll"><table class="tbl">${tblHead(t, WATCH_COLS)}` +
-    rows.map((w) => `<tr><td>${esc(w.name)}</td><td class="${cls(w)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td><td class="muted">${esc(w.project || "-")}</td><td class="muted">${esc(w.system || "-")}</td>` +
+    rows.map((w) => `<tr><td>${esc(w.name)}</td><td class="${levelClass(w.level)}">${esc(w.state)}</td><td class="muted">${esc(w.severity || "-")}</td><td class="muted">${esc(w.project || "-")}</td><td class="muted">${esc(w.system || "-")}</td>` +
       `<td class="n">${when(w.since)}</td><td class="n">${when(w.lastrun)}</td><td class="wrap muted">${esc(w.place || "-")}</td></tr>`).join("") + `</table></div>`
     : `<div class="panel muted">${t.total ? "No watch matches." : "No watch defined."}</div>`;
 }

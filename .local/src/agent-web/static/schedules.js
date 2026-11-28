@@ -19,9 +19,8 @@ const schedulesTiles = (d) => tile("READ", d.at ? clock(d.at * 1e3) : "-", "var(
 const schedKey = (r) => `${r.kind}|${r.name}`;
 
 const SCHED_COLS = { kind: ["kind"], name: ["name"], state: ["state"], schedule: ["schedule"], next: ["next", "n"], last: ["last", "n"], took: ["took", "n"], passed: ["passed", "n"], failed: ["failed", "n"], streak: ["streak"], triage: ["triage"] };
-// A job state's hue by its level (hub_core::reading::JobState::level); off is plain and dim.
-const SCHED_HUE = { bad: "bad", warn: "warn", ok: "" };
-const schedState = (r) => `<td class="${r.state === "off" ? "muted" : SCHED_HUE[r.state_level] ?? ""}" title="${esc(r.state_why || r.status || "")}">${esc(r.state)}</td>`;
+// A job state's hue is its level (hub_core::reading::JobState::level).
+const schedState = (r) => `<td class="${levelClass(r.state_level)}" title="${esc(r.state_why || r.status || "")}">${esc(r.state)}</td>`;
 
 
 // A start as the time alone when it is today, else the day too: the TUI's clock().
@@ -37,8 +36,8 @@ function scheduleRow(r) {
   const row = `<tr class="jr${open ? " sel" : ""}" data-key="${esc(schedKey(r))}">` +
     `<td class="muted">${esc(r.kind)}</td><td class="wrap">${esc(r.name)}${none}</td>${schedState(r)}<td>${esc(r.schedule)}</td>` +
     `<td class="n">${nextStart(r.next)}</td><td class="n">${r.last ? when(r.last) : "-"}</td><td class="n">${secs(r.took)}</td>` +
-    `<td class="n">${r.ok_at ? when(r.ok_at) : "-"}</td><td class="n${r.state === "failing" ? " bad" : ""}">${r.fail_at ? when(r.fail_at) : "-"}</td>` +
-    `<td class="${r.streak < 0 ? "bad" : ""}">${esc(r.streak_word)}</td><td class="wrap muted">${esc(r.triage)}</td></tr>`;
+    `<td class="n">${r.ok_at ? when(r.ok_at) : "-"}</td><td class="n${r.state_level === "bad" ? " bad" : ""}">${r.fail_at ? when(r.fail_at) : "-"}</td>` +
+    `<td class="${levelClass(r.streak_level)}">${esc(r.streak_word)}</td><td class="wrap muted">${esc(r.triage)}</td></tr>`;
   return open ? row + scheduleDetail(r) : row;
 }
 

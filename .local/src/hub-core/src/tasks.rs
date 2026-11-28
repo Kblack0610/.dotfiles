@@ -213,7 +213,32 @@ pub fn section_labels(rows: &[&Row], sorted: bool) -> Vec<String> {
         .collect()
 }
 
+/// The write actions a row's opened view offers, by the verb a surface sends back.
+pub const ACTION_DONE: &str = "done";
+pub const ACTION_DROP: &str = "drop";
+
 impl Row {
+    /// The actions an open row takes: a closed row is the record and takes none; a playtest
+    /// check has no version and no edit, so `notes` takes add, done and drop there; any other
+    /// open row can also be started (when `open`, not yet doing), moved a release, edited,
+    /// re-prioritised and re-tagged.
+    pub fn actions(&self) -> Vec<&'static str> {
+        if self.state == "done" {
+            return Vec::new();
+        }
+        let mut a = Vec::new();
+        let versioned = self.lane != "playtest";
+        if versioned && self.state == "open" {
+            a.push("start");
+        }
+        a.push(ACTION_DONE);
+        if versioned {
+            a.extend(["promote", "demote", "move", "edit", "prio", "tag"]);
+        }
+        a.push(ACTION_DROP);
+        a
+    }
+
     /// What a board draws beside the row, the same words on every surface: a closed row's day
     /// and PRs (`11-07 pr 63`), else its queue item's state and its forecast day (`queued
     /// ~11-12`).
@@ -721,6 +746,18 @@ impl Feed {
             .collect();
         rows.sort_by_key(|r| (section_order(r.section.as_deref()), r.rank));
         rows
+    }
+
+    /// Lines still in the inboxes of `scope`'s project, or of every project with no scope: rows
+    /// the triager has not filed.
+    pub fn inbox(&self, scope: Option<(&str, &str)>) -> usize {
+        self.projects
+            .iter()
+            .filter(|p| {
+                scope.is_none_or(|(profile, project)| p.profile == profile && p.project == project)
+            })
+            .map(|p| p.inbox)
+            .sum()
     }
 
     /// The release windows, agent board and backlog counts and the feature epics in
@@ -1268,6 +1305,46 @@ pub fn apply(runner: &dyn Runner, w: &Write) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_row_offers_the_actions_its_lane_and_state_take() {
+        let row = |lane: &str, state: &str| Row {
+            lane: lane.into(),
+            state: state.into(),
+            ..Row::default()
+        };
+        assert_eq!(
+            row("agent", "open").actions(),
+            ["start", "done", "promote", "demote", "move", "edit", "prio", "tag", "drop"]
+        );
+        assert_eq!(
+            row("agent", "doing").actions()[0],
+            "done",
+            "a started row is not started again"
+        );
+        assert_eq!(row("playtest", "open").actions(), ["done", "drop"]);
+        assert!(
+            row("agent", "done").actions().is_empty(),
+            "a closed row is the record"
+        );
+    }
+
+    #[test]
+    fn the_inbox_count_is_the_scope_s_or_every_projects() {
+        let p = |project: &str, inbox| Project {
+            profile: "bnb".into(),
+            project: project.into(),
+            inbox,
+            ..Project::default()
+        };
+        let f = Feed {
+            projects: vec![p("a", 2), p("b", 3)],
+            ..Feed::default()
+        };
+        assert_eq!(f.inbox(None), 5);
+        assert_eq!(f.inbox(Some(("bnb", "b"))), 3);
+        assert_eq!(f.inbox(Some(("bnb", "none"))), 0);
+    }
     use std::cell::RefCell;
 
     #[test]

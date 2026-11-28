@@ -900,14 +900,7 @@ fn overview(
 /// Stage: the next stage's checks not met, failing first, then a human's, then the rest.
 fn stage(pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     let mut out = vec![sec_head("NEXT STAGE", &pg.next_says, "", p, w)];
-    let rank = |r: &str| match r {
-        "FAIL" => 0,
-        "HUMAN" => 1,
-        _ => 2,
-    };
-    let mut rows: Vec<_> = pg.next_rows.iter().collect();
-    rows.sort_by_key(|r| rank(&r.result));
-    for r in rows {
+    for r in &pg.next_rows {
         out.extend(wrapped(
             &format!("  {:<6} ", r.result),
             &format!("{} ({})", r.requirement, r.stage),

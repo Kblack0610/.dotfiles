@@ -204,8 +204,8 @@ function releasesBody(d) {
   return `<div class="panel">${t && t.total ? "No apps match." : "No apps."}</div>${cover}`;
 }
 
-// A snapshot older than the collector's cadence is stale.
-const relStale = (d) => d.at && Date.now() / 1e3 - d.at > d.stale_after;
+// A snapshot older than the collector's cadence is stale (hub-core `Releases::state`).
+const relStale = (d) => d.reading?.state === "stale";
 // When the snapshot was taken, after the apps' state tiles; amber once it is stale.
 const releasesTiles = (d) =>
   tile("REFRESHED", d.at ? clock(d.at * 1e3) : "-", relStale(d) ? "var(--b-stalled)" : "var(--c-other)", d.at ? `${ago(d.at)} ago` : "no snapshot read");

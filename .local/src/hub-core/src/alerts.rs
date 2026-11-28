@@ -29,6 +29,7 @@ use crate::layout::FOLD_ROWS;
 use crate::links::{Kind, Link};
 use crate::reds::{self, Red, Reds};
 use crate::table::{Row, Val};
+use crate::vocab::{self, Level as Tone};
 
 /// History's window, the same as the fixes' (`reds::DAYS`).
 pub const DAYS: i64 = reds::DAYS as i64;
@@ -70,6 +71,9 @@ pub struct Alert {
     /// fixes could not be read) or `firing` (an Alertmanager rule, which no fix item is filed
     /// under).
     pub state: String,
+    /// The hues of `sev` and `state`, judged once in `settle` for both surfaces.
+    pub sev_level: Tone,
+    pub state_level: Tone,
     /// The fix item's slug: the hub's `i` opens it on Queue. The web links `owner_href`.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub slug: String,
@@ -99,6 +103,26 @@ pub struct Alert {
 }
 
 impl Alert {
+    /// A state word's hue where `vocab::tone` has none or another: no owner and unfixed are
+    /// broken, a fix in hand needs a look.
+    const TONES: &'static [(&'static str, Tone)] = &[
+        ("no owner", Tone::Bad),
+        ("unfixed", Tone::Bad),
+        ("fixing", Tone::Warn),
+        ("queued", Tone::Warn),
+    ];
+
+    /// Fill the hues of this row and each alert under it, once its state is final.
+    fn settle(&mut self) {
+        self.sev_level = if matches!(self.sev.as_str(), "urgent" | "high") {
+            Tone::Bad
+        } else {
+            Tone::Neutral
+        };
+        self.state_level = vocab::tone(Self::TONES, &self.state).unwrap_or(Tone::Ok);
+        self.pages.iter_mut().for_each(Alert::settle);
+    }
+
     fn error(&self) -> bool {
         self.state == "error"
     }
@@ -136,6 +160,7 @@ impl Row for Alert {
     const FACETS: &'static [&'static str] = &["sev", "project", "system", "source", "state"];
     const LEAD: &'static str = "what";
     const GLANCE: &'static [&'static str] = &["sev", "since", "state"];
+    const TONES: &'static [(&'static str, Tone)] = Alert::TONES;
 
     fn val(&self, col: &str) -> Val {
         let text = |s: &str| match s {
@@ -815,6 +840,7 @@ pub fn join(
         errors.push(format!("holds: {e}"));
     }
     firing.sort_by_cached_key(order);
+    firing.iter_mut().for_each(Alert::settle);
 
     let mut history: Vec<Action> = match notify {
         Ok(text) => actions::parse_notify(&text)

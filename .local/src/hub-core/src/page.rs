@@ -97,6 +97,17 @@ pub struct Requirement {
     pub requirement: String,
 }
 
+impl Requirement {
+    /// Where a not-met requirement sorts: failing first, then a human's, then the rest.
+    fn rank(&self) -> u8 {
+        match self.result.as_str() {
+            "FAIL" => 0,
+            "HUMAN" => 1,
+            _ => 2,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Page {
     pub project: String,
@@ -650,6 +661,7 @@ pub fn read_with(
                     .into_iter()
                     .filter(|r| r.result != "PASS")
                     .collect();
+                p.next_rows.sort_by_key(Requirement::rank);
             }
             Err(e) => p
                 .errors
@@ -865,6 +877,18 @@ pub fn to_json(p: &Page) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_next_stage_lists_failing_first_then_a_humans() {
+        let r = |result: &str| Requirement {
+            result: result.into(),
+            ..Requirement::default()
+        };
+        let mut rows = vec![r("TODO"), r("HUMAN"), r("FAIL"), r("TODO")];
+        rows.sort_by_key(Requirement::rank);
+        let order: Vec<_> = rows.iter().map(|r| r.result.as_str()).collect();
+        assert_eq!(order, ["FAIL", "HUMAN", "TODO", "TODO"]);
+    }
     use std::sync::Mutex;
 
     /// Answers by the command's first two words; records every argv it was given.

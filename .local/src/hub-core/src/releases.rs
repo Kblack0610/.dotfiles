@@ -15,7 +15,7 @@ use crate::pipeline::{dated, stamp};
 use crate::layout;
 use crate::links::{Kind, Link};
 use crate::queue::Item;
-use crate::reading::NOT_READ;
+use crate::reading::{State, NOT_READ};
 use crate::release_graph::{self, Graph, Inputs, Line, Shipment};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
@@ -775,9 +775,15 @@ impl Releases {
         !self.errors.is_empty() || self.apps.iter().any(|a| a.level == Level::Bad)
     }
 
+    /// The snapshot's age against the collector's cadence: `Stale` past `STALE_SECS`, `Never`
+    /// with no snapshot (that is an error in `errors`, not a stale one).
+    pub fn state(&self, now: i64) -> State {
+        State::of_age((self.at > 0).then_some(self.at), now, STALE_SECS)
+    }
+
     /// The snapshot is older than the collector's cadence can explain.
     pub fn stale(&self, now: i64) -> bool {
-        self.at > 0 && now - self.at > STALE_SECS
+        matches!(self.state(now), State::Stale(_))
     }
 }
 
@@ -1335,6 +1341,17 @@ pub fn changelog(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_snapshot_reads_as_a_state_not_a_bare_flag() {
+        let r = Releases {
+            at: 100,
+            ..Releases::default()
+        };
+        assert_eq!(r.state(100 + STALE_SECS), State::Live);
+        assert_eq!(r.state(100 + STALE_SECS + 1), State::Stale(100));
+        assert_eq!(Releases::default().state(1_000_000), State::Never);
+    }
     use crate::table::View;
 
     /// The tab with no queue items: the joins these tests pin need none.

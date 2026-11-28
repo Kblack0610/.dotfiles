@@ -45,7 +45,7 @@ const table = {
   columns: ["kind", "name", "state", "schedule", "next", "last", "took", "passed", "failed", "streak", "triage", "result", "repo"].map(col),
   facets: [{ key: "kind", on: [], clear: "", values: [{ value: "ci", n: 2, pct: 50, on: false, q: "kind:ci" }] }],
 };
-const row = (kind, name, o = {}) => ({ kind, name, state: "failing", state_level: "bad", state_why: "", repo: "", schedule: "02:00 daily", purpose: "", last: 1793942659, result: "failure", ok: false, streak: -6, streak_word: "red 6", red_since: 1793442659, ok_at: null, fail_at: 1793942659, took: 2520, every: 86400, triage: "-", next: null, inside: "", before: "", after: [], open: [], runs: [], page: "", status: "", ...o });
+const row = (kind, name, o = {}) => ({ kind, name, state: "failing", state_level: "bad", state_why: "", repo: "", schedule: "02:00 daily", purpose: "", last: 1793942659, result: "failure", ok: false, streak: -6, streak_level: "bad", streak_word: "red 6", red_since: 1793442659, ok_at: null, fail_at: 1793942659, took: 2520, every: 86400, triage: "-", next: null, inside: "", before: "", after: [], open: [], runs: [], page: "", status: "", ...o });
 const run1 = (n) => ({ at: 1793942659 - n, result: "failure", ok: false, failed: ["PlayMode 2", "PlayMode 8"], url: `https://ci/${n}`, took: 2520 });
 const nightly = row("ci", "playground / Tests", {
   purpose: "the only full run of every class on main", triage: "queued nightly-triage-1", status: "failing since 11-01, triage queued, next 02:00",
@@ -54,8 +54,8 @@ const nightly = row("ci", "playground / Tests", {
 });
 const data = { at: 1793942700, summary: "4 scheduled: 2 failing, 0 stale, 0 never ran, 1 off, 1 no purpose, CI read 7m ago", errors: [], table,
   rows: [nightly, row("timer", "journal-sync"),
-    row("agentctl", "dream", { page: "dream", purpose: "nightly memory", result: "WORKED", ok: true, streak: 9, streak_word: "green 9", state: "ok", state_level: "ok", ok_at: 1793942659, fail_at: null }),
-    row("agentctl", "old-sweep", { page: "old-sweep", purpose: "retired", state: "off", state_level: "ok", streak: 0, streak_word: "", last: null, fail_at: null, took: null })] };
+    row("agentctl", "dream", { page: "dream", purpose: "nightly memory", result: "WORKED", ok: true, streak: 9, streak_level: "ok", streak_word: "green 9", state: "ok", state_level: "ok", ok_at: 1793942659, fail_at: null }),
+    row("agentctl", "old-sweep", { page: "old-sweep", purpose: "retired", state: "off", state_level: "neutral", streak: 0, streak_level: "ok", streak_word: "", last: null, fail_at: null, took: null })] };
 
 const target = (attrs, tr = null) => ({ dataset: attrs, closest: (sel) => (sel === "tr.jr" ? tr : (sel === "[data-tsort]" && "tsort" in attrs) || (sel === "[data-ts]" && "ts" in attrs) ? { dataset: attrs } : null) });
 const show = () => { run("st.tab = 'schedules'"); Object.assign(schst, { data, err: null, sel: null }); run("schst.render()"); };

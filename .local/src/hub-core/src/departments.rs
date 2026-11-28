@@ -257,6 +257,11 @@ impl Product {
             .collect()
     }
 
+    /// The sum of `open_needs`: the number on the Departments tab.
+    pub fn open_total(&self) -> usize {
+        self.depts.iter().map(Dept::open_needs).sum()
+    }
+
     pub fn key(&self) -> String {
         format!("{}/{}", self.profile, self.name)
     }

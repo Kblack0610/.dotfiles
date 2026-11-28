@@ -107,14 +107,13 @@ function skillDetail(r) {
 
 // Flows: ARCHITECTURE.md's Flows table. A row opens its doc section, read now from the file the
 // row names, with its picture; `flowDocs` keeps each opened section until the next read.
-const FLOW_HUE = { ok: "", unchecked: "warn", broken: "bad" };
 const flowDocs = {};
 let flowOpen = null;
 function flowRow(r) {
   const open = r.flow === flowOpen;
   const row = `<tr class="jf${open ? " sel" : ""}" data-flow="${esc(r.flow)}" title="${esc((r.why || []).join("; "))}">${stackCell(r.flow)}${stackCell(r.question, "wrap muted")}` +
     `${stackCell((r.source || "").replace(/^~\//, ""), "wrap muted")}${stackCell((r.picture || "").split("/").pop(), "muted")}` +
-    `${stackCell((r.checked || []).map((t) => t.split("/").pop()).join(", ") || "none", r.checked?.length ? "muted" : "warn")}${stackCell(r.state, FLOW_HUE[r.state] ?? "")}</tr>`;
+    `${stackCell((r.checked || []).map((t) => t.split("/").pop()).join(", ") || "none", r.checked?.length ? "muted" : "warn")}${stackCell(r.state, levelClass(r.level))}</tr>`;
   return open ? row + flowDetail(r) : row;
 }
 function flowDetail(r) {
@@ -143,9 +142,8 @@ const hookRules = (r) => r.rules
   : stackCell("-", "n muted");
 const hooksBody = (d) => stackList("Hooks", d.hooks, HOOK_COLS, hookRow, "No hooks match.", "No hooks are configured.");
 
-const RULE_HUE = { ok: "", stale: "warn", moved: "warn", restates: "warn", layer: "warn", dead: "bad", absent: "muted" };
 const ruleRow = (r) => `<tr title="${esc(r.why || r.today)}">${stackCell(r.rule, "wrap")}${stackCell(r.kind, "muted")}${stackCell(r.number, "wrap")}` +
-  `${stackCell(r.confidence, "muted")}${stackCell(r.state, RULE_HUE[r.state] ?? "")}${stackCell(r.source, "wrap muted")}</tr>`;
+  `${stackCell(r.confidence, "muted")}${stackCell(r.state, levelClass(r.level))}${stackCell(r.source, "wrap muted")}</tr>`;
 
 const rulesBody = (d) => stackList("Rules", d.rules, RULE_COLS, ruleRow, "No rules match.", "No rules are recorded.");
 

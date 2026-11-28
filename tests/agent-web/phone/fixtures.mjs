@@ -409,7 +409,7 @@ export const STACK_RULE_ROWS = stackAll.rules.rows;
 // Costs: hub_core::costs, the shape costs.test.mjs pins.
 const LINE_COLS = ["session", "tool", "kind", "project", "harness", "model", "runner", "title", "sessions", "calls", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
 const line = (o) => ({ session: null, title: null, tool: null, kind: null, project: null, harness: null, model: null, runner: null, sessions: null, calls: null, tokens: null, cost: 0, share: 0, landed: null, redo: null, reverts: null, per_pr: null, src: null, ...o });
-const account = (name, live, used, gone, burn, sustain) => ({ name, kind: "claude", unpaced: false, reserve: null, parent: null, state: "ok", room: { ok: true, reasons: [], headroom: 4.2, text: "room, 4 points spare" }, live, used, used_text: `${used}%`, gone, burn, sustain, over: burn / sustain, idle_at: NOW + 3600, burn_at: null, run_out: null, resets: NOW + 200000, cost_24h: 80 });
+const account = (name, live, used, gone, burn, sustain) => ({ name, kind: "claude", unpaced: false, reserve: null, parent: null, state: "ok", room: { ok: true, reasons: [], headroom: 4.2, text: "room, 4 points spare" }, live, used, used_text: `${used}%`, gone, burn, sustain, over: burn / sustain, idle_at: NOW + 3600, burn_at: null, run_out: null, resets: NOW + 200000, cost_24h: 80, note: "", note_level: "ok", is_over: burn > sustain, burn_back: { word: "after reset", at: null }, idle_back: { word: null, at: NOW + 3600 } });
 // costs::columns("model"), which is also all the server keeps of the table's columns.
 const COST_CUT = ["model", "harness", "sessions", "tokens", "cost", "share", "landed", "redo", "reverts", "per_pr", "src"];
 const costs = {
@@ -447,7 +447,7 @@ const costs = {
   table: table(6, LINE_COLS.filter((k) => COST_CUT.includes(k)), ["all"], { model: ["opus-5-5", "gpt-5-codex"], runner: ["queue"] }),
   grafana: home.grafana, tokens: null, sections: null,
   burn: {
-    at: NOW, level: "bad", head: "4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live, carries ~11", drip_line: "15 started in 1h, 349 in 24h", stale: false, keys: null,
+    no_data: "no data from claude-acct", at: NOW, level: "bad", head: "4.5 pts/h vs 1.4 sustainable, 3.3x OVER, 39 live, carries ~11", drip_line: "15 started in 1h, 349 in 24h", stale: false, keys: null,
     accounts: [account("alt", 9, 55, 25, 1.04, 0.36), account("bnb", 17, 7, 1, 1.97, 0.56), account("main", 13, 33, 12, 1.51, 0.45)],
     fleet: { live: 39, burn: 4.52, sustain: 1.37, over: 3.3, rate: 0.116, carries: 11 }, drip: { hour: 15, day: 349, held: "fleet-assess says HOLD" },
     pace: { on_pace: false, at_burn: [["main", NOW + 600]], idle_all_by: NOW + 3600, idle_rest_after_reset: false },
@@ -480,7 +480,7 @@ function app(i) {
 const releases = {
   table: table(6, ["project", "stage", "live", "status", "checks", "channels", "released", "last_deploy", "channel", "id"], ["all", "attention", "ok"], { project: PROJECTS.slice(0, 3), stage: ["draft", "alpha"], status: ["ok", "drift"] }),
   rows: rows(6, app), blanks: ["not recorded", "none declared", "no check"],
-  question: "", summary: `6 apps: ${REL_STATUS.map(([s]) => [s, rows(6, app).filter((a) => a.status === s).length]).filter(([, n]) => n).map(([s, n]) => `${n} ${s}`).join(", ")}`, gaps: "", look: true, at: NOW, stale_after: 3600, errors: [],
+  question: "", summary: `6 apps: ${REL_STATUS.map(([s]) => [s, rows(6, app).filter((a) => a.status === s).length]).filter(([, n]) => n).map(([s, n]) => `${n} ${s}`).join(", ")}`, gaps: "", look: true, at: NOW, reading: { state: "live" }, errors: [],
 };
 const builds = {
   table: table(6, ["started", "state", "repo", "workflow", "branch", "took", "usual", "eta", "owner", "release", "forge", "event", "title", "id", "pr"], ["all", "running", "queued", "red", "green"], { repo: REPOS.slice(0, 2), forge: ["github"], event: ["push", "pull_request"], state: ["green", "red"] }),

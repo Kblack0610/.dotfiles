@@ -10,8 +10,6 @@ use crate::datatable::DataTable;
 use crate::fit::{cell, labelled, Cell, Table};
 use crate::fmt::{clock, Palette};
 use hub_core::display::fmt::dur_secs;
-use hub_core::reading::JobState;
-use hub_core::vocab::Level;
 
 /// `Schedule::COLUMNS` in capitals, in its order, the sort mark placed by that index. `result`
 /// and `repo` sort and filter without a column: the state and the name say them.
@@ -126,15 +124,7 @@ fn short(name: &str, w: usize) -> String {
 }
 
 fn row(r: &Schedule, p: Palette, now: i64, name: usize) -> Vec<Cell> {
-    let state = cell(
-        r.state.word(),
-        match r.state_level {
-            _ if r.state == JobState::Off => p.dim(),
-            Level::Bad => p.bad(),
-            Level::Warn => p.warn(),
-            Level::Ok | Level::Neutral => Style::default(),
-        },
-    );
+    let state = cell(r.state.word(), p.hue(r.state_level));
     // The day alone for an older time; the pane has the clock.
     let day = |t: Option<i64>| -> Cell {
         t.map_or("-".into(), |t| {
@@ -142,11 +132,7 @@ fn row(r: &Schedule, p: Palette, now: i64, name: usize) -> Vec<Cell> {
         })
         .into()
     };
-    let streak = if r.streak < 0 {
-        cell(r.streak_text(), p.bad())
-    } else {
-        r.streak_text().into()
-    };
+    let streak = cell(r.streak_text(), p.hue(r.streak_level));
     vec![
         r.kind.clone().into(),
         // Amber says it has no purpose; the pane and the `no-purpose` chip say it in words.
@@ -217,6 +203,7 @@ pub fn detail(r: &Schedule, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hub_core::reading::JobState;
     use hub_core::schedules::Run;
 
     fn sample() -> Schedules {

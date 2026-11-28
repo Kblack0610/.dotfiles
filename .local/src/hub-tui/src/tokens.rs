@@ -193,14 +193,7 @@ pub fn langfuse(
         return out;
     };
     out.extend(langfuse_tools(f, p, w));
-    let classes = |cs: &[Count]| match cs {
-        [] => "none".to_string(),
-        cs => cs
-            .iter()
-            .map(|c| format!("{} {}", c.name, c.n))
-            .collect::<Vec<_>>()
-            .join(", "),
-    };
+    let classes = hub_core::tokens::classes_line;
     let partial = if f.truncated {
         " (classes partial)"
     } else {
@@ -421,6 +414,7 @@ mod tests {
                 name: "ShellError".into(),
                 n: 781,
             }],
+            tool_error_line: "ShellError 781".into(),
             gateway_calls: 194,
             gateway_errors: 26,
             gateway_error_share: Some(0.134),
@@ -428,6 +422,7 @@ mod tests {
                 name: "invalid_key".into(),
                 n: 16,
             }],
+            gateway_error_line: "invalid_key 16".into(),
             gateway_cost_usd: 3.59,
             gateway_tokens: 2_271_863,
             gateway_models: vec![LfModel {

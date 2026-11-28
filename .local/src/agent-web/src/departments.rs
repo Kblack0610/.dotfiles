@@ -98,6 +98,8 @@ struct Tabs<'a> {
     /// Each department's needs that are not ok, by department id (`Product::open_needs`): the
     /// number on its inner tab.
     dept_needs: BTreeMap<String, usize>,
+    /// The sum of `dept_needs` (`Product::open_total`): the number on the Departments tab.
+    dept_total: usize,
     says: String,
 }
 
@@ -111,10 +113,12 @@ fn tabs<'a>(c: &'a Coverage, key: &str) -> Tabs<'a> {
     };
     let need_groups = product.map(Product::need_groups).unwrap_or_default();
     let dept_needs = product.map(Product::open_needs).unwrap_or_default();
+    let dept_total = product.map_or(0, Product::open_total);
     Tabs {
         product,
         need_groups,
         dept_needs,
+        dept_total,
         says,
     }
 }
