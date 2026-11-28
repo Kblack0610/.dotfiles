@@ -14,14 +14,14 @@ metadata:
 Before a reboot you lose every tmux/Claude session, dev server, and non-enabled service.
 This skill takes a **decision-oriented inventory** of what's running, separates "comes back on
 its own" from "you must restart it manually", flags **uncommitted/unpushed git work** (the only
-thing genuinely at risk), writes it all to a dated file in the **notes inbox**, and on the next
+thing genuinely at risk), writes it all to a dated file in the session notes, and on the next
 boot helps you bring the right things back.
 
 Verbs: **`down`** and **`up`** (the planned reboot), **`snapshot`** (default) and **`restore`** (the inventory and the hand restore).
 
 ## Scope and triggers
 
-Before a planned reboot or upgrade, spin the fleet down with one command and let it come back on its own at boot; around that, inventory what dies on reboot (tmux/Claude sessions, dev servers, manual `systemd --user` services, docker containers, dirty/unpushed repos) into a dated checklist in the notes inbox. Use when the user says "spin everything down", "I want to upgrade/reboot this machine", "what's running before I reboot", "save my session state", "restore my sessions". `down` and `up` act; `snapshot` observes; `restore` acts only with confirmation.
+Before a planned reboot or upgrade, spin the fleet down with one command and let it come back on its own at boot; around that, inventory what dies on reboot (tmux/Claude sessions, dev servers, manual `systemd --user` services, docker containers, dirty/unpushed repos) into a dated checklist in the session notes. Use when the user says "spin everything down", "I want to upgrade/reboot this machine", "what's running before I reboot", "save my session state", "restore my sessions". `down` and `up` act; `snapshot` observes; `restore` acts only with confirmation.
 
 ## down and up: the planned reboot
 
@@ -32,7 +32,7 @@ session-snapshot status                  # after boot: "up: no planned reboot in
 ```
 
 - `down` holds dispatch (`agent-hold set dispatch`), pauses the agentctl runners (`agentctl pause`), takes a final pane record (`fleet-dispatch record`), and writes the marker `~/.agent/maintenance` with what it set. It sets only what is not already set, so a hold or pause someone else put up is never lifted by `up`. `down` and `up` run one at a time per machine (lock `/run/user/<uid>/session-snapshot.lock`; `--dry-run` skips it), so a second `down` waits and then reads the first one's marker; after 300 s (`SESSION_SNAPSHOT_LOCK_WAIT`) it exits 75 having changed nothing. It parks and kills nothing: the reboot stops the sessions. <!-- skill-drift: ignore (down writes this marker and up removes it, so it exists only while the fleet is down) -->
-- At boot, `session-snapshot-up.service` runs `session-snapshot up` only while the marker exists: `fleet-dispatch restore` reopens every recorded conversation, then it resumes agentctl, releases dispatch, clears the marker, and pages one "back up after" line: normal when a reopen failed (rerun `fleet-dispatch restore`), high when a lever refused (it stays on the marker; rerun `session-snapshot up`).
+- At boot, `session-snapshot-up.service` runs `session-snapshot up` only while the marker exists. `up` reopens nothing itself: `fleet-dispatch restore --defer` hands the walk to `fleet-restore.service`, then `up` resumes agentctl, releases dispatch, clears the marker and pages one "back up after" line, all within seconds (a walk inside the unit hit its 600 s start timeout on 2026-11-19 with both levers still set). The page names how many conversations went to the walk and says none reopened yet; it is normal when the walk could not start (run `fleet-dispatch restore`), high when a lever refused (it stays on the marker; rerun `session-snapshot up`). While the walk runs dispatch starts nothing (its gate reads "a restore walk is reopening sessions"); a walk the unit's timeout cuts short is walked again by the minute record, and prompted reopens wake in batches. `session-snapshot status` names the conversations still on lost pane records.
 - In the first 30 minutes after the boot that follows `down`, `fleet-dispatch record` does not page "tmux server died": the `up` page replaces it. Before the reboot, or once that window passes, a server death pages as usual.
 - Not rebooting after all: `session-snapshot up` by hand undoes it the same way.
 - Run `down` last, right before the reboot, after `snapshot` below if the user wants the checklist. Commit or push the dirty repos first; the reboot does not wait for them.
@@ -40,21 +40,16 @@ session-snapshot status                  # after boot: "up: no planned reboot in
 
 ## Where the artifact lives
 
-The checklist goes to the **notes inbox**, not `$HOME` root:
-
-- Full doc: `"$(notes path inbox)/<date>-reboot-restore.md"`
-- Triage pointer (so it surfaces in `notes inbox`): `notes inbox add "reboot restore checklist -> <file>"`
-
-Use the resolved path from `notes path inbox`; never hard-code `~/.notes`. Never hand-write into
-`~/.notes/journal/` - but the inbox is a capture surface and a standalone dated file there is fine.
+The checklist is agent runtime state, so it goes with the session notes of dotfiles, the repo that owns this skill and the machine's provisioning: `~/.agent/sessions/dotfiles/<date>-reboot-restore.md`. Never write it into `~/.notes/inbox/` (the human's own captures) or `~/.notes/journal/`. Why: restore files left in the capture folder showed up as old junk in the human's inbox for weeks (2026-11-25).
 
 ## snapshot
 
-Gather, in parallel where possible, then write the dated file + inbox pointer:
+Gather, in parallel where possible, then write the dated file:
 
 ```bash
 DATE=$(date +%F)                      # the skill is allowed real dates; agents pass one if sandboxed
-OUT="$(notes path inbox)/${DATE}-reboot-restore.md"
+OUT="$HOME/.agent/sessions/dotfiles/${DATE}-reboot-restore.md"
+mkdir -p "$(dirname "$OUT")"
 
 # 1. tmux sessions/windows (cwd + live branch + foreground cmd), on EVERY live named server.
 #    The worlds (hub, lab, ...) are named sockets and a bare `tmux` reaches only one of them, so
@@ -115,7 +110,7 @@ Write the file with these sections (see the template the skill emits):
 - **Docker** - containers w/ vs w/o restart policy; note `mcp/filesystem` are ephemeral (Claude respawns)
 - **Resume task** - any in-flight task to pick up (e.g. the original reason for rebooting)
 
-Then: `notes inbox add "reboot restore checklist -> $OUT"` and tell the user the path.
+Then tell the user the path.
 
 **Finished means the plan's phases are done.** A merged PR on an idle pane proves nothing. Take `finished` and `blockers` from step 8 as the verdict (its rule: `.local/src/docs/fleet-states.md`, DONE) and do not restate it here. A `finished false` session is listed unfinished with its `blockers`. A session with no step 8 row (a "from transcript" one) has no verdict: list it unfinished and read the last assistant message in its transcript (`claude-recall show <id>`) for what it was doing.
 
@@ -127,7 +122,7 @@ list them as action items. Ephemeral `mcp/filesystem` containers are noise - Cla
 After an unplanned reboot (a planned one used `up`), or for what `up` does not bring back:
 
 ```bash
-ls -t "$(notes path inbox)"/*-reboot-restore.md | head -1      # newest checklist
+ls -t ~/.agent/sessions/dotfiles/*-reboot-restore.md | head -1      # newest checklist
 ```
 
 Read it, then **with confirmation** offer to:

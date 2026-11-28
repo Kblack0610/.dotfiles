@@ -7,7 +7,11 @@
 # Roots, for tests: CPU_TEMP_HWMON (default /sys/class/hwmon), CPU_TEMP_THERMAL (default /sys/class/thermal).
 # FLEET_HOT_TCTL is the throttle point (C), the one threshold fleet-assess holds at and boot-cause calls
 # thermal-suspect at: this Zen part boosts until Tctl reads 95, so low 90s under load are by design.
+# FLEET_CRIT_TCTL is the critical mark (C): past the boost ceiling, so fleet-assess holds at any load and
+# pages urgent, and fleet-dispatch places nothing on a worker reading it. tuf-b550 read 101-105 C at a
+# load of 0.5-0.85x cores and powered off at 110 C (2026-11-25), under the hot rule's load bar.
 : "${FLEET_HOT_TCTL:=95}"
+: "${FLEET_CRIT_TCTL:=100}"
 read_tctl() {
   local h z v max=''
   for h in "${CPU_TEMP_HWMON:-/sys/class/hwmon}"/hwmon*; do

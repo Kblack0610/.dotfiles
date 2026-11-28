@@ -5,6 +5,7 @@
   fact-owners scan  [--doc DOC]          what the generated rules and the copy regexes find that no Debt entry covers
   fact-owners count [--unowned|--debt|--json]
   fact-owners files                      the tracked files the copies are looked for in
+  fact-owners names [--doc DOC]          the names a plan's `Owners:` line may use: each row's key and each writer's file
 
 The Owners table in .local/src/docs/fleet-states.md names each fact's writer, its home, a forbidden
 copy (a `grep -E` regex), its lock, its pinning tests and its Debt: known copies still to remove,
@@ -26,6 +27,9 @@ DOC_REL = ".local/src/docs/fleet-states.md"
 RULES_REL = ".config/fact-owners/rules.json"
 BOARDS = [os.path.join(HOME, ".notes/lab/projects/current/agent-runtime", f) for f in ("agent/README.md", "README.md")]
 TREES = [".local/bin/", ".local/lib/", ".local/src/", ".config/shared-hooks/", ".claude/"]
+# The private repo's code: its bin, its lib (live-sessions.sh) and its skill scripts (model-lane), where
+# public CI cannot look. Why: VOIDABLE got in there, 36 minutes after UNRATED_ENDS (private #707).
+PRIVATE_TREES = [".local/bin/", ".local/lib/", ".claude/"]
 COLS = ["fact", "writer", "home", "copy", "lock", "pinned", "debt"]
 SEP = "\x1e"
 KNOWN_FLAGS = {"cells", "pins", "copies", "generated", "debt", "rows", "unowned", "json"}
@@ -121,7 +125,7 @@ def owned_files():
                 continue
         out.append(os.path.realpath(p) if os.path.islink(p) else p)
     if PRIVATE:
-        pl = subprocess.run(["git", "-C", PRIVATE, "ls-files", "--", ".local/bin"], capture_output=True, text=True).stdout.split("\n")
+        pl = subprocess.run(["git", "-C", PRIVATE, "ls-files", "--"] + PRIVATE_TREES, capture_output=True, text=True).stdout.split("\n")
         out += [os.path.join(PRIVATE, f) for f in pl if f and not re.search(r"\.(md|svg|bats)$", f)]
     return list(dict.fromkeys(out))
 
@@ -153,6 +157,19 @@ def writer_files(r):
         root, p = root_of(s)
         if root and ":" in p and os.path.isfile(os.path.join(root, p.split(":")[0])):
             out.add(os.path.realpath(os.path.join(root, p.split(":")[0])))
+    return out
+
+
+def row_names(doc):
+    """What a plan's `Owners:` line (planning.md) may name: a row's key, or the file of a writer it lists."""
+    out = set()
+    for r in rows_of(doc):
+        if r["key"]:
+            out.add(r["key"])
+        for s in spans(r["writer"]):
+            s = s[len("private:"):] if s.startswith("private:") else s
+            if ":" in s:
+                out.add(s.split(":")[0])
     return out
 
 
@@ -506,7 +523,7 @@ def unowned(doc, files):
 
 
 def main(argv):
-    if not argv or argv[0] not in ("check", "scan", "count", "files"):
+    if not argv or argv[0] not in ("check", "scan", "count", "files", "names"):
         print(__doc__.strip().split("\n\n")[0], file=sys.stderr)
         return 2
     cmd, args = argv[0], argv[1:]
@@ -525,6 +542,9 @@ def main(argv):
         else:
             files.append(a)
         i += 1
+    if cmd == "names":
+        print("\n".join(sorted(row_names(doc))))
+        return 0
     files = files or owned_files()
     if cmd == "files":
         print("\n".join(files))

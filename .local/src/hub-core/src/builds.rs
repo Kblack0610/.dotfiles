@@ -2,8 +2,8 @@
 //! `schedules-sync`'s run ledger (`~/.local/state/ci/runs.jsonl`), each with the session that owns
 //! its branch. The ledger is append-only (a run is written again each time it changes), so a run is
 //! its last line. A failed run's log is fetched only when the row is opened (docs/dashboards.md
-//! rule 10), through the fetch and cache `jobs::read_log` already has. The opened run's jobs, steps
-//! and cost are `detail` (`run_detail`), read from local files only. Releases' Release runs are the
+//! rule 10), through the fetch and cache `jobs::read_log` already has. The opened run's jobs and steps
+//! are `detail` (`run_detail`), read from local files only. Releases' Release runs are the
 //! same read cut to the runs the graph tied to a release (`Builds::scoped`). Each workflow's times
 //! and pass rate are Infra Pipelines' (`pipelines`, through `time_of`).
 //!
@@ -30,7 +30,7 @@ use crate::jobs::{self, LogRef};
 use crate::links::{Kind, Link};
 use crate::quarantine;
 use crate::releases::Level;
-use crate::run_detail::{self, Rates, RunDetail};
+use crate::run_detail::{self, RunDetail};
 use crate::run_page;
 use crate::table::{Row, Val};
 
@@ -769,9 +769,8 @@ pub fn slots_of(runner: &str) -> &str {
 /// The pass rate (`verdict`) of each runner group's (`slots_of`) last `last` jobs that completed
 /// before `until`, from the job archive's text: what `hub ci hosts` prints. A GitHub-hosted job is
 /// no host's, so it is left out, and so is a job `verdict` does not count (cancelled, skipped).
-/// Hosted is told by the runner name GitHub gives every hosted runner, not by the labels: the
-/// archive's self-hosted Unity jobs carry `unity`, `unity-gate` and no `self-hosted`. A line that
-/// does not parse is an error, not a skip: a window of 50 short of its jobs reads as a real rate.
+/// Hosted is told by the runner name (`run_detail::hosted`). A line that does not parse is an
+/// error, not a skip: a window of 50 short of its jobs reads as a real rate.
 /// With `since`, a group whose newest counted job completed before it is left out: a retired host
 /// keeps its last jobs in the archive for good, and a host that is down is `runners_down`'s, not a
 /// pass rate with no job behind it.
@@ -791,7 +790,7 @@ pub fn pass_by_runner(
         let Some(runner) = j
             .runner_name
             .as_deref()
-            .filter(|r| !r.is_empty() && !r.starts_with("GitHub Actions"))
+            .filter(|r| !r.is_empty() && !run_detail::hosted(r))
         else {
             continue;
         };
@@ -988,11 +987,11 @@ pub fn log(
     }
 }
 
-/// The run `key` names, opened: its header, jobs and cost priced with `rates`, and the five
+/// The run `key` names, opened: its header and jobs, and the five
 /// sections of its page (`run_page`). The jobs come from the archive; a GitHub run the archive has
 /// not finished is read once from GitHub (`run_page::live_record`, kept `LIVE_TTL_SECS`).
 /// `o.builds` is the joined read the run is found in, so its PRs, owner and release are the table's.
-pub fn detail(o: &run_page::Env, rates: &Rates, key: &RunKey) -> Result<RunDetail, String> {
+pub fn detail(o: &run_page::Env, key: &RunKey) -> Result<RunDetail, String> {
     let run = find_in(o.builds, key)?;
     let mut attempts: Vec<u32> = o
         .builds
@@ -1003,7 +1002,7 @@ pub fn detail(o: &run_page::Env, rates: &Rates, key: &RunKey) -> Result<RunDetai
         .collect();
     attempts.sort_unstable();
     let (rec, live_error) = job_record(o, run);
-    let mut d = run_detail::build(run, rec.as_ref(), attempts, rates, o.now);
+    let mut d = run_detail::build(run, rec.as_ref(), attempts, o.now);
     d.page = Some(run_page::page(
         o,
         run,
@@ -1110,7 +1109,6 @@ pub fn open_detail(
     builds: &Builds,
     paths: &Paths,
     cache: &Path,
-    rates: &Rates,
     key: &RunKey,
     now: i64,
 ) -> Result<RunDetail, String> {
@@ -1123,7 +1121,7 @@ pub fn open_detail(
         registry: registry.as_deref(),
         now,
     };
-    detail(&env, rates, key)
+    detail(&env, key)
 }
 
 /// `job_log` as the surfaces call it: gh through the system, the cache the job logs are kept in.
@@ -1496,7 +1494,7 @@ mod tests {
             registry: None,
             now: NOW,
         };
-        detail(&o, &run_detail::tests::rates(), key)
+        detail(&o, key)
     }
 
     fn job(name: &str, runner: &str, start: i64, secs: i64) -> serde_json::Value {
@@ -1527,7 +1525,7 @@ mod tests {
     }
 
     #[test]
-    fn an_opened_run_reads_its_jobs_and_prices_them_from_local_files_only() {
+    fn an_opened_run_reads_its_jobs_from_local_files_only() {
         let start = NOW - 3000;
         let mut jobs = vec![
             job("shard 2", "aws-burst-1-unity-pool-3", start, 32 * 60 + 45),
@@ -1540,7 +1538,7 @@ mod tests {
             &[line(9, "completed", Some("failure"), 3060, "b")],
             &record(9, true, jobs),
         );
-        // Only the paths and the rates go in: no Prometheus base, no GitHub token, no fetch.
+        // Only the paths go in: no Prometheus base, no GitHub token, no fetch.
         let got = det(&p, &key(9));
         let missing = det(&p, &key(10));
         std::fs::remove_dir_all(&d).unwrap();
@@ -1551,16 +1549,9 @@ mod tests {
         let shard = &got.jobs[0];
         assert_eq!(
             (shard.class.as_str(), shard.took_text.as_str()),
-            ("pool/on-demand", "32m45")
+            ("pool", "32m45")
         );
-        assert_eq!(shard.price.text, "0.20 (1/5 of $1.855/h)");
-        assert_eq!(
-            got.jobs[1].price.text, "no rate",
-            "hp-victus has slots and no rate"
-        );
-        assert_eq!(got.jobs[2].class, "light/owned");
-        assert_eq!(got.jobs[2].price.text, "0.00 owned");
-        assert_eq!(got.cost.text, "$0.20 + no rate");
+        assert_eq!(got.jobs[2].class, "light");
         assert_eq!(shard.steps_text, "checkout 2s");
         assert!(
             got.header
@@ -1573,7 +1564,6 @@ mod tests {
             "{}",
             got.header
         );
-        assert!(got.title.contains("$0.20 + no rate"), "{}", got.title);
         assert_eq!(got.attempts, [1]);
     }
 
@@ -1619,7 +1609,6 @@ mod tests {
         let got = got.unwrap();
         assert_eq!(got.jobs.len(), 130);
         assert_eq!(got.jobs[129].name, "shard 129");
-        assert_eq!(got.cost.text, "$0.00 owned");
     }
 
     #[test]

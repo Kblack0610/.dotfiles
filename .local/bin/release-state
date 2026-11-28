@@ -44,6 +44,8 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"
 # shellcheck source=../lib/store-auth.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
+# shellcheck source=../lib/uncomment.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/uncomment.sh"
 NAME=release-state   # the runner refresh publishes under, never an inherited AGENTCTL_NAME
 
 STATE_DIR="${RELEASE_STATE_DIR:-$HOME/.agent/releases}"
@@ -170,7 +172,7 @@ provenance() {
 # value_provenance <project> <value> -> provenance of a version some side reads, its tagger read
 # from the project's own tag of that version: a pin, an image or a store reads `1.4.0` where the
 # line tags `web-v1.4.0`, so the value is matched by version over the line's tags (release and
-# build), then as a tag name.
+# build), then as a tag name, its `v` put back on a bare build value.
 value_provenance() {
   local tag="" who=""
   prov_load "$1"
@@ -178,7 +180,16 @@ value_provenance() {
   if project_tag_scope "$1"; then
     tag="$(git_tag_for_version "$_PTS_REPO" "$1" "$2" \
       "$(_gr_glob "$_PTS_REPO" "$1" "$_PTS_SCOPED" "$_PTS_GLOB") $_PTS_BUILDS")"
-    who="$(git_tag_at "$_PTS_REPO" "${tag:-$2}" | cut -s -d' ' -f3-)"
+    # No tag of the line's own: the value names one, the value itself first. An image drops a
+    # build tag's `v` (the playground-server runs `0.5.4-dodginballs1`, a sibling game's build
+    # v0.5.4-dodginballs1), so a bare build value tries its `v` tag. Only a build: a bare `1.4.0`
+    # would otherwise take another product's root `v1.4.0` in a monorepo.
+    if [ -z "$tag" ]; then
+      tag="$2"
+      [ -n "$(git_tag_at "$_PTS_REPO" "$tag")" ] || [[ ! $tag =~ ^[0-9]+\.[0-9]+\.[0-9]+-[A-Za-z0-9.]+$ ]] \
+        || tag="v$tag"
+    fi
+    who="$(git_tag_at "$_PTS_REPO" "$tag" | cut -s -d' ' -f3-)"
   fi
   provenance "$1" "$2" "$who"
 }
@@ -546,15 +557,14 @@ deploys() {
 # off GitHub); prs are the PR numbers in prev..tag, read from the squash subjects as the changelog
 # is. Raw facts only: which channel shipped a tag, and each PR's row, are hub_core::release_graph's joins.
 history() {
-  local proj="$1" repo glob line=release tags="" t p sha_at who out="[]" name host path
+  local proj="$1" repo glob line=release tags="" t p sha_at who out="[]" name path
   if ! project_tag_scope "$proj"; then
     jq -nc '{line: "none", glob: null, repo: null, error: "no checkout", tags: []}'
     return
   fi
   repo="$_PTS_REPO"
   path="$(project_field "$proj" path)"
-  name="$(origin_repo "$repo" || true)"; host="$(origin_host "$repo" || true)"
-  [ -z "$name" ] || [ -z "$host" ] || [ "$host" = github.com ] || name="$host/$name"
+  name="$(origin_store_name "$repo" || true)"
   glob="$(_gr_glob "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB")"
   [ -n "$glob" ] && tags="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$glob")"
   if [ -z "$tags" ] && [ -n "$_PTS_BUILDS" ]; then
@@ -735,10 +745,11 @@ stage_facts() {
         | from_entries)}' <"$labs"
 }
 
-# workflow_code <dir> <ref> <file>: the file at the fetched branch ref without its comment lines.
+# workflow_code <dir> <ref> <file>: the file at the fetched branch ref without its comments (uncomment),
+# a trailing one included: gungan's `runs-on: [...]  # ... home-config ...` names no deploy marker.
 # Match it as a here-string, never piped into `grep -q`: the runner ignores SIGPIPE (systemd), so a
-# matcher that exits on the first hit leaves this grep a write error on stderr.
-workflow_code() { git -C "$1" show "$2:$3" 2>/dev/null | grep -v '^[[:space:]]*#' || true; }
+# matcher that exits on the first hit leaves the writer a write error on stderr.
+workflow_code() { git -C "$1" show "$2:$3" 2>/dev/null | uncomment; }
 
 # link_facts <labs-file> -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
 # with the error that stopped its read. Per app repo (a repo an app or game ships from): the

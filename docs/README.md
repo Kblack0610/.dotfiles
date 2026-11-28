@@ -11,6 +11,7 @@ What lives in this repo's `docs/` tree. Cross-repo rules (CI, plans, skills, UI,
 
 - [desk.md](desk.md): `desk`, which switches the bar and the notifier.
 - [laptop-keyboard.md](laptop-keyboard.md): `laptop-kbd`, which turns the laptop keyboard off and on.
+- [controllers.md](controllers.md): the slot map and per-OS steps for moving the pocket Bluetooth controllers between devices.
 
 ## Operations
 
@@ -21,6 +22,7 @@ What lives in this repo's `docs/` tree. Cross-repo rules (CI, plans, skills, UI,
 - [operations/claude-acct-usage.md](operations/claude-acct-usage.md): adding a `claude-acct` usage source, such as a LiteLLM route plus a `litellm-key` row.
 - [operations/deploy.md](operations/deploy.md): deploying the cockpit and agent-runtime.
 - [operations/event-catalogue.md](operations/event-catalogue.md): the list of events each product sends.
+- [operations/fleet-failover.md](operations/fleet-failover.md): which peers can take the fleet lease, losing a machine, and the failover drill.
 - [operations/git-hooks.md](operations/git-hooks.md): the global git hook dispatcher.
 - [operations/github-app.md](operations/github-app.md): the GitHub App behind the fleet's `gh` reads.
 - [operations/local-llm.md](operations/local-llm.md): the local Qwen model on the workstation.
@@ -28,3 +30,4 @@ What lives in this repo's `docs/` tree. Cross-repo rules (CI, plans, skills, UI,
 - [operations/release-state.md](operations/release-state.md): what is pinned and live on each deploy channel.
 - [operations/store-reviews.md](operations/store-reviews.md): store reviews, playtest feedback and Sentry issues.
 - [operations/store-sales.md](operations/store-sales.md): yesterday's store and Steam sales.
+- [operations/test-ledger.md](operations/test-ledger.md): the per-case test ledger `hub-cases` writes, its back-fill and troubleshooting.

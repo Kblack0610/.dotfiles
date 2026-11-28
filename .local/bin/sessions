@@ -11,7 +11,7 @@
 # Registry: ~/.agent/sessions/{project}/sessions.jsonl (one JSON line/session).
 # Live state: ~/.claude/sessions/<pid>.json, written by the Claude CLI itself -
 # gives sessionId, cwd, name and busy/idle without any hook of ours.
-# Agent axis only - nothing here touches ~/.notes/inbox.
+# Agent axis only - nothing here touches ~/.notes/captures.
 
 set -uo pipefail
 
@@ -227,8 +227,8 @@ resolve_id() {
   if [ -z "$matches" ]; then
     matches=$(live_lines | cut -f1 | sort -u | grep -i "^${want}")
   fi
-  # Sessions that made no file edit are never registered at all - and a session
-  # killed before it got going is exactly the one you most need to pick back up.
+  # A headless session that did no work is never registered, and a session killed
+  # before its first Stop is exactly the one you most need to pick back up.
   # Fall back to the transcripts on disk.
   if [ -z "$matches" ]; then
     matches=$(find_transcripts "${want}*.jsonl" \
@@ -447,7 +447,7 @@ cmd_show() {
   dir="$(session_cwd "$id")"
   # Unregistered sessions carry no project or edit count; derive what we can.
   [ -n "$proj" ] || proj="$([ -n "$dir" ] && resolve_project "$dir")"
-  [ -n "$edits" ] || edits="? (never registered - no file edits)"
+  [ -n "$edits" ] || edits="? (never registered)"
   mark="$(live_marker "$id")"
 
   printf '%s\n' "${title:-(untitled)}"
@@ -893,6 +893,7 @@ case "$sub" in
   search)        cmd_search "$@" ;;
   index)         cmd_index "$@" ;;
   _filter)       cmd_filter "$@" ;;
+  _branch)       t="$(transcript_path "${1:-}")"; last_branch "$t" ;;   # the branch a conversation last ran on (fleet-dispatch restore)
   _window)       session_window "$(resolve_id "${1:-}" 2>/dev/null)" ;;
   show)          cmd_show "$@" ;;
   prompts)       cmd_prompts "$@" ;;

@@ -103,6 +103,18 @@ plan_gated_rows() {
     | {slug: .id, task: ((.details // []) | if type == "array" then join("\n") else tostring end)}' 2>/dev/null || true
 }
 
+# plan_whole_rows [<board json>] -> each open board row agent-queue add --plan filed for a whole plan (its brief
+# is the plan_row_task sentence), one {slug: the row id, plan: the path} line for PLAN_ITEMS_JQ: dispatch
+# promotes the row into the plan's chain, so until then the row holds every open phase of that plan, as
+# the chain's items will. A session that queued its plan from a dispatched run (one-shot step 1a) read
+# WORKING while its row waited (ar-5445). Nothing when the board cannot be read.
+plan_whole_rows() {
+  { if [ $# -gt 0 ]; then printf '%s\n' "$1"; else notes board --json 2>/dev/null; fi; } | jq -c '.rows[]? | select(.state == "open")
+    | .id as $id | (.details // []) | if type == "array" then join("\n") else tostring end
+    | capture("Run the open phases of the approved plan (?<p>/[^\n]*?[.]md) in order")
+    | {slug: $id, plan: .p}' 2>/dev/null || true
+}
+
 # plan_pointer <plan file> -> "<canonical plan path> TAB <N>" when the file is a pointer stub, whose
 # opening lines say `Phase N of <path>.md` (a phase plan agent-queue wrote into ~/.claude*/plans/),
 # and that plan exists; else nothing. The queue items name the canonical plan, not the stub, and
@@ -163,6 +175,46 @@ plan_overlap_ids() {
     on' "$@" | grep -oE '\b[a-z][a-z0-9]*-[0-9]+\b' | sort -u
 }
 
+# plan_owners_line [<plan file>] -> the plan's `Owners:` line under `## Reviewed` (planning.md, Owners:), its
+# continuation lines joined: `none: <search>` when it says none, else each name on it, one a line, backticks
+# stripped, split on commas and spaces. Status 1 when the plan has no such line (an empty one prints nothing, status 0). The names are checked against
+# `fact-owners names`. Reads stdin with no file.
+plan_owners_line() {
+  [ $# -eq 0 ] || [ -f "$1" ] || return 1
+  local txt
+  txt=$(awk '/^```/ { f = !f; next } f { next }
+    /^## / { inr = ($0 ~ /^## Reviewed([[:space:]]|$)/); on = 0; next }
+    !inr { next }
+    { lab = $0; sub(/^[[:space:]]*([-*][[:space:]]+)?(\*\*)?/, "", lab)
+      if (lab ~ /^Owners:/) { on = 1; got = 1; sub(/^Owners:(\*\*)?[[:space:]]*/, "", lab); line = lab; next }
+      if (lab ~ /^[A-Z][A-Za-z ]*:/) on = 0 }
+    on && !NF { on = 0 }
+    on { line = line " " $0 }
+    END { if (got) print "x " line }' "$@") || return 1
+  [ -n "$txt" ] || return 1
+  txt=$(sed -E 's/^x //; s/`//g; s/^[[:space:]]+//; s/[[:space:]]+$//' <<<"$txt")
+  if [[ "$txt" == none:* ]]; then printf '%s\n' "$txt"; return 0; fi
+  tr ', ' '\n\n' <<<"${txt%.}" | awk 'NF'
+}
+
+# plan_project [<plan file>] -> the project whose rows the plan names: the id on its `epic: <id>` line,
+# else, for an `epic: new` proposal, the ids on its Overlap: line, each read by its code (project_of_code,
+# so the caller has sourced project-name.sh). Overlap counts only there, because elsewhere it lists other
+# work. Nothing when it names no known id, or ids of more than one project: the caller then takes the
+# session's cwd. Why: a dotfiles session planning dodginballs work was checked on the agent-runtime
+# board (ar-5288). Reads stdin with no file.
+plan_project() {
+  [ $# -eq 0 ] || [ -f "$1" ] || return 0
+  local text ids p
+  text=$(cat "$@")
+  ids=$(_epic_line epic <<<"$text")
+  [ -n "$ids" ] || [ -z "$(plan_epic_new <<<"$text")" ] || ids=$(plan_overlap_ids <<<"$text")
+  [ -n "$ids" ] || return 0
+  p=$(while read -r id; do project_of_code "${id%-*}"; done <<<"$ids" | grep -v '^$' | sort -u)
+  [ -n "$p" ] && [ "$(wc -l <<<"$p")" -eq 1 ] && printf '%s\n' "$p"
+  return 0
+}
+
 # plan_epic_tag <plan file> -> `#plan/<slug>`, the tag plan-approved.sh puts on a proposal and
 # plan_epic_verdict finds its verdict by.
 plan_epic_tag() { printf '#plan/%s\n' "$(basename "$1" .md)"; }
@@ -197,7 +249,7 @@ plan_epic_verdict() {
 }
 
 # plan_epic_settle <plan file> <id>: the plan's `epic: new` line becomes `epic: <id>`, so the epic reads
-# from the plan itself once settled, not from a log that keeps 30 days (notes log --trace).
+# from the plan itself once settled, not from a log that keeps a week (notes log --trace).
 plan_epic_settle() {
   local tmp
   [ -f "$1" ] && [[ "$2" =~ ^[a-z][a-z0-9]*-[0-9]+$ ]] || return 1
@@ -255,14 +307,14 @@ plan_taken_rows() {
   { phase_takes "$(awk -v mode=list -v sup=0 "$_PLAN_PHASES_AWK" "$1" | cut -f2-)"; plan_rows "$1"; } | sort -u
 }
 
-# item_filed_rows <item> -> each agent-lane board row queue item <item> filed in the record's 30 days, one id
+# item_filed_rows <item> -> each agent-lane board row queue item <item> filed in the record's week (KEEP_DAYS in notes-cli ingest.rs), one id
 # a line: one it added itself (`added`, by it) and one inbox-triage filed from its outbox line (`filed`, the
 # line's `#from/<item>`). The board keeps no `#from/` tag (triage strips it), so the ingest record (`notes
 # log`) is the one place that says who filed a row. Fails when the record cannot be read.
 item_filed_rows() {
   local out st
-  # Streamed, not held in a variable: the record's 30 days run to tens of MB.
-  out="$(notes log --days 30 --json 2>/dev/null | jq -r --arg i "$1" 'select((.id // "") != "" and .lane == "agent")
+  # Streamed, not held in a variable: the record's week runs to tens of MB.
+  out="$(notes log --days 7 --json 2>/dev/null | jq -r --arg i "$1" 'select((.id // "") != "" and .lane == "agent")
     | select((.action == "added" and .by == $i)
         or (.action == "filed" and any((.text // "") | splits("\\s+"); . == "#from/" + $i)))
     | .id'; st=("${PIPESTATUS[@]}"); [ "${st[0]}" = 0 ] && [ "${st[1]}" = 0 ])" || return 1
@@ -362,9 +414,13 @@ plan_row_plan() {
 # brief_epic <brief file> -> the `<code>-<N>` of the brief's `Epic:` head line, or nothing.
 brief_epic() { _epic_line Epic "$1"; }
 
-# _epic_line <key> <file>: the one parse of an epic id after `<key>:`
+# _epic_line <key> [<file>]: the one parse of an epic id after `<key>:`, outside code fences, so an
+# example in a fence is no epic. Reads stdin with no file: plan-standard.sh holds the plan as text.
 _epic_line() {
-  [ -f "$2" ] && sed -nE "/^$1: *([a-z0-9]+-[0-9]+)([^0-9].*)?\$/{s//\\1/p;q;}" "$2"
+  [ $# -lt 2 ] || [ -f "$2" ] || return 1
+  awk -v k="$1" '/^```/ { f = !f; next } f { next }
+    $0 ~ "^" k ":[ \t]*[a-z0-9]+-[0-9]+([^0-9]|$)" {
+      sub("^" k ":[ \t]*", ""); match($0, /^[a-z0-9]+-[0-9]+/); print substr($0, 1, RLENGTH); exit }' "${@:2}"
 }
 
 # plan_phase_list <plan file> -> one compact JSON array [{state, name, n}] in file order, [] when
@@ -372,14 +428,16 @@ _epic_line() {
 # of a phase shares (agent-queue's `phases:` and item slugs, fleet-sessions): the line's own
 # `P<N>` label when it opens with one (`- [ ] P8 freellmapi ...`), else its place in the
 # checklist. A plan that files P9 above P8 is numbered by its labels, never by position.
-# A sub-phase line (`1b. ...`: a digit, a lowercase letter, a punctuation mark) is numbered by that
-# label, a string ("1b"), and takes no place: the phases below it keep their numbers, so adding a 1b to a plan whose phases are
+# A sub-phase line (`1b. ...`: a digit, a lowercase letter, a punctuation mark; or `P3b ...`) is numbered by that
+# label, a string ("1b"), and takes no place. A `P3b` read by position collided with the `P4` after it (ar-4970).
+# Lowercase only: `P2P sync` is a phase with a place.
+# The phases below it keep their numbers, so adding a 1b to a plan whose phases are
 # queued shifts no item (lesson 2026-11-09, `phases: 6` read as the ticked "5").
 plan_phase_list() {
   { [ -f "$1" ] && awk -v mode=list -v sup="$(_plan_sup "$1")" "$_PLAN_PHASES_AWK" "$1"; } \
     | jq -cRn '[inputs | split("\t") | {state: .[0], name: (.[1:] | join(" "))}]
       | reduce .[] as $p ({pos: 0, out: []};
-          (($p.name | capture("^(?<l>[0-9]+[a-z])[.:)]") | .l) // null) as $sub
+          (($p.name | capture("^(?<l>[0-9]+[a-z])[.:)]") | .l) // ($p.name | capture("^[Pp](?<l>[0-9]+[a-z])([^0-9A-Za-z]|$)") | .l) // null) as $sub
           | (($p.name | capture("^[Pp](?<l>[0-9]+)([^0-9A-Za-z]|$)") | .l | tonumber) // null) as $lab
           | if $sub != null then .out += [$p + {n: $sub}]
             else .pos += 1 | .out += [$p + {n: ($lab // .pos)}] end)

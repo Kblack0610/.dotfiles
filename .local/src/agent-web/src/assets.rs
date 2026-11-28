@@ -418,8 +418,12 @@ mod tests {
             .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
-        let columns = hub_core::session_table::SessionRow::COLUMNS;
-        assert_eq!(keys, columns[..columns.len() - 3]);
+        let columns: Vec<&str> = hub_core::session_table::SessionRow::COLUMNS
+            .iter()
+            .copied()
+            .filter(|c| !["item", "source", "session"].contains(c))
+            .collect();
+        assert_eq!(keys, columns);
     }
 
     #[test]

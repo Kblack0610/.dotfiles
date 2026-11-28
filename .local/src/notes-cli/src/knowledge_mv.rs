@@ -4,13 +4,15 @@
 //! Links are `[[knowledge/a/b]]` wikilinks (with an optional `.md`, `#anchor` or `|alias`) and
 //! relative markdown links (`](../b.md)`). The compile log under `knowledge/_log/` is immutable
 //! and `_archive/` keeps what it archived as written, so neither is rewritten. A moved page's own
-//! relative links are re-based on its new folder. A batch (`--map`) walks the vault once.
+//! relative links are re-based on its new folder. A batch (`--map`) walks the vault once. Each
+//! run appends its moves to `knowledge/_log/moves.tsv`, which `trace` reads.
 
 use crate::config::Profile;
 use crate::logging::Logger;
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 
 /// The search eval set (find.rs), whose expected paths follow a move.
@@ -432,7 +434,67 @@ pub fn run(p: &Profile, log: &Logger, moves: &[Move], dry_run: bool) -> Result<O
         );
         prune_emptied(&p.root, &m.from);
     }
+    // The pages have moved already: a failed record costs trace its history, never the run.
+    if let Err(e) = record(p, moves) {
+        log.warn(
+            "knowledge mv",
+            &format!("the move record was not written: {e:#}"),
+        );
+    }
     Ok(outcome)
+}
+
+/// The move record: one `date<TAB>from<TAB>to<TAB>moved|merged` row per page a run moved or
+/// retired, appended and never rewritten. A compile log names a page where it was that night and
+/// is never rewritten either, so `trace` follows a page that is gone through this (ar-3783).
+const MOVES: &str = "knowledge/_log/moves.tsv";
+
+fn record(p: &Profile, moves: &[Move]) -> Result<()> {
+    let path = p.root.join(MOVES);
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    }
+    let day = chrono::Local::now().date_naive();
+    let rows: String = moves
+        .iter()
+        .map(|m| {
+            let how = if m.merged { "merged" } else { "moved" };
+            format!("{day}\t{}\t{}\t{how}\n", m.from, m.to)
+        })
+        .collect();
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(rows.as_bytes()))
+        .with_context(|| format!("append {}", path.display()))
+}
+
+/// Every recorded move, keyed by the old vault-relative `.md` path: where it went and whether
+/// it was merged. A later row for the same page wins. Empty when nothing was ever recorded.
+pub fn moves(p: &Profile) -> HashMap<String, (String, bool)> {
+    let text = fs::read_to_string(p.root.join(MOVES)).unwrap_or_default();
+    text.lines()
+        .filter_map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            (c.len() == 4).then(|| (c[1].to_string(), (c[2].to_string(), c[3] == "merged")))
+        })
+        .collect()
+}
+
+/// Where `from` is now, followed through every later move, and whether any step merged it.
+/// None when no move names it. A cycle (a page moved back) stops where it started.
+pub fn resolve(moves: &HashMap<String, (String, bool)>, from: &str) -> Option<(String, bool)> {
+    let (mut at, mut merged) = moves.get(from).cloned()?;
+    let mut seen = HashSet::from([from.to_string()]);
+    while let Some((next, m)) = moves.get(&at) {
+        if !seen.insert(at.clone()) {
+            break;
+        }
+        merged |= *m;
+        at = next.clone();
+    }
+    Some((at, merged))
 }
 
 /// The folders a move emptied go too, up to `knowledge/`, so the old area does not linger as an
@@ -570,6 +632,45 @@ mod tests {
         // the emptied folder goes, the log stays
         assert!(!root.join("knowledge/software").exists());
         assert!(root.join("knowledge/_log").exists());
+    }
+
+    #[test]
+    fn each_run_records_its_moves_and_resolve_follows_them_to_the_page_now() {
+        let (root, p, log) = setup("record");
+        write(&root, "knowledge/health/a.md", "# A\n");
+        write(&root, "knowledge/core/b.md", "# B\n");
+        let m = single("knowledge/health/a", "knowledge/subjects/health/a", false).unwrap();
+        run(&p, &log, &[m], false).unwrap();
+        let m = single("knowledge/subjects/health/a", "knowledge/core/b", true).unwrap();
+        run(&p, &log, &[m], false).unwrap();
+        // a dry run changes nothing, the record included
+        write(&root, "knowledge/core/c.md", "# C\n");
+        let m = single("knowledge/core/c", "knowledge/core/d", false).unwrap();
+        run(&p, &log, &[m], true).unwrap();
+
+        let rows: Vec<String> = read(&root, MOVES)
+            .lines()
+            .map(|l| l.split_once('\t').unwrap().1.to_string())
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "knowledge/health/a.md\tknowledge/subjects/health/a.md\tmoved",
+                "knowledge/subjects/health/a.md\tknowledge/core/b.md\tmerged",
+            ]
+        );
+        let all = moves(&p);
+        assert_eq!(
+            resolve(&all, "knowledge/health/a.md"),
+            Some(("knowledge/core/b.md".to_string(), true))
+        );
+        assert_eq!(resolve(&all, "knowledge/core/b.md"), None);
+        // a page moved back stops where it started instead of looping
+        let looped = HashMap::from([
+            ("x.md".to_string(), ("y.md".to_string(), false)),
+            ("y.md".to_string(), ("x.md".to_string(), false)),
+        ]);
+        assert_eq!(resolve(&looped, "x.md"), Some(("x.md".to_string(), false)));
     }
 
     #[test]

@@ -1,11 +1,13 @@
 outage	urgent	it breaks or blocks the person or production now
 live-exposure	urgent	a security hole or private-data exposure that is live in production now
+quick-fault	urgent	an agent-runtime fault a verify pass found present at main that blocks landing or dispatch, answers a live red, or whose fix is under about 30 lines; only a verify pass gives it, to a row already on the board (notes ptask tag --why): the intake gate refuses it on a new row, which files as runtime-fault
 release-needs	high	the project's next release needs it
 red-main	high	a test or check is red on main, which holds every change's gate
 requested	high	the person asked for it (#requested)
 blocks-work	high	it blocks a focus project's epic or another agent's work
 access-hole	high	it closes a hole that lets the wrong person in or out: a missing or client-trusted auth check, private data readable by someone who should not see it, a private service reachable from the internet
 runtime-fault	high	an agent-runtime fault that happens now or recurs and gives a wrong state, a false page or nudge, or lost or stuck work (dispatch, sessions, views, notes rows, its own telemetry and CI gates)
+firing-alert	high	a fleet alert fires now; only fleet-bench triage gives it, to the one check(alert) row it files per alert, which closes when the alert clears; the board's daily cap never holds it
 feature	normal	a feature or improvement with a named benefit (what gets better, for whom) that nothing waits on
 fault	normal	a fault that is not blocking anyone, with a named benefit in the fix
 epic-turn	normal	epic work in its turn: real work with a named benefit that is next in its epic

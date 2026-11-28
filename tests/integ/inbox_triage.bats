@@ -461,6 +461,31 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   refute_line --regexp 'show the Kelly cell on /book .*#of/sc-9'
 }
 
+@test "a split line the model calls a dup of its own #of/ parent files under that parent" {
+  # ar-5549: ar-5404's split children were joined to their own parent rows as dups, so they vanished.
+  sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n' \
+    '- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-3", "why": "same as the odds row"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'names sc-3 as its own parent'
+  assert_output --partial 'filed 1, left 0, refused 0'
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  assert_line --regexp '^- \[ \] feat\(ui\): the stage cells on /book .*#of/sc-3'
+  assert_output --regexp 'odds per stage on /book .*id:sc-3'
+}
+
+@test "negative control: a dup of a closed #of/ parent stays the model's dup" {
+  sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n' \
+    '- [x] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 done:2026-11-20 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-3"}'
+  run "$TRIAGE"
+  refute_output --partial 'names sc-3 as its own parent'
+  # The line stays in the inbox (a closed row takes no dup); it is never filed as a row of its own.
+  run cat "$SHEET" "$PROJ/scratch/agent/README.md"
+  refute_line --regexp '^- \[ \] feat\(ui\): the stage cells on /book .*id:'
+}
+
 @test "a split line's own #of/ files no new epic and never turns an empty row into a bare tag" {
   sheet '- [ ] feat(ui): the stage cells on /book #of/sc-3 #size/m #normal #agent #from/ar-5404\n- [ ] feat(ui): the odds legend on /book #of/sc-3 #size/s #normal #agent #from/ar-5404\n' \
     '- [ ] feat(ui): odds per stage on /book #pts/8 #size/l #normal <!-- id:sc-3 -->\n'
@@ -737,6 +762,51 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   [ ! -e "$PROJ/scratch/improvements.md" ] || fail "an improvement was written for a waited-on row"
 }
 
+# Two open rows filed from two lines of one item are its passes, never each other's dup (ar-5824).
+@test "--backlog: a dup between two rows filed from differently worded lines of one item is kept; one from the same line or another item still drops" {
+  sheet '' ''
+  agent_board '- [ ] fix(ci): a CI focus pass #high <!-- id:sc-4 -->\n  was: fix(ci): focus pass, CI: 65 rows, reds first #agent #from/sc-8\n- [ ] fix(ci): focus pass over the 65 CI rows, reds first #high <!-- id:sc-2 -->\n  was: fix(ci): focus pass, CI: 65 rows, reds first #agent #from/sc-9\n- [ ] fix(notes): focus pass over the 32 notes rows, reds first #high <!-- id:sc-1 -->\n  was: fix(notes): focus pass, notes: 32 rows, reds first #agent #from/sc-9\n- [ ] fix(notes): the notes focus pass again #high <!-- id:sc-3 -->\n  was: fix(notes): focus pass, notes: 32 rows, reds first #agent #from/sc-9\n'
+  # sorted by text: a CI focus pass (sc-4), the 65 CI rows (sc-2), the 32 notes rows (sc-1), the notes again (sc-3)
+  answer '{"n": 1, "action": "dup", "id": "sc-2"}' '{"n": 2, "action": "dup", "id": "sc-1"}' '{"n": 3, "action": "keep"}' '{"n": 4, "action": "dup", "id": "sc-1"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'sc-2 kept: sc-1 is a sibling from sc-9, not its twin'
+  assert_output --partial 'dropped 2, kept 2'
+  board="$PROJ/scratch/agent/README.md"
+  grep -q '\[ \] fix(ci): focus pass over the 65 CI rows' "$board" || fail "the CI pass was dropped as the notes pass's dup"
+  grep -q '\[ \] fix(notes): focus pass over the 32 notes rows' "$board" || fail "the kept row went"
+  # NEGATIVE CONTROLS: sc-3 came from sc-1's own line, sc-4 from another item.
+  run grep -c '\[ \] fix(notes): the notes focus pass again\|\[ \] fix(ci): a CI focus pass' "$board"
+  assert_output 0
+}
+
+@test "--backlog: an improvement whose drop ptask refuses (open #of/ children) writes nothing to improvements.md (ar-5182; negative control: a childless row goes)" {
+  sheet '' ''
+  agent_board '- [ ] a: barrel roll and a chase camera #low <!-- id:sc-1 -->\n- [ ] b: the roll camera #of/sc-1 #low <!-- id:sc-2 -->\n- [ ] c: a glow on the menu #low <!-- id:sc-3 -->\n'
+  answer '{"n": 1, "action": "improvement", "why": "polish"}' '{"n": 2, "action": "keep"}' '{"n": 3, "action": "improvement", "why": "polish"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_output --partial 'refused: --exact drop'
+  assert_output --partial 'improvements 1'
+  board="$PROJ/scratch/agent/README.md"
+  grep -q '\[ \] a: barrel roll' "$board" || fail "the parent left the board"
+  grep -q '\[ \] c: a glow' "$board" && fail "the control row stayed on the board"
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '- c: a glow on the menu ('
+  refute_output --partial 'barrel roll'
+}
+
+@test "--backlog: an improvement whose improvements.md write fails after the drop is reopened, not lost (ar-5182 review)" {
+  sheet '' ''
+  agent_board '- [ ] c: a glow on the menu #low <!-- id:sc-3 -->\n'
+  # a directory where the file goes: --check passes, the write after the drop cannot
+  mkdir -p "$PROJ/scratch/improvements.md"
+  answer '{"n": 1, "action": "improvement", "why": "polish"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_output --partial 'not written to improvements.md'
+  refute_output --partial 'improvements 1'
+  grep -q '\[ \] c: a glow on the menu' "$PROJ/scratch/agent/README.md" || fail "the row is in neither place"
+}
+
 @test "--backlog: health work is never an improvement: a stage criterion, a missing test and a CI fault with a number stay on the board, polish still leaves (ar-5401)" {
   sheet '' ''
   agent_board '- [ ] a: meet the prod stage standard #low <!-- id:sc-1 -->\n- [ ] b: add a bats case for the parser #low <!-- id:sc-2 -->\n- [ ] c: the nightly CI takes 14 min #low <!-- id:sc-3 -->\n- [ ] d: a glow on the menu #low <!-- id:sc-4 -->\n'
@@ -841,7 +911,7 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
 
 @test "outbox: a #p: line moves and files with no model, and the inbox page says where it went" {
   sheet '' ''
-  mkdir -p "$HOME/.notes/lab/inbox"   # the capture inbox: a machine without one publishes no page
+  mkdir -p "$HOME/.notes/lab/captures"   # the capture inbox: a machine without one publishes no page
   outbox '- [ ] chore(build): drop the old cache #low #p:scratch\n- [ ] stays for the model\n'
   answer '{"n": 1, "action": "skip", "why": "no project named"}'
   # The page's triage score is judge-eval's inbox-triage cell, read as given: never counted again.
@@ -859,9 +929,11 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || fail "no inbox page"
   run cat "$page"
-  assert_output --regexp '[0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] scratch: chore\(build\): drop the old cache'
-  refute_output --partial '  - from: outbox'
-  assert_output --regexp '[0-9]{2}:[0-9]{2} left \(outbox\): stays for the model'
+  # Handled today is one count line; each line and where it went is `notes log`'s.
+  assert_output --partial '- 1 filed, 0 joined, '
+  refute_output --partial 'drop the old cache'
+  refute_output --partial 'ack:'
+  assert_output --partial '- in the outbox, not filed: stays for the model'
   assert_output --partial '  - why: no project named'
   assert_output --partial '; triage score n<30 (7d, 1 of 1 right, 0 pending, triage-untouched)'
   # judge-eval giving no cell leaves the score off the page, not a second count in its place.
@@ -939,9 +1011,9 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   assert_output --partial '- [ ] stays for the model'
   run "$NOTES_BIN" ingest page
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
-  [ -n "$page" ] || { mkdir -p "$HOME/.notes/lab/inbox"; "$NOTES_BIN" ingest page; page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"; }
+  [ -n "$page" ] || { mkdir -p "$HOME/.notes/lab/captures"; "$NOTES_BIN" ingest page; page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"; }
   run cat "$page"
-  assert_output --partial 'left (outbox): zz-9: yes'
+  assert_output --partial '- in the outbox, not filed: zz-9: yes'
   assert_output --partial 'why: no open row zz-9'
 }
 
@@ -1227,33 +1299,24 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   assert_output --partial 'fix(audio): the gun sound plays off'
 }
 
-@test "inbox page: notes inbox ack folds a handled row into +N reviewed, --undo brings it back, a bad key writes nothing" {
+@test "inbox page: a report filed shows at the top under Reports, linked, and the page has no tick marks" {
   sheet '' ''
   outbox '- [ ] chore(build): drop the old cache #p:scratch\n'
   run "$TRIAGE"
   assert_success
-  mkdir -p "$HOME/.notes/lab/inbox"
-  "$NOTES_BIN" ingest page
+  mkdir -p "$HOME/.notes/lab/captures"
+  printf 'The table.\n' >"$BATS_TEST_TMPDIR/body.md"
+  run "$NOTES_BIN" report add --title 'Board cut P9' --summary 'Cut 3 rows.' --body "$BATS_TEST_TMPDIR/body.md"
+  assert_success
   page="$(find "$HOME/.notes" -path '*status/inbox.md' | head -1)"
   [ -n "$page" ] || fail "no inbox page"
-  key="$(grep -o '<!-- ack:[^ ]* -->' "$page" | head -1 | sed 's/<!-- ack:\(.*\) -->/\1/')"
-  [ -n "$key" ] || fail "no tickable row: $(cat "$page")"
-  grep -qE '^- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] ' "$page" || fail "$(cat "$page")"
-  run "$NOTES_BIN" inbox ack 2026-01-01T00:00:00+00:00
+  run cat "$page"
+  assert_output --regexp '## Reports.*\[\[[^]]*/board-cut-p9\|Board cut P9\]\]: Cut 3 rows\..*## Needs you'
+  refute_output --partial 'ack:'
+  refute_output --partial 'reviewed'
+  # The negative control: the CLI that ticked rows is gone.
+  run "$NOTES_BIN" inbox ack -- 2026-01-01T00:00:00+00:00
   assert_failure
-  assert_output --partial 'no ingest event'
-  [ ! -e "$HOME/.local/state/notes/inbox-ack.jsonl" ] || fail "a bad key wrote a mark"
-  run "$NOTES_BIN" inbox ack -- "$key"
-  assert_success
-  run cat "$page"
-  assert_output --partial '- +1 reviewed'
-  assert_output --regexp '  - \[x\] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
-  refute_output --regexp '^- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
-  run "$NOTES_BIN" inbox ack --undo -- "$key"
-  assert_success
-  run cat "$page"
-  refute_output --partial '- +1 reviewed'
-  assert_output --regexp '- \[ \] [0-9]{2}:[0-9]{2} filed \[\[[^]]*\|sc-1\]\] '
 }
 
 # ask-stub: the read-only answer call. It records the prompt and what it was run with, and replies
@@ -1274,7 +1337,7 @@ ask_stub() {
   assert_output --partial 'moved 0 from the outbox, filed 0, left 0, refused 0, answered 1'
   run cat "$HOME/.notes/outbox.md"
   refute_output --partial 'mac'
-  run cat "$HOME/.notes/lab/inbox/$(date +%F).md"
+  run cat "$HOME/.notes/lab/captures/$(date +%F).md"
   assert_output --regexp '- [0-9]{2}:[0-9]{2} ask: is my mac ok\? - Yes, the mac is fine\.'
   assert_output --partial '  up 3 days, load 0.2'
   refute_output --partial '#ask'
@@ -1299,7 +1362,7 @@ ask_stub() {
   run "$TRIAGE"
   assert_success
   assert_output --partial 'answered 1'
-  run cat "$HOME/.notes/lab/inbox/$(date +%F).md"
+  run cat "$HOME/.notes/lab/captures/$(date +%F).md"
   assert_output --regexp '- [0-9]{2}:[0-9]{2} investigate: why is the nas slow - Disk 3 is resyncing\.'
   # negative control: a #ask reply stops at 12 lines, so line 14 is the longer look's alone
   assert_output --partial '  evidence 14'
@@ -1340,7 +1403,7 @@ ask_stub() {
   assert_failure
   run cat "$HOME/.notes/outbox.md"
   assert_output --partial '#ask is my mac ok?'
-  [ ! -e "$HOME/.notes/lab/inbox/$(date +%F).md" ] || fail "an answer was written with no block"
+  [ ! -e "$HOME/.notes/lab/captures/$(date +%F).md" ] || fail "an answer was written with no block"
   [ "$(wc -l <"$NOTES_FIXTURE/ask.log")" = 1 ] || fail "asked more than once in a sweep"
   run "$TRIAGE"
   [ "$(wc -l <"$NOTES_FIXTURE/ask.log")" = 1 ] || fail "the refused question was asked again"
@@ -1962,6 +2025,70 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   assert_output --partial '- chore(ui): a nicer empty state for the lobby ('
   run jq -r 'select(.action == "improvement") | .why' "$HOME/.local/state/notes/ingest.jsonl"
   assert_output --partial 'intake gate'
+}
+
+# ar-5824, the 2026-11-25 02:23 sweep: one session (sc-9, a row a plan filed) split its phase into
+# focus passes. The CI pass's title words are all the notes pass's (`CI` is under 3 letters), so the
+# writer's near-twin check folded it into the notes row, and the rest pass's #why/fault is no
+# urgent reason, so the gate kept it as an improvement.
+@test "session lines: each pass a plan phase split into files its own row on a gated board; an exact twin still joins, and polish from the phase or a fault from no plan row is still kept" {
+  sed -i '1i intake_gated = ["scratch"]' "$HOME/.config/notes/config.toml"
+  mkdir -p "$HOME/.local/state/notes"
+  printf '%s\n' '{"ts":"2026-11-25T01:00:00-08:00","action":"added","from":"scratch","to":"","lane":"agent","text":"feat(notes): P3 focus passes","id":"sc-9","by":"agent-queue","stage":"backlog","origin":"plan"}' \
+    '{"ts":"2026-11-25T01:00:00-08:00","action":"added","from":"scratch","to":"","lane":"agent","text":"fix(ui): the lobby","id":"sc-7","by":"agent-queue","stage":"backlog","origin":"agent-queue"}' \
+    >"$HOME/.local/state/notes/ingest.jsonl"
+  sheet '- [ ] fix(notes): focus pass, notes: 32 rows, reds first #agent #from/sc-9\n- [ ] fix(ci): focus pass, CI: 65 rows, reds first #agent #from/sc-9\n- [ ] fix(rest): focus pass, views and the rest: 43 rows, reds first #agent #from/sc-9\n- [ ] fix(notes): the notes focus pass once more #agent #from/sc-9\n- [ ] chore(ui): a nicer empty state for the lobby #agent #from/sc-9\n- [ ] fix(ui): the lobby list is slow #agent #from/sc-7\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["fix(notes): focus pass over the 32 notes rows, reds first #high #why/runtime-fault #size/l"], "lane": "agent"}' \
+    '{"n": 2, "action": "file", "rows": ["fix(ci): focus pass over the 65 CI rows, reds first #high #why/runtime-fault #size/l"], "lane": "agent"}' \
+    '{"n": 3, "action": "file", "rows": ["fix(views): focus pass over the 43 views rows, reds first #normal #why/fault #size/l"], "lane": "agent"}' \
+    '{"n": 4, "action": "file", "rows": ["fix(notes): focus pass over the 32 notes rows, reds first #high #why/runtime-fault #size/l"], "lane": "agent"}' \
+    '{"n": 5, "action": "file", "rows": ["chore(ui): a nicer empty state for the lobby #low #why/upkeep #size/s"], "lane": "agent"}' \
+    '{"n": 6, "action": "file", "rows": ["fix(ui): the lobby list is slow #normal #why/fault #size/s"], "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 2'
+  agent="$PROJ/scratch/agent/README.md"
+  grep -q 'focus pass over the 65 CI rows' "$agent" || fail "the CI pass was folded into the notes pass: $(cat "$agent")"
+  grep -q 'focus pass over the 43 views rows' "$agent" || fail "the rest pass was gated: $(cat "$agent")"
+  [ "$(grep -c 'focus pass over the 32 notes rows' "$agent")" = 1 ] || fail "$(cat "$agent")"
+  [ "$(grep -c '<!-- id:' "$agent")" = 3 ] || fail "not one row per pass: $(cat "$agent")"
+  # NEGATIVE CONTROLS: the same pass filed twice joins its row; the phase's polish and a fault
+  # from a row no plan filed are gated.
+  grep -q '  was: fix(notes): the notes focus pass once more #agent #from/sc-9' "$agent" || fail "the exact twin did not join: $(cat "$agent")"
+  grep -q 'empty state\|lobby list' "$agent" && fail "the gate let them onto the board: $(cat "$agent")"
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial 'a nicer empty state for the lobby'
+  assert_output --partial 'the lobby list is slow'
+  refute_output --partial 'focus pass'
+  run jq -r 'select(.action == "dup") | .text' "$HOME/.local/state/notes/ingest.jsonl"
+  refute_output --partial 'CI'
+  refute_output --partial 'views'
+  run inbox
+  refute_output --partial 'focus pass'
+}
+
+# The model's own dup verdict between two lines of one item is turned into a filing in code: the
+# prompt's word alone did not hold at 02:23 (ar-5824). The same words from the same item stay a dup.
+@test "session lines: a model dup of a sibling row or line of the same item files the line as its own row; a dup in the same words or from another item still joins" {
+  agent_board '- [ ] fix(notes): focus pass over the 32 notes rows, reds first #high <!-- id:sc-5 -->\n  was: fix(notes): focus pass, notes: 32 rows, reds first #agent #from/sc-9\n'
+  sheet '- [ ] fix(ci): focus pass, CI: 65 rows, reds first #agent #from/sc-9\n- [ ] fix(rest): focus pass, views: 43 rows, reds first #agent #from/sc-9\n- [ ] fix(notes): focus pass, notes: 32 rows, reds first #agent #from/sc-9\n- [ ] fix(ci): focus pass, CI: 65 rows, reds first #agent #from/sc-1\n' ''
+  answer '{"n": 1, "action": "dup", "id": "sc-5", "why": "same focus pass"}' \
+    '{"n": 2, "action": "dup", "line": 1, "why": "same focus pass"}' \
+    '{"n": 3, "action": "dup", "id": "sc-5", "why": "the same line again"}' \
+    '{"n": 4, "action": "dup", "id": "sc-5", "why": "same focus pass"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'line 1 and sc-5 are two lines of sc-9: filed as its own row, not as a dup'
+  assert_output --partial 'line 2 and line 1 are two lines of sc-9: filed as its own row, not as a dup'
+  agent="$PROJ/scratch/agent/README.md"
+  [ "$(grep -c '<!-- id:' "$agent")" = 3 ] || fail "not one row per pass: $(cat "$agent")"
+  grep -qE '^- \[ \] fix\(ci\): focus pass, CI: 65 rows' "$agent" || fail "the CI line was joined: $(cat "$agent")"
+  grep -qE '^- \[ \] fix\(rest\): focus pass, views: 43 rows' "$agent" || fail "the rest line was joined: $(cat "$agent")"
+  # NEGATIVE CONTROLS: line 3 (sc-5's own words) and line 4 (another item) join sc-5.
+  [ "$(jq -r 'select(.action == "dup") | .id' "$HOME/.local/state/notes/ingest.jsonl" | uniq -c | tr -s ' ')" = ' 2 sc-5' ] || fail "$(cat "$HOME/.local/state/notes/ingest.jsonl")"
+  grep -q '  was: fix(ci): focus pass, CI: 65 rows, reds first #agent #from/sc-1' "$agent" || fail "the other item's line did not join: $(cat "$agent")"
+  run inbox
+  refute_output --partial 'focus pass'
 }
 
 @test "session line: on a gated board a new epic whose rows the gate refuses is dropped again, never left with none" {

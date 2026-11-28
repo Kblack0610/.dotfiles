@@ -96,6 +96,32 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
 }
 
+# 2026-11-25: tuf-b550 read 101-105 C at under 1x cores and powered off at 110 C, so heat holds a worker at any load.
+@test "a worker whose CPU reads at or over the critical mark takes nothing, and the skip names its temperature" {
+  game_ready
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  worker '2.0 16 1 50 0 1 101.5'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop: CPU at 101.5 C is at or over the 100 C critical mark'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new --host'
+  # At the mark exactly it still holds; the mark is cpu-temp.sh's knob.
+  worker '2.0 16 1 50 0 1 100.0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop: CPU at 100.0 C is at or over the 100 C critical mark'
+  # Negative control: under the mark, no sensor (-) and an older probe with no field all take the item.
+  for p in '2.0 16 1 50 0 1 99.9' '2.0 16 1 50 0 1 -' '2.0 16 1 50 0 1'; do
+    worker "$p"
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+    refute_output --partial 'critical mark'
+  done
+  worker '2.0 16 1 50 0 1 96'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
+}
+
 # 2026-11-18: canary work filled the workstation first while razer-laptop sat idle.
 @test "fleet_first: a canary item goes to a worker that lists canary while this machine has room" {
   project game beta "$SANDBOX/repos/game"   # no board row: the canary is the only item
@@ -218,6 +244,57 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   assert_success
   assert_output --partial 'started game-agent-1: app: fix-app'
   [ -n "$(qitem queued pb-p1)" ] || fail "a session's plan phase passed the project share cap"
+}
+
+# ar-4436: validate-ar-5194 waited 113m at the share cap (2026-11-24), the review of a PR whose chain
+# the cap had already let start, and tripped chain-lag.
+@test "project share: a high plan phase or validate item behind a closed after: passes the cap; a plain --after follow-up and a low phase wait" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  share_history 1 1
+  export DISPATCH_PER_PASS=1
+  # The chain's phase before closed ok; the queue files no phase behind an open one (it waits on its board row).
+  agent-queue add --project game --slug pc-one --priority high --from session "pc phase one" >/dev/null
+  agent-queue move pc-one running >/dev/null; agent-queue move pc-one done --status ok >/dev/null
+  printf '# pc\n\n## Phases\n\n- [ ] two\n' > "$SANDBOX/pc.md"
+  agent-queue add --plan "$SANDBOX/pc.md" --project game --priority high --from session --after pc-one >/dev/null
+  # The negative control: a plain follow-up behind the same closed item, high by default and ahead in queue order, waits.
+  agent-queue add --project game --slug follow-game --from session --after pc-one "a follow-up" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: pc-p1'
+  [ -n "$(qitem queued follow-game)" ] || fail "a plain --after follow-up passed the project share cap"
+  # A validate item passes the same way.
+  agent-queue add --project game --slug validate-game --priority high --tags validate --from auto:validate --after pc-one "check(validate): pc-one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: validate-game'
+  [ -n "$(qitem queued follow-game)" ] || fail "a plain --after follow-up passed the project share cap"
+  # A low phase waits like any capped item: chain-lag bounds urgent and high only.
+  agent-queue move follow-game done --status cancelled >/dev/null
+  agent-queue add --project game --slug pd-one --priority low --from session "pd phase one" >/dev/null
+  agent-queue move pd-one running >/dev/null; agent-queue move pd-one done --status ok >/dev/null
+  printf '# pd\n\n## Phases\n\n- [ ] two\n' > "$SANDBOX/pd.md"
+  agent-queue add --plan "$SANDBOX/pd.md" --project game --priority low --from session --after pd-one >/dev/null
+  agent-queue add --project app --slug fix-app --priority low "fix the app" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  [ -n "$(qitem queued pd-p1)" ] || fail "a low plan phase passed the project share cap"
+}
+
+# ar-6060: a human ask deduped into a chain left its phases without #requested; the cap then held every ready
+# phase 8h (2026-11-25) and share_return sent them back to their rows.
+@test "project share: a phase behind the previous phase of its own plan has no share_why at any priority; the first phase of a session's plan and a plan-less item are held" {
+  local phase first plain
+  share_state() { :; }
+  SHARE_STATE='{"full":true,"total":2,"projects":{"game":{"cap":30,"n":2,"full":true}},"sourced":[]}'
+  phase='{"slug":"pe-p2","project":"game","priority":"low","from":"board:ar-1","plan":"/p/pe.md","after":"pe-p1"}'
+  first='{"slug":"pf-p1","project":"game","priority":"low","from":"session","plan":"/p/pf.md","after":"pe-one"}'
+  plain='{"slug":"pe-x","project":"game","priority":"low","from":"board:ar-1","after":"pe-p1"}'
+  [ -z "$(share_why "$phase")" ] || fail "the chain phase was held: $(share_why "$phase")"
+  [[ "$(share_why "$first")" == "project share: "* ]] || fail "a session plan's first phase passed the cap"
+  [[ "$(share_why "$plain")" == "project share: "* ]] || fail "a plan-less item passed the cap"
 }
 
 @test "project share: a canary or an agent's urgent on a capped project waits at the cap, as the human's urgent does not" {
@@ -479,7 +556,13 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   local land=land-it
   agent-queue add --project game --slug "$land" --from board:game:gm-99 "land the crash fix" >/dev/null
   agent-queue set "$land" pr=o/game#7 pr_owner=land "land_tries=1 abc123" >/dev/null
-  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$old")" "$(qitem queued "$sprint")" "$(qitem queued "$land")"
+  # A handed-off item and one moved from running back to queued hold work too (ar-5880): a continuation, not new intake.
+  local hand=hand-it back=back-it
+  agent-queue add --project game --slug "$hand" --from board:game:gm-98 "finish the handed-off fix" >/dev/null
+  sed -i '0,/^queued: .*/s//&\nhandoff: 1 of 2, batch branch unpushed/' "$(qitem queued "$hand")"
+  agent-queue add --project game --slug "$back" --from board:game:gm-97 "finish the requeued fix" >/dev/null
+  agent-queue move "$back" running >/dev/null; agent-queue move "$back" queued >/dev/null
+  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued "$old")" "$(qitem queued "$sprint")" "$(qitem queued "$land")" "$(qitem queued "$hand")" "$(qitem queued "$back")"
   export DISPATCH_STARVED_MIN=60 DISPATCH_TARGET_AWAY=0
   # The negative control: with the share under its cap nothing goes back.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -495,9 +578,14 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   # The land requeue stayed, while old, the same age with no PR to land, went back.
   refute_output --partial "returned queue item $land"
   [ -n "$(qitem queued "$land")" ] || fail "the item landing its PR left queued/"
+  # A handoff and a running-to-queued move stayed too: the cap holds new rows, not work already started.
+  refute_output --partial "returned queue item $hand"
+  refute_output --partial "returned queue item $back"
+  [ -n "$(qitem queued "$hand")" ] || fail "the handed-off item went back to its row at the project share"
+  [ -n "$(qitem queued "$back")" ] || fail "the requeued item went back to its row at the project share"
 }
 
-@test "project share: while the share is full the canary top-up asks for no Claude lane" {
+@test "project share: the canary top-up names the full projects, so a Claude lane skips those alone" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_CANARY_KEEP=2
   stub fleet-bench "[ \"\$1\" = canary ] || exit 0; echo \"\$*\" >> '$SANDBOX/bench.calls'; echo 'canary: 1 queued'"
@@ -505,8 +593,8 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   agent-queue add --project game --slug ca-held --tags canary "a claude canary" >/dev/null
   share_history 1 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'canary top-up (keep 2, 0 queued, 2 wanted, a project share full: no Claude lane): canary: 1 queued'
-  assert_equal "$(cat "$SANDBOX/bench.calls")" 'canary queue --max 2 --off-claude'
+  assert_output --partial 'canary top-up (keep 2, 0 queued, 2 wanted, Claude lanes skip the full share of game): canary: 1 queued'
+  assert_equal "$(cat "$SANDBOX/bench.calls")" 'canary queue --max 2 --off-claude game'
   # The negative control: the cap off, the same pass asks for every lane.
   rm "$SANDBOX/bench.calls"
   DISPATCH_PROJECT_SHARE='' run "$REPO_ROOT/.local/bin/fleet-dispatch" run
