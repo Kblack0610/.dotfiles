@@ -22,7 +22,7 @@
 #       A queue item's session adding a task that says land, from an item with a PR recorded, with no --after is gated on that item's own live `after:` blockers (landing_after).
 #       A plan phase or validate item (stack_dependent) after a slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: it is stacked on it
 #       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
-#       head, and agent-land refuses it (exit 4) until that slug closed ok. A dependency closed unmerged stays a dead hold. Any other --after holds until that slug closed ok, open PR or not.
+#       head, and agent-land refuses it (exit 4) until that slug closed ok. A PR in another project's repo is no base (its checkout lacks the commit): that after: holds until the close (stack_same_checkout). A dependency closed unmerged stays a dead hold. Any other --after holds until that slug closed ok, open PR or not.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. When notes refuses that row for
@@ -841,6 +841,19 @@ stack_pr() {
   done
 }
 
+# stack_same_checkout <PR ref> <project> -- rc 1 when the PR lives in a repo whose checkout is not the
+# project's own: the dependent's worktree is cut in its project's checkout, which holds no commit of
+# that PR, so dispatch's start failed on it every pass and the kick runner read red (ar-5124: hc-956
+# after hc-955's PR in .dotfiles). Unresolved on either side counts as the same: the old behaviour.
+stack_same_checkout() {
+  local repo proj pdir odir
+  [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] && [ -n "${2-}" ] || return 0
+  repo="${BASH_REMATCH[1]}"
+  proj="$(project_of_repos_json "$repo" | jq -r '.[]' 2>/dev/null)" && [ -n "$proj" ] || return 0
+  pdir="$(project_repo_path "$proj")"; odir="$(project_repo_path "$2")"
+  [ -z "$pdir" ] || [ -z "$odir" ] || [ "$pdir" = "$odir" ]
+}
+
 # stack_dependent [<item file>] -- the item waiting may stack on its after: item's open PR (hold_for,
 # cmd_gate): a plan phase, which builds on its dependency's code (ar-3852), or a `validate` item, which
 # reviews its author's open PR before it lands (fleet-dispatch validate, ar-1689). An item file: its
@@ -879,6 +892,7 @@ hold_for() {
       ok) ;;
       "") stack_pr "$s"
         [ -z "$STK" ] || stack_dependent "$dep" || STK=""
+        [ -z "$STK" ] || [ -z "$dep" ] || stack_same_checkout "$STK" "$(fm_get "$dep" project)" || STK=""
         if [ -n "$STK" ]; then HOLD_STACK="$HOLD_STACK${HOLD_STACK:+ }$s=$STK"; else live="$live${live:+ }$s"; fi ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
