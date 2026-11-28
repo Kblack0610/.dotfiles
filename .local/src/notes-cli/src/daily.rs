@@ -548,7 +548,11 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
     }
     // Yesterday's day log, as one line: its first sentence is the count of what merged. Today's
     // log is the partial day since midnight, so the briefing's "Yesterday N PRs" would disagree.
-    let yesterday = today.pred_opt().unwrap_or(today).format("%Y-%m-%d").to_string();
+    let yesterday = today
+        .pred_opt()
+        .unwrap_or(today)
+        .format("%Y-%m-%d")
+        .to_string();
     let (shipped, link) = refs_note(p, &yesterday, SHIPPED);
     match fs::read_to_string(shipped) {
         Ok(text) => {
@@ -592,7 +596,8 @@ fn set_title_line(content: &str, line: Option<&str>) -> String {
         return content.to_string();
     };
     let at = title + 2;
-    if lines.get(title + 1) == Some(&"") && lines.get(at).is_some_and(|l| l.starts_with("Briefing: "))
+    if lines.get(title + 1) == Some(&"")
+        && lines.get(at).is_some_and(|l| l.starts_with("Briefing: "))
     {
         lines.remove(at);
         if lines.get(at) == Some(&"") {
@@ -2899,7 +2904,10 @@ mod tests {
         let b = set_title_line(&a, Some("Briefing: two [[b]]"));
         assert_eq!(b, a.replace("one", "two"));
         assert_eq!(set_title_line(&b, None), note);
-        assert_eq!(set_title_line("no title\n", Some("Briefing: x")), "no title\n");
+        assert_eq!(
+            set_title_line("no title\n", Some("Briefing: x")),
+            "no title\n"
+        );
     }
 
     /// A note whose `## Refs` was joined onto the previous section gets its blank line back, once.
