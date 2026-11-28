@@ -729,10 +729,9 @@ GH
   cat >> "$SANDBOX/bin/agentctl-run" <<'AR'
 echo "agentctl-run $*" >> "$D/reviewer.log"
 AR
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
-  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
-  cat >> "$SCHEDULES_SYNC" <<'SS'
-echo "schedules-sync $*" >> "$D/calls.log"
+  export SS_FIXTURE="$GHD"
+  ss_script <<'SS'
+D=$_dir
 if [ "$1" = sync-prs ]; then
   [ ! -e "$D/sync-fails" ] || { echo "schedules-sync: PRs of $3: HTTP 502" >&2; exit 1; }
   rm -f "$D/prs-stale"; exit 0
@@ -749,7 +748,7 @@ fi
 jq -c 'map({workflow: .workflowName, path, sha: .headSha, status: "completed", conclusion,
   created_at: .createdAt, started_at: .startedAt, ended_at: .updatedAt})' "$D/runs-$4.json"
 SS
-  chmod +x "$SANDBOX/bin/agentctl-run" "$SCHEDULES_SYNC"
+  chmod +x "$SANDBOX/bin/agentctl-run"
   mkdir -p "$HOME/.agent/outcomes/game"
 }
 
@@ -2746,6 +2745,50 @@ fix_item() {
   assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
 }
 
+# 2026-11-21 (ar-4538): source-pace, on the alert route, tripped on after the human answered "keep"
+# (asks agERZ5, KntBiO), and each new trip queued an item that closed in minutes finding that answer.
+@test "triage: an alert watch's recorded ask stands for later trips while pending or answered in TRIAGE_FIX_DAYS" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: (spend) tripped' alert - 'pace is their call'
+  local want before
+  want=$(printf '%s' 'check(watch):spend' | sha256sum | cut -c1-8)
+  before=$(date -u -d "@$((T0 - 90000))" +%FT%TZ)
+  # an earlier trip's item recorded the ask; a later item that recorded none does not hide it
+  jq -cn --arg t "red watch cause:$want" --arg q "$before" '{slug: "ar-1", tags: $t, state: "done", status: "ok", queued: $q, ask: "Ask123"}' >> "$ITEMS"
+  jq -cn --arg t "red watch cause:$want" --arg q "${before%Z}.5Z" '{slug: "ar-2", tags: $t, state: "done", status: "ok", queued: $q}' >> "$ITEMS"
+  export ASKSTATUS=answered ASKANSWERED; ASKANSWERED=$(date -d "@$((T0 - 2 * 86400))" +%FT%T%z)
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  assert_output --partial "triage: $want (check(watch): spend"
+  assert_output --partial 'stands on ask Ask123: no item'
+  run cat "$ASKLOG"
+  assert_output 'show Ask123'
+  # a pending ask stands too: the decision is with the human
+  ASKSTATUS=pending ASKANSWERED='' run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # an agent route reads no recorded ask: its red is a fault to fix
+  : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' agent - 'fix the spend'
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' alert - 'pace is their call'
+  # NEGATIVE CONTROL: an answer older than TRIAGE_FIX_DAYS has aged out, so this trip gets its item
+  : > "$PLOG"; ASKANSWERED=$(date -d "@$((T0 - 8 * 86400))" +%FT%T%z)
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want --raw "
+  # ... and so does one whose ask was cancelled, or that agent-ask cannot show
+  : > "$PLOG"; ASKSTATUS=cancelled run "$SUBJECT" triage
+  assert_output --partial '1 queued as red fixes'
+  : > "$PLOG"; ASKANSWERED=$(date -d "@$((T0 - 86400))" +%FT%T%z) TRIAGE_ASK_CMD=false run "$SUBJECT" triage
+  assert_output --partial '1 queued as red fixes'
+}
+
 # 2026-11-20 (ar-4064): tries were counted over the whole TRIAGE_FIX_DAYS window, so a watch that
 # cleared and tripped again found both tries spent by the last trip: 12 of 22 tripped watches,
 # release-links and alertmanager-fleet among them, had no owner.
@@ -3493,10 +3536,10 @@ hold_setup() {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"; printf '[]' > "$GHD/runs"
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
-  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
-  cat >> "$SCHEDULES_SYNC" <<'SS'
-[ "$1" = repos ] && exec cat "$D/repos"   # the watched list; none: hold_ledger falls back to the repo and main
+  export SS_FIXTURE="$GHD"
+  ss_script <<'SS'
+D=$_dir
+[ "$1" = repos ] && { cat "$D/repos"; exit; }   # the watched list; none: hold_ledger falls back to the repo and main
 [ -e "$D/down" ] && exit 1
 [ -e "$D/unsynced" ] && exit 3
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
@@ -3512,7 +3555,6 @@ case "$*" in
 esac
 GH
   } | gh_script
-  chmod +x "$SCHEDULES_SYNC"
 }
 
 # cleanup <slug> <finished offset> <pr number> <sha> <changed file...>: a merged cleanup item
@@ -3525,7 +3567,7 @@ cleanup() {
   hold_setup
   echo '[{"forge":"github","repo":"O/other","base":"trunk","host":null,"clone":null},
     {"forge":"forgejo","repo":"O/R","base":"master","host":"git.example.test","clone":null}]' > "$GHD/repos"
-  sed -i 's|\[ "$1 $3 $4" = "runs --branch main" \]|[ "$1 $2 $3 $4" = "runs forgejo:o/r --branch master" ]|' "$SCHEDULES_SYNC"
+  sed -i 's|\[ "$1 $3 $4" = "runs --branch main" \]|[ "$1 $2 $3 $4" = "runs forgejo:o/r --branch master" ]|' "$SS_FIXTURE/ss.script"
   cleanup hit -7200 5 aaa11111 .local/bin/tool
   ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201
   run "$SUBJECT" triage --dry-run

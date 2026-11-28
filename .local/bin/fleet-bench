@@ -1705,7 +1705,7 @@ section_cfg() {
 # there, since about a third of those no session claims. A PR is counted once, except that a row
 # from before its repo had sections or from before a session claimed it counts again, and
 # ci_keep_newest drops the old one. A recount keeps the session an older row had. A sections repo's
-# merges come from the PR store (`schedules-sync prs`), which holds its whole history, so no list is cut.
+# merges come from the PR store (pr_store), which holds its whole history, so no list is cut.
 # Its store is refreshed first (`sync-prs --wait`, as agent-land does after a merge, but waiting out a
 # pass that holds the store): a boot catch-up runs before or during schedules-sync's first pass, and
 # `prs` refuses a store over 30 minutes old (ar-1090). A refresh that fails says why on stderr and
@@ -1714,7 +1714,7 @@ merged_new() {
   local repo prs listed='[]'
   for repo in $(jq -r 'keys[]' <<<"$2"); do
     "$SCHEDULES_SYNC" sync-prs --wait "$repo" >&2 || true
-    prs=$("$SCHEDULES_SYNC" prs "$repo" --state merged --since "$(date -u -d "@$1" +%FT%TZ)") || return 1
+    prs=$(pr_store "$repo" --state merged --since "$(date -u -d "@$1" +%FT%TZ)") || return 1
     listed=$(jq -c --argjson l "$listed" --arg r "$repo" --argjson since "$1" \
       '$l + map(select(.merged_at and (.merged_at | fromdateiso8601) >= $since)
                 | {repo: $r, number, session_id: "", merged: (.merged_at | fromdateiso8601 | floor)})' <<<"$prs") || return 1
@@ -2988,7 +2988,7 @@ prs_forgejo() {
   repos=$("$SCHEDULES_SYNC" repos 2>/dev/null | jq -r '.[] | select(.forge == "forgejo") | "\(.host)/\(.repo)"') || return 1
   while IFS= read -r r; do
     [ -n "$r" ] || continue
-    "$SCHEDULES_SYNC" prs "$r" --state open --checks | jq -c --arg r "${r#*/}" '($r | split("/")[0]) as $o | .[] | select(.author == $o) | {ref: "\($r)#\(.number)", branch, title, draft,
+    pr_store "$r" --state open --checks | jq -c --arg r "${r#*/}" '($r | split("/")[0]) as $o | .[] | select(.author == $o) | {ref: "\($r)#\(.number)", branch, title, draft,
       created: .created_at, updated: .updated_at, commit: .updated_at, mergeable: "UNKNOWN", url,
       checks: ({NONE: "NONE", PENDING: "PENDING", FAIL: "FAILURE", PASS: "SUCCESS"}[.ci // "NONE"] // "NONE")}' || return 1
   done <<<"$repos"
@@ -3014,7 +3014,7 @@ prs_branches() {
     base=$(merge_proof_ref "$dir") || continue
     # The store names a Forgejo repo host/owner/repo, a GitHub one owner/repo.
     key=$(jq -r --arg r "$repo" 'first(.[] | select(.forge == "forgejo" and .repo == $r) | "\(.host)/\(.repo)") // $r' <<<"$repos") || continue
-    prs=$("$SCHEDULES_SYNC" prs "$key" --state all 2>/dev/null) || continue
+    prs=$(pr_store "$key" --state all 2>/dev/null) || continue
     # One jq over the whole branch list: a clone holds thousands of branches, a process each is minutes.
     # commit is UTC with a Z (jq's date parser takes no offset). Owned: an open PR names the branch, or a
     # merged PR's head is this very commit.
@@ -5791,7 +5791,8 @@ cause_tries() {
 # row. 2026-11-20 (ar-4064): tries were counted over the whole window, so a watch that cleared and
 # tripped again found its tries spent by an earlier trip, and 12 of 22 tripped watches had no owner.
 # A watch that flaps gets TRIAGE_FIX_TRIES items and one escalation a trip by design (every trip has an owner, ar-1531);
-# only a trip that outlasts watch_after is a red, which bounds how often that can be.
+# only a trip that outlasts watch_after is a red, which bounds how often that can be. On an alert route the
+# owner of a later trip can be the ask an earlier trip's item recorded (triage_ask_stands), not a new item.
 watch_trip() {
   [[ "$1" == 'check(watch): '* ]] || return 0
   local n=${1#'check(watch): '}
@@ -5828,9 +5829,10 @@ triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): 
 # TRIAGE_ESCALATE_MODEL, whose brief is fix-red's root-cause pass. Only when that did not hold either is
 # the cause spent: it stays on its agent row, counted by the reds_spent KPI, and one ask carries it
 # (triage_spent_ask), so Needs you holds a red only once the agent system has nothing left to try
-# (ask UfRZaR, 2026-11-20, on the human's "needs me should only be what needs me").
+# (ask UfRZaR, 2026-11-20, on the human's "needs me should only be what needs me"). An alert route's
+# cause whose ask still stands (triage_ask_stands) queues nothing: that ask owns the trip.
 triage_promote() {
-  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model restart err
+  local board key raw route cause tags items used trip tries more kind n=0 capped=0 seen=' ' model restart err ask standing=' '
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
@@ -5840,6 +5842,14 @@ triage_promote() {
   while IFS=$'\t' read -r key _ _ route cause tags; do
     triage_queues "$key" "$route" || continue
     kind=$(triage_kind "$key")
+    if [ "$route" = alert ]; then
+      [[ "$standing" != *" $cause "* ]] || continue
+      if ask=$(triage_ask_stands "$items" "$cause"); then
+        say "triage: $cause (${key:0:60}) stands on ask $ask: no item"
+        standing+="$cause "
+        continue
+      fi
+    fi
     trip=$(watch_trip "$key")
     tries=$(cause_tries "$items" "$cause" "$trip" "$route")
     # Spent is counted before the day's cap, which says nothing about a cause's own tries; an
@@ -5874,6 +5884,29 @@ triage_promote() {
   done <<<"$1"
   triage_spent_write "$spent"
   echo "$n"
+}
+
+# triage_ask_stands <items> <cause> -> the id of the ask the cause's newest item in <items> that recorded
+# one names (`agent-queue set <slug> ask=<id>`, fix-red's alert route), rc 0 while it is pending or was
+# answered under TRIAGE_FIX_DAYS ago, whatever the answer (the human decided; a trip that outlasts the
+# decision is theirs to read); rc 1 otherwise, or when agent-ask cannot show it. <items> lists done items
+# for TRIAGE_FIX_DAYS only, so an ask left pending longer gets one item a window, which records it again.
+# An alert route's item
+# exists to put the human's decision to them, so a later trip that finds it made only repeats it:
+# source-pace tripped on, as the human chose (asks agERZ5, KntBiO "keep", 2026-11-21), and got an item a
+# trip that closed in minutes finding the same answer (ar-3436, ar-4216; ar-4538).
+triage_ask_stands() {
+  local id ask st at
+  id=$(jq -r --arg c " cause:$2 " --arg trip "" "$JQ_LIB$CAUSE_JQ"'cause_items | map(select((.ask // "") != ""))
+    | sort_by((.queued | ep) // 0) | last | .ask // empty' <<<"$1" 2>/dev/null)
+  [[ "$id" =~ ^[A-Za-z0-9]+$ ]] && ask=$($TRIAGE_ASK_CMD show "$id" 2>/dev/null) || return 1
+  st=$(sed -n '/^status: /{s///p;q;}' <<<"$ask")
+  if [ "$st" != pending ]; then
+    [ "$st" = answered ] || return 1
+    at=$(sed -n '/^answered_at: /{s///p;q;}' <<<"$ask")
+    [ -n "$at" ] && at=$(date -d "$at" +%s 2>/dev/null) && [ $(( at + TRIAGE_FIX_DAYS * 86400 )) -gt "$(now)" ] || return 1
+  fi
+  printf '%s' "$id"
 }
 
 # triage_spent_ask <cause> <key> <slugs> <items> -> the id of the one ask a spent cause gets: the one the
