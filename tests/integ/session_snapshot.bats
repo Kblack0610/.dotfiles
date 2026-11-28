@@ -18,7 +18,7 @@ setup() {
   resume) rm -f "$AGENTCTL_STATE_DIR/PAUSED" ;;
   list) [ ! -e "$AGENTCTL_STATE_DIR/PAUSED" ] || echo "PAUSED since x" ;;
 esac'
-  stub fleet-dispatch '[ "$1" != restore ] || { echo "hub: reopened 2, failed 0"; [ -z "${RESTORE_FAILS:-}" ]; }'
+  stub fleet-dispatch '[ "$1" != restore ] || { echo "restore: handed 2 conversation(s) on 1 lost record(s) to fleet-restore.service"; [ -z "${RESTORE_FAILS:-}" ]; }'
   stub agent-notify ''
 }
 
@@ -39,20 +39,39 @@ stub() {
   assert_line 'set: dispatch-hold agentctl-pause'
 }
 
-@test "up reopens before it releases, then clears the marker and pages once" {
+@test "up hands the reopens to the walk before it releases, then clears the marker and pages once" {
   "$SNAP" down
   : > "$CALLS"
   run "$SNAP" up
   assert_success
   run grep -nE '^(fleet-dispatch restore|agentctl resume|agent-hold release)' "$CALLS"
-  assert_line --index 0 --partial 'fleet-dispatch restore'
+  assert_line --index 0 --partial 'fleet-dispatch restore --defer'
   assert_line --index 1 --partial 'agentctl resume'
   assert_line --index 2 --partial 'agent-hold release dispatch'
   ! "$REPO_ROOT/.local/bin/agent-hold" list | grep -q $'^dispatch\t' || fail "dispatch still held"
   [ ! -e "$AGENTCTL_STATE_DIR/PAUSED" ] || fail "agentctl still paused"
   [ ! -e "$AGENT_MAINTENANCE" ] || fail "marker left behind"
-  run grep -c '^agent-notify -p low -t back up after: planned reboot hub: reopened 2, failed 0' "$CALLS"
+  run grep -c '^agent-notify -p low -t back up after: planned reboot restore: handed 2 conversation(s) .*Reopened now: 0' "$CALLS"
   assert_output 1
+}
+
+# 2026-11-19: a walk inside session-snapshot-up.service reopened 12 of 23 conversations before the unit's
+# 600s start timeout killed up, so dispatch stayed held and agentctl paused (ar-3601). A walk here
+# never ends (its reopen waits on a fifo nobody writes), so up returns only by not waiting on it.
+@test "up with 23 lost conversations and a walk that never ends returns at once with both levers undone" {
+  mkfifo "$SANDBOX/never"
+  stub fleet-dispatch 'case "$*" in
+  "restore --defer") echo "restore: handed 23 conversation(s) on 2 lost record(s) to fleet-restore.service" ;;
+  restore*) read -r < "'"$SANDBOX/never"'" ;;
+esac'
+  "$SNAP" down
+  run timeout 60 "$SNAP" up
+  assert_success
+  ! "$REPO_ROOT/.local/bin/agent-hold" list | grep -q $'^dispatch\t' || fail "dispatch still held"
+  [ ! -e "$AGENTCTL_STATE_DIR/PAUSED" ] || fail "agentctl still paused"
+  [ ! -e "$AGENT_MAINTENANCE" ] || fail "marker left behind"
+  grep -q '^agent-notify -p low .*handed 23 conversation(s).*Reopened now: 0; what is still to reopen: session-snapshot status' "$CALLS" ||
+    fail "the page does not say the reopens are still to come"
 }
 
 @test "a hold and a pause that were already up stay up after up" {
@@ -157,4 +176,15 @@ stub() {
   run "$SNAP" status
   assert_failure 1
   assert_output --partial 'undo with: session-snapshot up'
+}
+
+@test "status after up names the conversations still on lost pane records" {
+  run "$SNAP" status
+  refute_output --partial 'still to reopen'
+  mkdir -p "$HOME/.agent/dispatch/panes"
+  echo '{"panes":[{"claude":"a"},{"claude":"b"},{"claude":""}]}' > "$HOME/.agent/dispatch/panes/hub.lost.json"
+  echo '{"panes":[{"claude":"c"}]}' > "$HOME/.agent/dispatch/panes/lab.restored.json"
+  run "$SNAP" status
+  assert_success
+  assert_output --partial 'still to reopen here: 2 conversation(s) on lost pane records'
 }

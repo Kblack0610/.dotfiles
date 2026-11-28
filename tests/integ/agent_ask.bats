@@ -230,10 +230,6 @@ relay_fixture() { # <kind> <text> <shown>
   relay_fixture answer 'Park them' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" 'merge past red'
   assert_failure 1; assert_output --partial "names none (or more than one) of ask $id's options"
-  # Words that name neither the option nor its meaning do not pick it (ar-6269, ask M0yWLL).
-  relay_fixture answer 'get us down to only the ones that need' "Ask $id: park or wait?"
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'only the ones that need' "$id" park
-  assert_failure 1; assert_output --partial "does not pick 'park'"
   # Words that name another option pick that one, not this.
   relay_fixture answer 'wait for CI' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'wait for CI' "$id" park
@@ -255,6 +251,32 @@ relay_fixture() { # <kind> <text> <shown>
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" wait
   assert_failure 1; assert_output --partial 'not waiting on the human'
   run "$AGENT_ASK" show "$id"; assert_line 'answer: park'
+}
+
+# In a session the human is at, words that name no option are their answer as the session reads it,
+# and the note says it was a reading; words that name the option are no reading; words that name
+# another option refuse.
+@test "answer --quote: words that name no option record the session's reading, and the note says so" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'yes or no is fine, go off your recs thanks' "Ask $id: park or wait? My pick: park."
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id" park
+  assert_success
+  run "$AGENT_ASK" show "$id"; assert_line 'answer: park'; assert_line 'answered_by: human'
+  assert_output --partial "answer_note: relayed in session sid-r: the session's reading of their words as 'park': go off your recs"
+  # Negative control: words naming the other option are no reading of park.
+  local id2; id2="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'go off your recs, but wait for CI' "Ask $id2: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id2" park
+  assert_failure 1; assert_output --partial "whole message does not pick 'park'"
+  run "$AGENT_ASK" show "$id2"; assert_line 'status: pending'
+  # A fragment of an entry that names park is the human's pick, not the session's reading.
+  local id3; id3="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'go off your recs and park it' "Ask $id3: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id3" park
+  assert_success
+  run "$AGENT_ASK" show "$id3"; assert_line 'answer: park'
+  assert_output --partial 'answer_note: relayed in session sid-r: go off your recs'
+  refute_output --partial "session's reading"
 }
 
 # An agent answers what does not need the human, and its answer releases what the ask holds
@@ -283,10 +305,75 @@ relay_fixture() { # <kind> <text> <shown>
   run env AGENT_QUEUE_ITEM=ar-1 "$AGENT_ASK" answer "$c" go
   assert_failure 1
   assert_output --partial "$c needs the human (the judge marked it human-only)"
+  # An ask the judge sent to the human is the human's (ar-5156: MVGdCe was answered "merge" by an agent).
+  d="$("$AGENT_ASK" post --project demo --options "$opts" 'approve the look?')"
+  printf 'judge: human\njudge_reason: a taste call.\n' >> "$(ask_file "$d")"
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$d" go
+  assert_failure 1
+  assert_output --partial "$d needs the human (the judge sent it to the human: a taste call)"
+  run "$AGENT_ASK" show "$d"; assert_line 'status: pending'
+  # Negative control: an ask the judge would answer itself still takes an agent's answer.
+  e="$("$AGENT_ASK" post --project demo --options "$opts" 'retry it?')"
+  printf 'judge: take-recommend\n' >> "$(ask_file "$e")"
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$e" go
+  assert_success
+  run "$AGENT_ASK" show "$e"; assert_line 'status: answered'; assert_line 'answered_by: agent'
   # Negative control: the human's answer to an approval still lands.
   run "$AGENT_ASK" answer "$b" go
   assert_success
   run "$AGENT_ASK" show "$b"; assert_line 'answered_by: human'
+}
+
+# An agent answer given before `answer` refused it goes back to the human (ar-5156).
+@test "return: an agent's answer to an ask only the human answers is pending again, the answer kept" {
+  local opts='merge=land it|change=hold it' a b c g h id
+  a="$("$AGENT_ASK" post --project demo --options "$opts" --recommend change 'approve the look?')"
+  b="$("$AGENT_ASK" post --project demo --options "$opts" 'land it?')"
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'merge it?')"
+  g="$("$AGENT_ASK" post --project demo --options "$opts" 'ship it?')"
+  h="$("$AGENT_ASK" post --project demo --options "$opts" 'approve this one?')"
+  for id in "$a" "$b" "$c" "$g"; do "$AGENT_ASK" answer --by agent "$id" merge 2>/dev/null; done
+  "$AGENT_ASK" answer "$h" merge 2>/dev/null
+  # The judge's verdict landed after the agent's answer: the human's for a and h, the judge's own
+  # for c, and for g answerable with no option to take (grounded), which an agent may answer.
+  printf 'judge: human\njudge_rule: knowledge\n' >> "$(ask_file "$a")"; printf 'judge: human\n' >> "$(ask_file "$h")"
+  printf 'judge_human_only: true\n' >> "$(ask_file "$b")"; printf 'judge: take-recommend\n' >> "$(ask_file "$c")"
+  printf 'judge: human\njudge_rule: grounded\n' >> "$(ask_file "$g")"
+  # An answer still being delivered is left until that is done.
+  run "$AGENT_ASK" return "$a"
+  assert_failure 1
+  assert_output --partial "$a's answer is still being delivered"
+  for id in "$a" "$b" "$c" "$g" "$h"; do sed -i 's/^delivery: queued$/delivery: done/' "$(ask_file "$id")"; done
+  printf 'resumed_at: 2026-11-24T10:00:00-0800\n' >> "$(ask_file "$a")"
+  run "$AGENT_ASK" return --refused --dry-run
+  assert_success
+  assert_line "demo	$a	the judge sent it to the human"
+  assert_line "demo	$b	the judge marked it human-only"
+  for id in "$c" "$g" "$h"; do refute_output --partial "$id"; done
+  run "$AGENT_ASK" show "$a"; assert_line 'status: answered'
+  run "$AGENT_ASK" return --refused "$a"
+  assert_success
+  assert_equal "$(grep -c "	$a	" <<<"$output")" 1
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: pending'; assert_line 'agent_answer: merge'; assert_line 'recommend: change'
+  refute_line --partial 'answered_by:'; refute_line --regexp '^answer: '; refute_line --partial 'delivery:'
+  refute_line --partial 'resumed_at:'
+  # The agent's answer is never a recommendation the judge could take.
+  run "$AGENT_ASK" show "$b"; assert_line 'status: pending'; assert_line 'agent_answer: merge'; refute_line 'recommend: merge'
+  run "$AGENT_ASK" list --all --pending
+  assert_output --partial "$a"; assert_output --partial "$b"
+  # Negative controls: an ask the agent may answer, and the human's own answer, stay answered.
+  for id in "$c" "$g"; do run "$AGENT_ASK" show "$id"; assert_line 'status: answered'; assert_line 'answered_by: agent'; done
+  run "$AGENT_ASK" show "$h"; assert_line 'status: answered'; assert_line 'answered_by: human'
+  run "$AGENT_ASK" return "$c"
+  assert_failure 1
+  assert_output --partial "$c takes an agent's answer"
+  # A returned ask still refuses the agent; the human's answer lands.
+  run env CLAUDE_CODE_SESSION_ID=sid-9 "$AGENT_ASK" answer "$a" merge
+  assert_failure 1
+  run "$AGENT_ASK" answer "$a" change
+  assert_success
+  run "$AGENT_ASK" show "$a"; assert_line 'answered_by: human'; assert_line 'answer: change'
 }
 
 @test "another session, or a post with no session id, is not held by someone else's ask" {

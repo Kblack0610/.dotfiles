@@ -64,6 +64,7 @@ A proposal is a decision an analysis stream or dream filed with `agent-propose`:
 3. Pending with the session gone: `agent-ask expire` (every `assume-due` pass) parks an ask idle past park.conf's `IDLE_DAYS` that no live session or queue item waits on, and cancels it when it comes back still idle; it also cancels an unreviewed audit, a dated ask whose day is over, and an ask on a board row the human answered since. Sooner: `agent-ask target --reopen <id>` points it at a live session, or `agent-ask cancel <id> '<reason>'` if the question is dead.
 4. The judge answered wrongly: tell the human, who overrides with `agent-ask answer <id> ...`. A policy or `DELAY_RULES` change is re-applied to the pending queue by `agent-ask sweep --all`.
 5. `ask-judge` or `ask-resume` calls failing on a cap: `fleet-runners`, "budget".
+6. An agent answered an ask only the human answers (an approval, a human-only ask, `judge: human`), so its session reads STALLED instead of NEEDS: `agent-ask return --refused --dry-run` lists them, and `agent-ask return <id>` puts one back to pending, the agent's answer kept as `agent_answer`. `answer` refuses such an answer since ar-5156.
 
 ## The Stop check
 
