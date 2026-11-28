@@ -231,6 +231,68 @@ load 'agent_queue/common'
   assert_output --partial "cause:feed1234 is already owned by rc-p1"
 }
 
+# ar-3645: live_owner is the one owner check; cause (above), row, area, plan and pr all read the queue through it.
+@test "one live item per PR: a second add naming it is refused and names the owner; another PR, a validate item and a set pr= pass" {
+  run "$AQ" add --project game --slug land-a --pr o/game#7 "land PR 7"
+  assert_success
+  assert_equal "$(field "$(item queued land-a)" pr)" o/game#7
+  run "$AQ" add --project game --slug land-b --pr o/game#7 "check PR 7"
+  assert_failure
+  assert_output --partial "o/game#7 is already recorded by land-a"
+  ! compgen -G "$AGENT_QUEUE_DIR/*/*land-b*"
+  # negative control: a different PR, and the same PR in another repo, are other work
+  run "$AQ" add --project game --slug land-c --pr o/game#8 "land PR 8"
+  assert_success
+  run "$AQ" add --project game --slug land-d --pr o/app#7 "land app PR 7"
+  assert_success
+  # a validate item reviews its author's PR, so it neither owns nor is refused
+  run "$AQ" add --project game --slug val-a --tags validate --pr o/game#7 "review PR 7"
+  assert_success
+  # recording a PR by set is bookkeeping (agent-land, reap), never refused, even where another item lists it
+  "$AQ" add --project game --slug other "other work" >/dev/null
+  run "$AQ" set other pr=o/game#7
+  assert_success
+  # a closed owner frees the PR for a new add
+  run "$AQ" move land-c done --status cancelled
+  assert_success
+  run "$AQ" add --project game --slug land-e --pr o/game#8 "land PR 8 again"
+  assert_success
+}
+
+@test "one live item per plan phase: a twin under another slug is refused by add and by set, another phase and plan pass" {
+  story_notes
+  # a plan path with no space: the task text names it unquoted, and the sandbox path has one
+  PD="$BATS_TEST_TMPDIR"
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$PD/own.md"
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$PD/else.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$PD/own.md" --project level --slug own
+  assert_success
+  assert_equal "$(field "$(item queued own-p1)" phases)" 1
+  run "$AQ" add --project level --slug twin "P1 of $PD/own.md: again"
+  assert_failure
+  assert_output --partial "phase 1 of $PD/own.md is already held by own-p1"
+  ! compgen -G "$AGENT_QUEUE_DIR/*/*-twin.md"
+  run "$AQ" add --project level --slug twin2 "Plan: $PD/own.md phase 1 under a new name"
+  assert_failure
+  assert_output --partial "already held by own-p1"
+  "$AQ" add --project level --slug claimer "a session taking on plan work" >/dev/null
+  run "$AQ" set claimer plan="$PD/own.md" phases=1
+  assert_failure
+  assert_output --partial "phase 1 of $PD/own.md is already held by own-p1"
+  # negative control: another phase of the plan, and the same phase of another plan, are other work
+  run "$AQ" set claimer plan="$PD/else.md" phases=1
+  assert_success
+  run "$AQ" add --project level --slug p3 "P3 of $PD/own.md: three"
+  assert_success
+  # the holder's own claim, and a closed holder, free nothing wrongly and nothing falsely
+  run "$AQ" set own-p1 phases=1
+  assert_success
+  run "$AQ" move own-p1 done --status cancelled
+  assert_success
+  run "$AQ" add --project level --slug twin "P1 of $PD/own.md: again"
+  assert_success
+}
+
 @test "add refuses a slug that finished ok unless --repeat; a failed or cancelled one is a retry" {
   "$AQ" add --project game --slug landed "x" >/dev/null
   "$AQ" move landed done --status ok >/dev/null
@@ -285,6 +347,34 @@ load 'agent_queue/common'
   assert_success
   [ -n "$(item queued rq-p1)" ]
   assert_line "held rq-p2 -> level:lv-9 (#after/lv-9)"
+}
+
+@test "add --plan skips a phase another item landed under its own slug, named in its task or its plan: field (ar-1613)" {
+  story_notes
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three' > "$SANDBOX/lp.md"
+  local d="$AGENT_QUEUE_DIR/done/2026-11-06"
+  mkdir -p "$d"
+  # P1 was queued by hand (no --plan) and P2 by another plan add: each closed ok with its box unticked.
+  printf 'slug: by-hand\nproject: level\nstatus: ok\n---\nP1 of %s. Read it first.\n' "$SANDBOX/lp.md" > "$d/20261106-000001-by-hand.md"
+  printf 'slug: other-p2\nproject: level\nplan: %s\nphases: 2\nstatus: ok\n---\nx\n' "$SANDBOX/lp.md" > "$d/20261106-000002-other-p2.md"
+  # NEGATIVE CONTROL: a phase whose item failed, and one that names another plan, did not land.
+  printf 'slug: tried\nproject: level\nstatus: failed\n---\nPhase 3 of the plan %s\n' "$SANDBOX/lp.md" > "$d/20261106-000003-tried.md"
+  printf 'slug: elsewhere\nproject: level\nstatus: ok\n---\nP3 of %s\n' "$SANDBOX/xlp.md" > "$d/20261106-000004-elsewhere.md"
+  # ... and so did neither a follow-up that cites P3 nor a plan of the same name in another directory.
+  printf 'slug: follow\nproject: level\nstatus: ok\n---\nfix review findings for Phase 3 of the plan %s\n' "$SANDBOX/lp.md" > "$d/20261106-000005-follow.md"
+  printf 'slug: twin\nproject: level\nplan: %s\nphases: 3\nstatus: ok\n---\nx\n' "$SANDBOX/other/lp.md" > "$d/20261106-000006-twin.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/lp.md" --project level --slug lp
+  assert_success
+  assert_output --partial "skipped phase 1 of lp.md already landed on item by-hand"
+  assert_output --partial "skipped phase 2 of lp.md already landed on item other-p2"
+  [ -z "$(item queued lp-p1)" ] && [ -z "$(item queued lp-p2)" ] || fail "a phase landed under another slug was queued again"
+  # P3 waits on the item that landed P2, which releases it at once.
+  [ "$(field "$(item queued lp-p3)" after)" = other-p2 ] || fail "p3 does not go after the item that landed p2"
+  # --repeat queues every phase as new work.
+  "$AQ" move lp-p3 done --status failed >/dev/null
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/lp.md" --project level --slug lp --repeat
+  assert_success
+  [ -n "$(item queued lp-p1)" ]
 }
 
 @test "a project inside a repo is runnable; a notes-only one is refused, as dispatch would" {
@@ -746,9 +836,9 @@ load 'agent_queue/common'
   legacy second "after: first" --project game "b"
   "$AQ" move first done --status cancelled
   run bash -c "'$AQ' show second --json | jq -r .hold"
-  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an answered ask naming it>"
+  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask naming it, answered cancel or drop>"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
-  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an answered ask naming it>"
+  assert_output "after first closed cancelled, dead: it never releases (queue first again, or set after= without it); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask naming it, answered cancel or drop>"
 }
 
 # ar-39: after: is a list of slugs.
@@ -986,6 +1076,20 @@ load 'agent_queue/common'
   "$AQ" set p3 tags="tier3 ask:yes=a"
 }
 
+@test "a needs:cluster tag is accepted on add and on set tags=, and any other needs: word is refused (ar-5944)" {
+  run "$AQ" add --project game --slug cl-a --tags "needs:cluster" "reads the cluster"
+  assert_success
+  run "$AQ" add --project game --slug cl-b --tags "needs:gpu" "x"
+  assert_failure; assert_output --partial 'a needs tag is needs:cluster'
+  # set refuses weight= (not settable), so a session keeps its own item on the workstation with the tag.
+  run "$AQ" set cl-a weight=heavy
+  assert_failure
+  run "$AQ" set cl-a tags="size/s needs:cluster"
+  assert_success
+  run "$AQ" set cl-a tags="needs:cpu"
+  assert_failure; assert_output --partial 'a needs tag is needs:cluster'
+}
+
 @test "a hold: tag holds an item while agent-hold holds that resource, whoever asks (ar-613)" {
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   for t in "hold:" "hold:../x" "hold:a/b" "hold:.."; do
@@ -1012,7 +1116,7 @@ load 'agent_queue/common'
   # set tags= is checked like add.
   run "$AQ" set forms "tags=hold:a/b"
   assert_failure; assert_output --partial "hold:<resource>"
-  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop --by unity-agent-6 >/dev/null
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = forms ]
 }
@@ -1411,7 +1515,7 @@ load 'agent_queue/common'
   legacy code "tags: hold:mac-desktop desk:auth" --project game "2fa step" >/dev/null
   run "$AQ" next --json
   assert_failure
-  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop >/dev/null
+  "$REPO_ROOT/.local/bin/agent-hold" release mac-desktop --by other >/dev/null
   run "$AQ" next --json
   [ "$(jq -r .slug <<<"$output")" = code ]
   run "$AQ" list --state queued
@@ -1685,27 +1789,37 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -z "$("$AQ" next --json)" ] || fail "a closed PR released its hold"
 }
 
-@test "a nightly: tag holds while today's scheduled runs go, and releases when they finish" {
-  # The desk is in Los Angeles: Tests fires 02:00 and Multi 04:30 on 2026-11-06 (PST).
-  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json"
-  # state <synced_at> <multi.yml status>: Tests finished, Multi's run in the given status.
-  state() {
-    jq -n --arg s "$1" --arg m "$2" '{repos: [{repo: "Org/game", synced_at: $s, workflows: [
-      {path: ".github/workflows/multi.yml", crons: ["30 12 * * *"], timeout_min: 300,
-       runs: [{id: 2, created_at: "2026-11-06T12:41:00Z", status: $m}]},
-      {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
-       runs: [{id: 1, created_at: "2026-11-06T10:04:00Z", status: "completed"}]}]}]}' > "$SCHEDULES_STATE"
-  }
+# nightly: holds read schedules-sync pending over a hand-written state file and run ledger. The desk
+# is in Los Angeles: the night runner starts a pass at 22:00 local, 06:00 UTC the next day (PST).
+# nstate <synced_at> [<night set JSON>]: Org/game with an every-10-minutes drop-closed-gates.yml
+# whose run is going, which never holds a nightly: item.
+nstate() {
+  local set_='{"night": {"test.yml": "Tests (all)"}, "wide": {}, "held": {"soak.yml": "Soak (all)"}}'
+  jq -n --arg s "$1" --argjson n "${2:-$set_}" '{repos: [{repo: "Org/game", base: "main", synced_at: $s, night: $n,
+    workflows: [{path: ".github/workflows/drop-closed-gates.yml", crons: ["*/10 * * * *"], timeout_min: 5,
+                 runs: [{id: 90, created_at: $s, status: "in_progress"}]}]}]}' > "$SCHEDULES_STATE"
+}
+# nrun <id> <created_at> <status>: a full run of test.yml on main, the night member
+nrun() {
+  jq -nc --argjson id "$1" --arg c "$2" --arg st "$3" '{forge: "github", repo: "Org/game", id: $id, attempt: 1,
+    workflow: "Tests (all)", path: ".github/workflows/test.yml", branch: "main", event: "workflow_dispatch",
+    status: $st, created_at: $c, ended_at: null}' >> "$SCHEDULES_RUNS_LEDGER"
+}
+
+@test "a nightly: tag holds while the night set's runs go, and releases when they finish" {
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json" SCHEDULES_RUNS_LEDGER="$SANDBOX/runs.jsonl"
   legacy triage "tags: nightly:game" --project game --priority urgent "a"
   "$AQ" add --project game --slug other "b"
   # No state file yet: held, never released on a guess.
   AGENT_QUEUE_NOW=2026-11-06T05:00 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"triage\") | .hold'"
   assert_output "nightly:game (no schedules state)"
-  state 2026-11-06T12:55:00Z in_progress
+  nstate 2026-11-06T12:55:00Z
+  nrun 1 2026-11-06T06:00:00Z in_progress
   AGENT_QUEUE_NOW=2026-11-06T05:00 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"triage\") | .hold'"
-  assert_output "nightly:game (multi.yml running)"
+  assert_output "nightly:game (test.yml running)"
   [ "$(AGENT_QUEUE_NOW=2026-11-06T05:00 "$AQ" next --json | jq -r .slug)" = other ]
-  state 2026-11-06T14:05:00Z completed
+  nstate 2026-11-06T14:05:00Z
+  nrun 1 2026-11-06T06:00:00Z completed
   [ "$(AGENT_QUEUE_NOW=2026-11-06T06:10 "$AQ" next --json | jq -r .slug)" = triage ]
   # The same finished file read 40 minutes later is stale, and holds.
   AGENT_QUEUE_NOW=2026-11-06T06:50 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"triage\") | .hold'"
@@ -1716,35 +1830,56 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_failure; assert_output --partial "nightly:<repo>"
 }
 
-@test "a dated at: tag with a nightly: tag waits for the next night's runs, not today's" {
-  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json"
-  jq -n '{repos: [{repo: "Org/game", synced_at: "2026-11-07T09:05:00Z", workflows: [
-    {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
-     runs: [{id: 1, created_at: "2026-11-06T10:04:00Z", status: "completed"}]}]}]}' > "$SCHEDULES_STATE"
+# ar-1585: a nightly:unity-core-playground hold printed "drop-closed-gates.yml due HH:MM" all day.
+@test "a nightly: hold releases once the night member finished while drop-closed-gates.yml still has runs due" {
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json" SCHEDULES_RUNS_LEDGER="$SANDBOX/runs.jsonl"
+  legacy day "tags: nightly:game" --project game "a"
+  nstate 2026-11-06T21:55:00Z
+  nrun 1 2026-11-06T06:00:00Z completed
+  [ "$(AGENT_QUEUE_NOW=2026-11-06T14:00 "$AQ" next --json | jq -r .slug)" = day ]
+  # NEGATIVE CONTROL: the same fixture with the night member still running holds.
+  nrun 1 2026-11-06T06:00:00Z in_progress
+  nstate 2026-11-06T17:55:00Z
+  AGENT_QUEUE_NOW=2026-11-06T09:59 run bash -c "'$AQ' list --json | jq -r '.hold'"
+  assert_output "nightly:game (test.yml running)"
+  [ -z "$(AGENT_QUEUE_NOW=2026-11-06T09:59 "$AQ" next --json)" ] || fail "a running night released its hold"
+}
+
+@test "a nightly: hold on a repo with no night set holds and names it, never judging its crons" {
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json" SCHEDULES_RUNS_LEDGER="$SANDBOX/runs.jsonl"
+  legacy bare "tags: nightly:game" --project game "a"
+  nstate 2026-11-06T21:55:00Z
+  jq '.repos[0] |= (del(.night) | .night_absent = "2026-11-06T00:00:00Z")' "$SCHEDULES_STATE" > "$SCHEDULES_STATE.x" && mv "$SCHEDULES_STATE.x" "$SCHEDULES_STATE"
+  nrun 1 2026-11-06T06:00:00Z completed
+  AGENT_QUEUE_NOW=2026-11-06T14:00 run bash -c "'$AQ' list --json | jq -r '.hold'"
+  assert_output "nightly:game (no night set for game (no config/ci/nightly.json))"
+  [ -z "$(AGENT_QUEUE_NOW=2026-11-06T14:00 "$AQ" next --json)" ] || fail "no night set released the hold"
+}
+
+@test "a dated at: tag with a nightly: tag waits for that date's night, not the last one" {
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json" SCHEDULES_RUNS_LEDGER="$SANDBOX/runs.jsonl"
+  nstate 2026-11-07T09:05:00Z
+  nrun 1 2026-11-06T06:00:00Z completed
   legacy validate "tags: at:2026-11-07T00:00 nightly:game" --project game "a"
   AGENT_QUEUE_NOW=2026-11-06T09:00 run bash -c "'$AQ' list --json | jq -r '.hold'"
   assert_output "at:2026-11-07T00:00"
   AGENT_QUEUE_NOW=2026-11-07T01:00 run bash -c "'$AQ' list --json | jq -r '.hold'"
-  assert_output "nightly:game (test.yml due 02:00)"
+  assert_output "nightly:game (test.yml not started)"
 }
 
-@test "a nightly: hold with a dated at: stays released after midnight once that night finished (22:00 slot)" {
-  # 2026-11-08 PST: soak.yml at 06:00 UTC is 22:00 local, the day's last slot; it finished 23:48.
+@test "a nightly: hold with a dated at: stays released after midnight once that night's 22:00 pass finished" {
   # Judged by today, the next morning every slot of 11-09 held again (nightly-validate-20261108).
-  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json"
-  jq -n '{repos: [{repo: "Org/game", synced_at: "2026-11-09T16:15:00Z", workflows: [
-    {path: ".github/workflows/soak.yml", crons: ["0 6 * * *"], timeout_min: 300,
-     runs: [{id: 3, created_at: "2026-11-09T06:21:00Z", status: "completed"}]},
-    {path: ".github/workflows/test.yml", crons: ["0 10 * * *"], timeout_min: 300,
-     runs: [{id: 1, created_at: "2026-11-08T10:01:00Z", status: "completed"},
-            {id: 2, created_at: "2026-11-09T10:01:00Z", status: "in_progress"}]}]}]}' > "$SCHEDULES_STATE"
+  export TZ=America/Los_Angeles SCHEDULES_STATE="$SANDBOX/schedules.json" SCHEDULES_RUNS_LEDGER="$SANDBOX/runs.jsonl"
+  nstate 2026-11-09T16:15:00Z
+  nrun 1 2026-11-09T06:00:00Z completed
+  nrun 2 2026-11-09T16:00:00Z in_progress
   legacy validate "tags: at:2026-11-08T00:00 nightly:game" --project game "a"
   [ "$(AGENT_QUEUE_NOW=2026-11-09T08:20 "$AQ" next --json | jq -r .slug)" = validate ]
-  # NEGATIVE CONTROL: with no at: date the same hold reads today (11-09) and still waits on soak.
+  # NEGATIVE CONTROL: with no at: date the same hold reads the newest full run, which is going.
   "$AQ" cancel validate
   legacy today "tags: nightly:game" --project game "b"
   AGENT_QUEUE_NOW=2026-11-09T08:20 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"today\") | .hold'"
-  assert_output "nightly:game (soak.yml due 22:00)"
+  assert_output "nightly:game (test.yml running)"
 }
 
 @test "bump changes priority and with it the order" {
@@ -1798,12 +1933,13 @@ notes --profile bnb ptask game --agent run gm-9"
   for s in ok fl rq cx; do "$AQ" add --project game --running --slug "$s" "$s" >/dev/null; "$AQ" set "$s" "lane_run=r-$s" >/dev/null; done
   "$AQ" add --project game --running --slug none "none" >/dev/null
   "$AQ" move ok done --status ok >/dev/null
+  "$AQ" set fl note="its PR was closed unmerged" >/dev/null   # a failed run's note is its why (ar-4263)
   "$AQ" move fl done --status failed >/dev/null
   "$AQ" move rq queued >/dev/null
   "$AQ" move cx done --status cancelled >/dev/null
   "$AQ" move none done --status ok >/dev/null
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
-  assert_output $'model-lane outcome r-ok ok --cause close\nmodel-lane outcome r-fl failed --cause close\nmodel-lane outcome r-rq redo --cause requeue\nmodel-lane outcome r-cx unrated --cause cancel'
+  assert_output $'model-lane outcome r-ok ok --cause close\nmodel-lane outcome r-fl failed --why its PR was closed unmerged --cause close\nmodel-lane outcome r-rq redo --cause requeue\nmodel-lane outcome r-cx unrated --cause cancel'
   # The requeued item's next start logs a run of its own.
   [ -z "$(field "$(item queued rq)" lane_run)" ]
 }
@@ -1820,7 +1956,7 @@ notes --profile bnb ptask game --agent run gm-9"
   "$AQ" move tmo done --status failed --end timeout >/dev/null
   "$AQ" move stp done --status failed --end stopped >/dev/null   # negative control: a stop is the model's own end
   run grep '^model-lane' "$NOTES_FIXTURE/calls.log"
-  assert_output $'model-lane outcome r-lim unrated --cause limit\nmodel-lane outcome r-prov unrated --cause provider\nmodel-lane outcome r-cut unrated --cause cut\nmodel-lane outcome r-ref unrated --cause refused\nmodel-lane outcome r-req unrated --cause limit\nmodel-lane outcome r-tmo failed --cause close\nmodel-lane outcome r-stp failed --cause close'
+  assert_output $'model-lane outcome r-lim unrated --cause limit\nmodel-lane outcome r-prov unrated --cause provider\nmodel-lane outcome r-cut unrated --cause cut\nmodel-lane outcome r-ref unrated --cause refused\nmodel-lane outcome r-req unrated --cause limit\nmodel-lane outcome r-tmo failed --why the run ended before it closed the item (end timeout) --cause close\nmodel-lane outcome r-stp failed --why the run ended before it closed the item (end stopped) --cause close'
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-lim.md)" end_reason)" = limit ]
   [ "$(field "$(item queued req)" end_reason)" = limit ]
   # A new run has not ended: the reason goes when the item runs again.
@@ -2039,6 +2175,21 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -z "$(field "$f" merged)" ]
 }
 
+# ar-1228: release-lane-reserve's five PRs, written comma-separated, read as one ref (2026-11-09).
+@test "pr= written comma-separated is stored as the space list agent-land and reap split, once per PR" {
+  "$AQ" add --project game --running --slug cs "cs" >/dev/null
+  "$AQ" set cs "pr=o/game#1,o/web#2, o/game#1" >/dev/null
+  [ "$(field "$(item running cs)" pr)" = 'o/game#1 o/web#2' ]
+  # NEGATIVE CONTROL: a space list is stored as written.
+  "$AQ" set cs "pr=o/web#2 o/game#1" >/dev/null
+  [ "$(field "$(item running cs)" pr)" = 'o/web#2 o/game#1' ]
+  # The same list in either shape is no new pr:, so a done ok item keeps its merged: list.
+  "$AQ" set cs merged="aaa111 bbb222" >/dev/null
+  "$AQ" move cs done --status ok >/dev/null
+  "$AQ" set cs "pr=o/web#2,o/game#1" >/dev/null
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-cs.md)" merged)" = 'aaa111 bbb222' ]
+}
+
 @test "a failed done item still drops merged: on a new pr:, and a title naming merged= does not skip the drop" {
   "$AQ" add --project game --running --slug fd "fd" >/dev/null
   "$AQ" set fd pr=o/game#1 merged=aaa111 >/dev/null
@@ -2251,6 +2402,30 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -z "$(field "$(item running nowhere)" session)" ]
 }
 
+# 2026-11-23: ar-2000-prom-zsh and ar-2000-probe-missing failed while their session was live on razer-laptop (ar-5957).
+@test "--running records host: on a machine that is not the lease holder, and only with a session; the holder and an unknown holder record none" {
+  printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
+  export FLEET_HOST=razer-laptop TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0"
+  export FLEET_HOSTS_JSON='{"name":"razer-laptop","dest":"u@razer","port":22}'
+  FLEET_LEASE_STUB_RC=1 run "$AQ" add --project game --running --slug worker "on a worker"
+  assert_success
+  [ "$(field "$(item running worker)" session)" = lab:dotfiles-agent-9 ]
+  [ "$(field "$(item running worker)" host)" = razer-laptop ]
+  # negative controls: the holder, a holder not known, a session given by name, and no worktree session
+  run "$AQ" add --project game --running --slug holder "on the holder"
+  [ -z "$(field "$(item running holder)" host)" ]
+  FLEET_LEASE_STUB_RC=2 run "$AQ" add --project game --running --slug unknown "no holder known"
+  [ -z "$(field "$(item running unknown)" host)" ]
+  # a non-holder the roster does not list (the workstation) records none: reap reads an unlisted host as gone
+  FLEET_HOSTS_JSON='{"name":"other-laptop","dest":"u@o","port":22}' FLEET_LEASE_STUB_RC=1 run "$AQ" add --project game --running --slug unlisted "not in the roster"
+  [ -z "$(field "$(item running unlisted)" host)" ]
+  FLEET_LEASE_STUB_RC=1 run "$AQ" add --project game --running --session given --slug given "given"
+  [ -z "$(field "$(item running given)" host)" ]
+  printf 'tools\n' > "$NOTES_FIXTURE/tmux.session"
+  FLEET_LEASE_STUB_RC=1 run "$AQ" add --project game --running --slug nosess "a checkout session"
+  [ -z "$(field "$(item running nosess)" host)" ]
+}
+
 @test "a bare session is refused when no world declares @agents, and cancel kills nothing on a value with no server" {
   rm "$HOME/.config/tmux-servers/lab.conf"
   run "$AQ" add --project game --running --session given --slug given "given"
@@ -2409,6 +2584,38 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial 'area menu on game is already held by first (running in lab:peer)'
   refute_output --partial 'held by later'
   [ -n "$(item running later)" ] || fail "a claim on a held area was refused"
+}
+
+@test "a session's own claim records host: on a machine that is not the lease holder (ar-5957)" {
+  "$AQ" add --project game --slug onworker "queued for a worker"
+  printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
+  export FLEET_HOSTS_JSON='{"name":"razer-laptop","dest":"u@razer","port":22}'
+  FLEET_HOST=razer-laptop FLEET_LEASE_STUB_RC=1 TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" CLAUDE_CODE_SESSION_ID=sid-w run "$AQ" claim onworker
+  assert_success
+  [ "$(field "$(item running onworker)" host)" = razer-laptop ]
+  "$AQ" add --project game --slug onholder "queued for the holder"
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" CLAUDE_CODE_SESSION_ID=sid-h run "$AQ" claim onholder
+  assert_success
+  [ -z "$(field "$(item running onholder)" host)" ]
+  # a stale host: from an earlier run does not outlive the claim that rewrites session:
+  "$AQ" add --project game --slug stale "queued with an old host"
+  "$AQ" set stale host=old-worker
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" CLAUDE_CODE_SESSION_ID=sid-s run "$AQ" claim stale
+  assert_success
+  [ -z "$(field "$(item running stale)" host)" ]
+}
+
+# ar-5957 review: with host: on a worker's hand item, its own cancel must still spare its own session (ar-4902, ar-5293).
+@test "cancel from a worker hand item's own session leaves that session up even though host: names this machine" {
+  printf 'dotfiles-agent-4\n' > "$NOTES_FIXTURE/tmux.session"
+  export FLEET_HOST=razer-laptop FLEET_HOSTS_JSON='{"name":"razer-laptop","dest":"u@razer","port":22}'
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,1,0" FLEET_LEASE_STUB_RC=1 AGENT_QUEUE_ITEM=mine run "$AQ" add --project game --running --slug mine "mine"
+  assert_success
+  "$AQ" set mine origin=hand
+  [ "$(field "$(item running mine)" host)" = razer-laptop ]
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,1,0" AGENT_QUEUE_ITEM=mine run "$AQ" cancel mine --why "done another way"
+  assert_success
+  assert_output --partial "left lab:dotfiles-agent-4 open: it is the caller's own session"
 }
 
 @test "a session that takes or lands an item by hand records its account; a --sid claim and a queued add do not" {

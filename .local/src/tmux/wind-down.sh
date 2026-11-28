@@ -11,7 +11,7 @@
 #       reads it after the normal Stop pipeline runs and fires the teardown.
 #       --session widens the kill from the window to the whole tmux session, unless a world
 #       manifest declares it (tmux-close, close.sh): then only the window closes.
-#       A Claude background session (CLAUDE_CODE_SESSION_KIND=bg, run by `claude daemon`) has
+#       A Claude background session (run by `claude daemon`; own_bg_job) has
 #       no tmux window of its own: arm records its daemon job instead (scope=bg), and fire
 #       ends the session with `claude stop <job>`. The daemon's TMUX_PANE is the pane of the
 #       foreground claude that spawned it, a different live session, so it is never killed.
@@ -81,6 +81,8 @@ cmd_arm() {
 
   if [ -z "${TMUX:-}" ]; then
     echo "wind-down: not inside tmux — nothing to spin down. (Note still written; no kill armed.)" >&2
+    # A job dir whose state does not name this session is the other reason no stop armed.
+    [ -n "${CLAUDE_JOB_DIR:-}" ] && echo "wind-down: CLAUDE_JOB_DIR=$CLAUDE_JOB_DIR is set, but its state.json does not name session '${CLAUDE_CODE_SESSION_ID:-}'." >&2
     return 1
   fi
 
@@ -126,11 +128,13 @@ cmd_arm() {
 # own_bg_job: print this session's daemon job, rc 1 when this is not a background session. The job
 # is the daemon's own key for it (CLAUDE_JOB_DIR=<config>/jobs/<short>), the id `claude stop` takes.
 # It counts only when the job's state names this session: a claude started from inside a background
-# session inherits its KIND and JOB_DIR with a session id of its own, and must never stop its parent.
+# session inherits its JOB_DIR with a session id of its own, and must never stop its parent. That
+# state is the one test: CLAUDE_CODE_SESSION_KIND is not read, as a daemon job can run with it unset
+# (2026-11-23 job 72e3cb7a: KIND unset, JOB_DIR set, so arm said "not inside tmux"; ar-4749).
 own_bg_job() {
   local sid="${CLAUDE_CODE_SESSION_ID:-}" dir="${CLAUDE_JOB_DIR:-}" job
   dir="${dir%/}"; job="${dir##*/}"
-  [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ] && is_session_id "$sid" && [[ "$job" =~ ^[0-9a-f]{8}$ ]] || return 1
+  is_session_id "$sid" && [[ "$job" =~ ^[0-9a-f]{8}$ ]] || return 1
   [ "$(jq -r '.sessionId // empty' "$dir/state.json" 2>/dev/null)" = "$sid" ] || return 1
   echo "$job"
 }

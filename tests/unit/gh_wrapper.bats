@@ -18,9 +18,10 @@ setup() {
 printf '%s|%s\n' "${GH_TOKEN:-none}" "$*" >> "$BATS_TEST_TMPDIR/real.log"
 case "$*" in *--body-file\ -*) cat >> "$BATS_TEST_TMPDIR/stdin.log" ;; esac
 case "$*" in 'api rate_limit'*) [ -f "$BATS_TEST_TMPDIR/rate" ] && cat "$BATS_TEST_TMPDIR/rate"; exit 0 ;; esac
-# FAIL5=<n>: the first n calls fail like a GitHub 5xx, body on stdout and status on stderr.
+# FAIL5=<n>: the first n calls fail like a GitHub 5xx, body on stdout and status on stderr
+# (FAIL5_ERR replaces that stderr line).
 if [ -n "${FAIL5:-}" ] && [ "$(grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log")" -le "$FAIL5" ]; then
-  echo '{"message":"Server Error"}'; echo "gh: Server Error (HTTP ${FAIL5_CODE:-504})" >&2; exit 1
+  echo '{"message":"Server Error"}'; echo "${FAIL5_ERR:-gh: Server Error (HTTP ${FAIL5_CODE:-504})}" >&2; exit 1
 fi
 # A refusal: `gh api` prints the error body on stdout, unterminated, and the status on stderr.
 if [ -n "${DENY:-}" ] && [ "${GH_TOKEN:-}" = tok-acme ]; then
@@ -184,8 +185,34 @@ bucket() { tail -n 1 "$GH_CALLS_DIR"/*.tsv | cut -f2; }
   PATH="$BATS_TEST_TMPDIR/wrap:$BATS_TEST_TMPDIR/real:$PATH" run gh run view 5 -R acme/x
   assert_success
   assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'tok-acme|run view 5 -R acme/x'
-  PATH="$BATS_TEST_TMPDIR/wrap:/usr/bin/nonexistent" run -127 "$BASH" "$BATS_TEST_TMPDIR/wrap/gh" --version
+  # A PATH with no gh on it but the wrapper: only the tools it needs to get that far, so the skip is
+  # what is tested, not a missing grep.
+  local t tools="$BATS_TEST_TMPDIR/tools"
+  mkdir -p "$tools"
+  for t in readlink head grep id cut getent; do ln -s "$(command -v "$t")" "$tools/$t"; done
+  PATH="$BATS_TEST_TMPDIR/wrap:$tools" run -127 "$BASH" "$BATS_TEST_TMPDIR/wrap/gh" --version
   assert_output --partial 'no gh on PATH besides this wrapper'
+  # A second copy of the wrapper (a worktree's .local/bin ahead of ~/.local/bin) is skipped too, so neither
+  # execs the other forever (ar-4949); `timeout` turns that loop into a failure here.
+  local to; to=$(command -v timeout)
+  mkdir -p "$BATS_TEST_TMPDIR/copy"
+  cp "$WRAP" "$BATS_TEST_TMPDIR/copy/gh"
+  : >"$BATS_TEST_TMPDIR/real.log"
+  PATH="$BATS_TEST_TMPDIR/copy:$BATS_TEST_TMPDIR/wrap:$BATS_TEST_TMPDIR/real:$PATH" run "$to" 10 gh run view 6 -R acme/x
+  assert_success
+  assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'tok-acme|run view 6 -R acme/x'
+  # NEGATIVE CONTROL: the two copies with no real gh after them find none rather than running each other
+  PATH="$BATS_TEST_TMPDIR/copy:$BATS_TEST_TMPDIR/wrap:$tools" run -127 "$to" 10 "$BASH" "$BATS_TEST_TMPDIR/copy/gh" --version
+  assert_output --partial 'no gh on PATH besides this wrapper'
+  # An older copy, already past its own check, hands GH_REAL this one with GH_WRAPPED set: refused, not exec'd
+  GH_WRAPPED=1 GH_REAL="$BATS_TEST_TMPDIR/copy/gh" run -127 "$to" 10 "$WRAP" --version
+  assert_output --partial "GH_REAL ($BATS_TEST_TMPDIR/copy/gh) is a copy of this wrapper"
+  # ... while a real GH_REAL under GH_WRAPPED still runs
+  GH_WRAPPED=1 GH_REAL="$BATS_TEST_TMPDIR/real/gh" run "$to" 10 "$WRAP" run view 7 -R acme/x
+  assert_success
+  assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'none|run view 7 -R acme/x'
+  # The copy check reads line 2's opening, which every copy shares: a rewrite of it here breaks the check.
+  assert_equal "$(sed -n 2p "$WRAP" | cut -c1-22)" "# gh - the fleet's gh:"
 }
 
 # gh-app against a stub curl: the JWT is signed with a throwaway key, and the stub answers by URL.
@@ -431,6 +458,24 @@ calls() { grep -vc '^[^|]*|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || true;
   assert_success
   assert_output ok
   assert_equal "$(calls)" 2
+}
+
+# ar-4283: gh reports an empty or cut-off reply with no status; day-log's annotations read failed on one.
+@test "retry: a read whose reply gh could not parse is run again; a 404 is not" {
+  FAIL5=1 FAIL5_ERR='unexpected end of JSON input' REAL_OUT=ok run --separate-stderr "$WRAP" api repos/other/x/check-runs/9/annotations
+  assert_success
+  assert_output ok
+  assert_equal "$(calls)" 2
+  : > "$BATS_TEST_TMPDIR/real.log"
+  FAIL5=99 FAIL5_ERR='unexpected end of JSON input' GH_RETRY_TRIES=2 run --separate-stderr "$WRAP" api repos/other/x/check-runs/9/annotations
+  assert_failure 1
+  assert_equal "$(calls)" 2
+  [[ "$stderr" == *"still failing after 2 runs (a 5xx or an unparseable reply)"* ]]
+  : > "$BATS_TEST_TMPDIR/real.log"
+  FAIL5=99 FAIL5_ERR='gh: Not Found (HTTP 404)' run --separate-stderr "$WRAP" api repos/other/x/check-runs/9/annotations
+  assert_failure 1
+  assert_equal "$(calls)" 1
+  [[ "$stderr" != *"still failing"* ]]
 }
 
 @test "retry: it is bounded by GH_RETRY_TRIES and then fails with gh's own status, body and message once" {

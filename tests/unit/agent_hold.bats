@@ -572,8 +572,60 @@ STUB
   run "$HOLD" claim mac-desktop --by agent-6 "store-console upload"
   assert_success
   assert_output 'claimed: mac-desktop (refreshed)'
-  "$HOLD" release mac-desktop
+  "$HOLD" release mac-desktop --by agent-6
   run "$HOLD" claim mac-desktop --by agent-9 "screenshots"
+  assert_success
+}
+
+@test "release frees a claim only for its holder; --force frees one whose holder is gone (ar-751)" {
+  "$HOLD" claim mac-desktop --by agent-42 "store form"
+  # another session, by its own names or another --by, is refused and the claim stays
+  run "$HOLD" release mac-desktop
+  assert_failure 1
+  assert_output --partial 'claimed by agent-42'
+  refute_output --partial -- '--by agent-42'
+  run "$HOLD" release mac-desktop --by agent-9
+  assert_failure 1
+  grep -qx 'by: agent-42' "$AGENT_HOLD_DIR/mac-desktop"
+  run "$HOLD" release mac-desktop --by
+  assert_failure 2
+  run "$HOLD" release mac-desktop --by ' '
+  assert_failure 2
+  # its holder releases it
+  run "$HOLD" release mac-desktop --by agent-42
+  assert_success
+  [ ! -e "$AGENT_HOLD_DIR/mac-desktop" ]
+  # a claim taken in a pane: another window is refused, and the holder's session id releases it
+  # from wherever its window moved
+  tmux_stub
+  in_pane dotfiles 3 4
+  CLAUDE_CODE_SESSION_ID=s-x "$HOLD" claim mac-desktop "screenshots"
+  in_pane dotfiles 2 4
+  run env CLAUDE_CODE_SESSION_ID=s-y "$HOLD" release mac-desktop
+  assert_failure 1
+  run env CLAUDE_CODE_SESSION_ID=s-x "$HOLD" release mac-desktop
+  assert_success
+  # --by takes the session id too, and the audit names who it was released as
+  CLAUDE_CODE_SESSION_ID=s-x "$HOLD" claim mac-desktop "screenshots"
+  run "$HOLD" release mac-desktop --by s-x
+  assert_success
+  grep -F 'released as s-x' "$HOME/.agent/audit/actions.jsonl"
+  unset TMUX TMUX_PANE
+  # a holder gone: --force frees it
+  "$HOLD" claim mac-desktop --by agent-42 "store form"
+  run "$HOLD" release mac-desktop --force
+  assert_success
+  [ ! -e "$AGENT_HOLD_DIR/mac-desktop" ]
+  grep -F 'forced over agent-42' "$HOME/.agent/audit/actions.jsonl"
+  # a claim past its until is over, so anyone releases it with no --force
+  "$HOLD" claim mac-desktop --by agent-42 "store form"
+  echo "until: $(date -d '-1 minute' +%Y-%m-%dT%H:%M:%S%z)" >> "$AGENT_HOLD_DIR/mac-desktop"
+  run "$HOLD" release mac-desktop
+  assert_success
+  [ ! -e "$AGENT_HOLD_DIR/mac-desktop" ]
+  # Negative control: a hold that is not a claim is still released by anyone.
+  "$HOLD" set unity-tests --by d "96 C"
+  run "$HOLD" release unity-tests
   assert_success
 }
 
@@ -607,7 +659,7 @@ STUB
   assert_failure 1
   [[ "$stderr" == *"(gone): more screenshots (you outrank it"* ]]
   [[ "$stderr" != *"integer"* ]]
-  "$HOLD" release mac-desktop
+  "$HOLD" release mac-desktop --by agent-6
   "$HOLD" claim mac-desktop --by agent-9 "explore"
   grep -qx 'class: other' "$AGENT_HOLD_DIR/mac-desktop"
   # A flag with no value is a usage error, not a hang.
@@ -630,7 +682,7 @@ STUB
   run "$HOLD" show unity-tests
   assert_line 'kind: claim'
   assert_line 'by: agent-6'
-  "$HOLD" release unity-tests
+  "$HOLD" release unity-tests --by agent-6
   "$HOLD" set unity-tests --by binks "hot"
   run env TMUX= bash -c "cd \"\$(mktemp -d)\" && mkdir binks && cd binks && \"$HOLD\" check unity-tests"
   assert_failure 1
@@ -782,4 +834,93 @@ systemctl_calls() { grep '^systemctl ' "$NOTES_FIXTURE/calls.log" 2>/dev/null | 
   "$HOLD" release dispatch
   [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "a lifted hold wrote no wake"
   grep -q 'agent-hold release dispatch' "$FLEET_DISPATCH_DIR/.wake"
+}
+
+@test "release answers grant each open ask that asked only for a grant under that hold, as the human only from their own terminal (ar-6045)" {
+  unset AGENT_ASK CLAUDE_CODE_SESSION_ID AGENT_QUEUE_ITEM
+  d="$HOME/.agent/asks/demo"; mkdir -p "$d"
+  ask() { printf 'id: %s\nproject: demo\nkind: question\nstatus: %s\ncreated: 2026-11-25T09:00:00-0800\nquestion: %s\noptions: %s\ncontext: %s\n' "$1" "$2" "$3" "$4" "${5:-}" > "$d/$1.md"; }
+  ask g1 pending "May hc-1 run under the critical hold?" "grant|hold"
+  ask g2 pending "May hc-2 merge now?" "Grant | keep" "the critical hold bars cluster work"
+  # Negative controls: a third way, bare letters, another hold's name, a hold still set, answered.
+  ask n1 pending "May hc-3 run under the critical hold?" "grant|hold|rewrite"
+  ask n2 pending "May hc-4 run under the critical hold?" "a|b"
+  ask n3 pending "May hc-5 run under the critical-dns hold?" "grant|hold"
+  ask n4 pending "May hc-6 run under the critical and chores holds?" "grant|hold"
+  ask n5 answered "May hc-7 run under the critical hold?" "grant|hold"
+  printf 'answer: hold\nanswered_by: human\n' >> "$d/n5.md"
+  "$HOLD" set critical --kind resource --by human --until '+12 hours' "lockdown"
+  "$HOLD" set chores --kind resource --by coordinator "parked"
+  # The human's own terminal: their answer.
+  script -qec "$HOLD release critical" /dev/null > "$SANDBOX/release.out"
+  grep -q 'released: critical' "$SANDBOX/release.out"
+  grep -Eq 'answered grant \(human\): (g1 g2|g2 g1)' "$SANDBOX/release.out"
+  for id in g1 g2; do
+    grep -qx 'status: answered' "$d/$id.md"
+    grep -qx 'answer: grant' "$d/$id.md"
+    grep -qx 'answered_by: human' "$d/$id.md"
+  done
+  for id in n1 n2 n3 n4; do grep -qx 'status: pending' "$d/$id.md"; done
+  grep -qx 'answer: hold' "$d/n5.md"
+  # No terminal (a timer, fleet-dispatch) or an agent session: the agent's answer, and an ask only
+  # the human answers is cancelled, since its hold is gone.
+  ask g3 pending "May hc-8 run under the unity-tests hold?" "grant|hold"
+  ask g4 pending "May hc-9 run under the unity-tests hold?" "grant|hold"
+  echo 'judge_human_only: true' >> "$d/g4.md"
+  "$HOLD" set unity-tests --by coordinator "hot"
+  run "$HOLD" release unity-tests < /dev/null
+  assert_success
+  assert_line 'answered grant (agent): g3'
+  assert_line 'cancelled (no hold left to grant under): g4'
+  grep -qx 'answered_by: agent' "$d/g3.md"
+  grep -qx 'status: cancelled' "$d/g4.md"
+  ask g5 pending "May hc-10 run under the chores hold?" "grant|hold"
+  run env CLAUDE_CODE_SESSION_ID=sid-1 "$HOLD" release chores
+  # n4 named critical and chores; with both gone it is settled too.
+  assert_line --regexp '^answered grant \(agent\): (g5 n4|n4 g5)$'
+  # The claim path releases an expired hold and takes it at once: nothing is settled.
+  ask g6 pending "May hc-11 use the mac-desktop hold?" "grant|hold"
+  "$HOLD" set mac-desktop --kind resource --by coordinator --until '+1 hour' "busy"
+  sed -i "s/^until: .*/until: $(date -d '-1 minute' +%Y-%m-%dT%H:%M:%S%z)/" "$AGENT_HOLD_DIR/mac-desktop"
+  run "$HOLD" claim mac-desktop --by agent-6 "drive it"
+  assert_success
+  grep -qx 'status: pending' "$d/g6.md"
+}
+
+@test "set --scope keeps repos and paths; scopes lists them; covers fails on a scoped path unless granted, and refuses a bad scope (ar-4187)" {
+  run "$HOLD" set critical --kind resource --by coordinator --scope 'home-config:./apps/ci-runner-governor/, dotfiles' "lockdown"
+  assert_success
+  grep -qx 'scope: home-config:apps/ci-runner-governor,dotfiles' "$AGENT_HOLD_DIR/critical"
+  run "$HOLD" scopes
+  assert_success
+  assert_output "$(printf 'critical\thome-config\tapps/ci-runner-governor\t\ncritical\tdotfiles\t-\t')"
+  run "$HOLD" covers Home-Config --for ucp-2881 <<<"apps/ci-runner-governor/main.go"
+  assert_failure 1
+  assert_output --partial 'held: critical since'
+  assert_output --partial '(scope home-config:apps/ci-runner-governor covers apps/ci-runner-governor/main.go)'
+  run "$HOLD" covers home-config <<<"apps/ci-runner-governor-two/x"
+  assert_success
+  run "$HOLD" covers dotfiles <<<"anything/at/all"
+  assert_failure 1
+  run "$HOLD" covers other <<<"apps/ci-runner-governor/x"
+  assert_success
+  "$HOLD" grant critical ucp-2881
+  run "$HOLD" covers home-config --for ar-1 ucp-2881 <<<"Apps/CI-Runner-Governor"
+  assert_success
+  # A whole-repo scope stays whole once a grant fills the last column.
+  run "$HOLD" covers dotfiles --for ucp-2881 <<<"anything/at/all"
+  assert_success
+  run "$HOLD" covers dotfiles --for ar-1 <<<"anything/at/all"
+  assert_failure 1
+  assert_output --partial '(scope dotfiles covers anything/at/all)'
+  run "$HOLD" set x --scope 'a:../b' "r"
+  assert_failure 2
+  run "$HOLD" set x --scope 'bad/name' "r"
+  assert_failure 2
+  run "$HOLD" set x --scope 'repo:' "r"
+  assert_failure 2
+  # A re-set with no --scope drops it, as it drops the roster.
+  "$HOLD" set critical --kind resource --by coordinator "lockdown"
+  run "$HOLD" scopes
+  assert_output ''
 }

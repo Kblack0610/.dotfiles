@@ -41,12 +41,13 @@ do not reinvent their logic.
 
 ```
 ~/.notes/
-├── inbox/            # dated human/agent captures only (`notes inbox`); _archive/ holds drained items
+├── captures/         # dated human/agent captures only (`notes inbox`); _archive/ holds drained items
+├── inbox/            # agent reports only, <date>/<slug>.md (`notes report`); archive/YYYY-MM/<date>/ for past days
 ├── journal/
 │   ├── daily/        # YYYY-MM-DD.md files (`notes today` target)
 │   ├── backlog.md    # tasks with no date (footer-linked); 90 days there returns one to Focus at #low
-│   ├── refs/         # per-day reports, digests, captures; generated _index.md linked from ## Refs
-│   ├── permanent/    # zettelkasten atomic notes (`notes zettel new`)
+│   ├── refs/         # per-day digests and captures; generated _index.md linked from ## Refs; past 7 days under archive/
+│   ├── permanent/    # zettels, human-written only (`notes zettel new`); no job writes here, see the notes-cli README "One home per fact"
 │   ├── index/        # generated backlinks + MOC (`notes index --rebuild`)
 │   ├── summaries/    # continuous/ (rolling monthly) + monthly/ rollups
 │   └── daily_archive/# archived dailies (YYYY/YYYY-MM/)
@@ -69,7 +70,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 
 ## Profiles
 
-`~/.config/notes/config.toml` is the machine's source of truth for paths (copy `config.toml.example` to start one). Profile resolution:
+`~/.config/notes/config.toml` is the machine's source of truth for paths (copy `config.toml.example` to start one); the shared org and job profiles come from `profiles.toml` beside it, linked by `notes-bootstrap` from the private overlay, so never copy one of those tables into `config.toml`. Profile resolution:
 `--profile` flag -> `$NOTES_PROFILE` -> `[hostname_map]` (by `hostname -s`) -> `default_profile`.
 
 - `personal` (default): journal under `~/.notes/journal/`
@@ -87,14 +88,14 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes today` | Idempotent daily note. Carries **Priority** forward (stamped with the `#c1026` created tag); rolls unfinished **Focus** into the carryover backlog; drops checked/empty items; links refs; appends the backlog footer. The `today` alias runs this + opens nvim. |
 | `notes path` | Print today's note path (profile-aware). |
 | `notes link-refs` | Rebuild today's refs index and link it from `## Refs` (idempotent). |
-| `notes report add\|list\|read` | The one writer and reader of reports in `refs/<date>/` (filing one: `inbox-report`; contract: notes-cli README, Reports). |
+| `notes report add\|list\|read` | The one writer and reader of reports in `inbox/<date>/` (also `archive`, the nightly mover, and `migrate`; filing one: `inbox-report`; contract: notes-cli README, Reports). |
 | `notes summarize [--date D] [--force]` | Append a day's summary to `summaries/continuous/YYYY-MM.md`. **Dedup-safe** (skips dates already logged); WARNs on missing notes instead of failing silently. Runs nightly at 01:00 (`journal-daily-summarize.timer`). |
 | `notes archive [--month M] [--dry-run] [--backfill]` | Roll a month into `summaries/monthly/` + move dailies to `daily_archive/`. Runs on the 2nd at 01:30 (`journal-monthly-archive.timer`). |
-| `notes inbox` | Triage view of the dated-capture inbox (`inbox/<date>.md`, `<date>-analysis.md`): pending captures oldest-first with age + title, stale (>=14d) flagged. No subcommand = `list`. |
-| `notes inbox add "<text>"` | Quick-capture from the terminal - append a timestamped bullet to today's `inbox/<date>.md` (creates it with a header if new). |
-| `notes inbox archive <file> \| --stale \| --before D` | Drain triaged captures into `inbox/_archive/` so the active view only shows what still needs processing. Pick exactly one selector. |
+| `notes inbox` | Triage view of the dated captures (`captures/<date>.md`, `<date>-analysis.md`): pending captures oldest-first with age + title, stale (>=14d) flagged. No subcommand = `list`. |
+| `notes inbox add "<text>"` | Quick-capture from the terminal - append a timestamped bullet to today's `captures/<date>.md` (creates it with a header if new). |
+| `notes inbox archive <file> \| --stale \| --before D` | Drain triaged captures into `captures/_archive/` so the active view only shows what still needs processing. Pick exactly one selector. |
 | `notes backlog [--add]` | Tidy the backlog (sweep `- [x]` -> `## Done`, restamp day counts), print its path; `--add` files stdin task lines there (nvim `<leader>tb`). Shell alias `backlog` opens it in nvim. |
-| `notes zettel new "<title>"` | Create `permanent/<YYYYMMDDThhmm>-<slug>.md` with frontmatter. Alias: `zk`. |
+| `notes zettel new "<title>"` | Create `permanent/<YYYYMMDDThhmm>-<slug>.md` with frontmatter. Alias: `zk`. Human only: nothing else writes `permanent/` (README "One home per fact"). |
 | `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or regenerate `index/backlinks.md` + `index/moc.md`. |
 | `notes find <words>` | Ranked lookup across the whole vault: words in any order, typos ok, `#tag` filter, `"phrase"`, `-word`. Keys: `<leader>nk` (nvim), Prefix+k (tmux). Syntax and eval: CLI README. |
 | `notes knowledge init\|due\|gate\|pending\|trace\|apply\|lint\|mv\|domain add` | The compiled knowledge base: `init` writes `knowledge/SCHEMA.md`, `due` lists articles to review, `gate` gives each night's source a kind (note, transcript, todo, generated), `pending` lists the days the engine owes, `trace <day\|path>` says where a source went (the log's `## Dispositions`), `apply <ops.json>` is the engine's only writer (guards + per-date log), `lint [--json]` counts drift per class, `mv` moves a page (or retires one merged into another) and rewrites every link to it, `domain add` registers a domain in `knowledge/domains.toml`. `init`, `apply` and `domain add` regenerate `knowledge/README.md`, the hub's front door; read it first. Once a registry exists, `apply` refuses a new page outside it; the rules: notes-cli README. Hand edits to articles are fine; an engine update loses to an edit made during its run. |
@@ -177,12 +178,12 @@ not profile-aware; never prefer it when the binary exists.
 - The user uses **shell + neovim** for notes editing, **never Obsidian**. All Obsidian traces were removed 2026-06-04; the old setup is archived at `~/.notes/_archive/obsidian/` (see its README). Do not reintroduce Obsidian config or plugins.
 - When adding a new daily task mid-day, edit today's note directly; `notes today` is idempotent (one note per day).
 - Completed backlog items belong in that backlog's `## Done` section (`notes backlog` sweeps them) - don't delete them.
-- **The inbox is for dated human/agent captures only** (`inbox/<date>.md`, `<date>-analysis.md`). Telemetry, monitoring snapshots, and agent activity logs are runtime state -> they belong under `~/.agent/` or `~/.local/state/` (the runtime axis), **never** the `~/.notes` vault. Triage with `notes inbox`; drain processed items with `notes inbox archive`.
+- **The captures folder is for dated human/agent captures only** (`captures/<date>.md`, `<date>-analysis.md`). Telemetry, monitoring snapshots, and agent activity logs are runtime state -> they belong under `~/.agent/` or `~/.local/state/` (the runtime axis), **never** the `~/.notes` vault. Triage with `notes inbox`; drain processed items with `notes inbox archive`.
 
 ## Related
 
 - CLI source + full docs: `~/.dotfiles/.local/src/notes-cli/README.md`.
-- Profile config: `~/.config/notes/config.toml`, machine-local and git-ignored; `~/.dotfiles/.config/notes/config.toml.example` is the tracked template.
+- Profile config: `~/.config/notes/config.toml`, machine-local and git-ignored; `~/.dotfiles/.config/notes/config.toml.example` is the tracked template. Shared profiles: `~/.config/notes/profiles.toml`, a link to `~/.dotfiles-private/.config/notes/profiles.toml`.
 - Memory index: `~/.claude/projects/-home-kblack0610--dotfiles/memory/user_notes_system.md` (may or may not exist - the MEMORY.md index references it).
 - Systemd units: `~/.config/systemd/user/git-sync-notes.{service,timer}`, `journal-daily-summarize.{service,timer}`, `journal-monthly-archive.{service,timer}`.
 - Core sync logic: `~/.local/bin/store-sync --store notes` (runbook: `~/.local/src/git/NOTES_SYNC_SETUP.md`, "The sync engine").

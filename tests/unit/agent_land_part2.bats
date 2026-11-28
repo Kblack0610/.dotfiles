@@ -115,8 +115,8 @@ load 'agent_land/common'
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 13 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 14 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 14 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 15 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -459,9 +459,9 @@ load 'agent_land/common'
   assert_line 'item: huge done with pr:o/r#42, credited to arena (touches arena)'
   assert_line 'landed #42'
   run grep -c '^git fetch -q origin 5eedbase5eedbase 0123456789abcdef$' "$LOG"
-  assert_output 1
+  assert_output 2  # workflow_gate, then validate_gate after the catch-up
   run grep -c '^git diff --name-status -M 5eedbase5eedbase...0123456789abcdef$' "$LOG"
-  assert_output 1
+  assert_output 2
 }
 
 @test "files that cannot be read leave the item's project and never fail the landing" {
@@ -539,6 +539,173 @@ load 'agent_land/common'
   assert_success
   assert_line 'prs: could not file it on agent-runtime (board locked)'
   assert_line 'landed #42'
+}
+
+# aq_add_stub: the sandbox agent-queue logs each add's argv to aq.add, one call a line, and answers as the real one
+# does for a slug it already holds ("already in the queue", exit 1) or $SANDBOX/aq.add.rc says, and logs the
+# AGENT_QUEUE_ITEM each add saw to aq.env and its AGENT_QUEUE_PULL to aq.pull; other verbs run for real.
+aq_add_stub() {
+  mv "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-queue.real"
+  cat >"$SANDBOX/bin/agent-queue" <<EOS
+#!/usr/bin/env bash
+if [ "\$1" = add ]; then
+  slug=\$(printf '%s\n' "\$@" | grep -A1 -x -- --slug | tail -1)
+  ! grep -qxF "\$slug" "$SANDBOX/aq.slugs" 2>/dev/null || { echo "agent-queue: already in the queue: \$slug" >&2; exit 1; }
+  printf '%s\n' "\${*%%\$'\n'*}" >>"$SANDBOX/aq.add"
+  printf '%s\n' "\${AGENT_QUEUE_ITEM:-}" >>"$SANDBOX/aq.env"
+  printf '%s\n---\n' "\${@: -1}" >>"$SANDBOX/aq.task"
+  printf '%s\n' "\${AGENT_QUEUE_PULL:-}" >>"$SANDBOX/aq.pull"
+  rc=\$(cat "$SANDBOX/aq.add.rc" 2>/dev/null || echo 0)
+  [ "\$rc" -ne 0 ] || echo "\$slug" >>"$SANDBOX/aq.slugs"
+  [ "\$rc" -ne 1 ] || echo "agent-queue: store locked" >&2
+  exit "\$rc"
+fi
+exec "$SANDBOX/bin/agent-queue.real" "\$@"
+EOS
+  chmod +x "$SANDBOX/bin/agent-queue"
+}
+
+# ar-4887: #3249 left `notes projects --migrate unity-core-playground` in a sentence for after its deploy, and nobody ran it.
+@test "deploy: each After deploy: line of the merged body is added as its own item, once; a failed add never fails the landing (ar-4887)" {
+  local s1 s2
+  s1=after-deploy-42-$(printf '%s' 'notes projects --migrate game' | sha1sum | cut -c1-7)-r
+  s2=after-deploy-42-$(printf '%s' 'systemctl --user restart notes-web' | sha1sum | cut -c1-7)-r
+  aq_add_stub
+  # NEGATIVE CONTROL: a step said in a sentence (#3249's form), a fenced or quoted line, and a placeholder add nothing
+  printf '%s\n' 'The change.' '' 'After the new binary is deployed, run notes projects --migrate game.' '```' 'After deploy: <command>' '```' \
+    '> After deploy: quoted' 'After deploy: <command>' 'After deploy: none' '' 'Item: ship' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'deploy:'
+  [ ! -e "$SANDBOX/aq.add" ]
+  printf 'The change.\n\nAfter deploy: notes projects --migrate game\r\nAfter deploy:   systemctl --user restart notes-web  \n\nItem: ship\n' >"$NOTES_FIXTURE/body"
+  AGENT_QUEUE_ITEM=ship run "$LAND" 42
+  assert_success
+  assert_line "deploy: added $s1: notes projects --migrate game"
+  assert_line "deploy: added $s2: systemctl --user restart notes-web"
+  assert_line 'landed #42'
+  run cat "$SANDBOX/aq.add"
+  assert_line --index 0 "add --project dotfiles --priority high --from item:ship --slug $s1 chore(deploy): notes projects --migrate game (left by o/r#42)"
+  assert_line --index 1 "add --project dotfiles --priority high --from item:ship --slug $s2 chore(deploy): systemctl --user restart notes-web (left by o/r#42)"
+  # the add does not run as the landed item, so that item's own after: never gates it
+  run grep -c '^$' "$SANDBOX/aq.env"
+  assert_output 2
+  # it goes in as agent-land's own pull: a board-only add went to the outbox and never ran (ar-5865)
+  run grep -cx land "$SANDBOX/aq.pull"
+  assert_output 2
+  # a re-run of the landing adds neither again, though a step was put above them meanwhile
+  printf 'The change.\n\nAfter deploy: systemctl --user restart notes-web\nAfter deploy: notes projects --migrate game\n\nItem: ship\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "deploy: $s1 already queued: notes projects --migrate game"
+  assert_line "deploy: $s2 already queued: systemctl --user restart notes-web"
+  run grep -c . "$SANDBOX/aq.add"
+  assert_output 2
+  # a full queue files the step on the board, and that is said
+  : >"$SANDBOX/aq.slugs"; echo 5 >"$SANDBOX/aq.add.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "deploy: $s2 filed on the dotfiles board, the queue takes it from there: systemctl --user restart notes-web"
+  # an add that fails is said with the add to run by hand, and the landing stands
+  : >"$SANDBOX/aq.slugs"; echo 1 >"$SANDBOX/aq.add.rc"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line --partial "deploy: not added (agent-queue: store locked): agent-queue add --project dotfiles --priority high --from item:ship --slug $s1"
+  assert_line 'landed #42'
+}
+
+# ar-5861: home-config merged 23 ansible role changes that reached no host until ConvergenceDrift fired on five.
+@test "after-merge: a step the repo's after-merge file names for a changed path is added once; one still queued carries the next merge (ar-5861)" {
+  local step='apply ansible to the drifted hosts' sha s
+  sha=$(printf '%s' "$step" | sha1sum | cut -c1-7)
+  s=after-merge-$sha-42-r
+  printf '%s\n' '# a comment' '' "ansible/roles/,ansible/inventory.yml $step" 'docs/ never this one' 'lonely/' >"$NOTES_FIXTURE/after-merge"
+  aq_add_stub
+  # NEGATIVE CONTROL: a file outside every named path, or only a name's prefix, adds nothing
+  printf '%s\n' ansible/README.md ansible/inventory.yml.bak apps/x.yaml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'after-merge: added'
+  [ ! -e "$SANDBOX/aq.add" ]
+  printf '%s\n' apps/x.yaml ansible/roles/ci-host/tasks/main.yml ansible/inventory.yml >"$NOTES_FIXTURE/files"
+  # another project's queued item for the same step text does not carry this repo's merge
+  "$SANDBOX/bin/agent-queue.real" add --project other --slug "after-merge-$sha-40-other" 'chore(after-merge): theirs' >/dev/null
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: $step"
+  assert_line "after-merge: .agent-land/after-merge line 'lonely/' names no step, skipped"
+  assert_line 'landed #42'
+  run cat "$SANDBOX/aq.add"
+  assert_output "add --project r --priority high --from item:ship --slug $s chore(after-merge): $step (left by o/r#42)"
+  # ar-5865: without agent-land's pull the add went board-only to the outbox, and no apply ran
+  run cat "$SANDBOX/aq.pull"
+  assert_output land
+  # a step whose item from an earlier merge is still queued is not added again: it applies the base it starts on
+  "$SANDBOX/bin/agent-queue.real" add --project r --slug "after-merge-$sha-41-r" 'chore(after-merge): earlier' >/dev/null
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: after-merge-$sha-41-r is still queued and carries #42 too: $step"
+  run grep -c . "$SANDBOX/aq.add"
+  assert_output 1
+}
+
+# ar-5918: the item named no role, and one queued for a role swallowed a later merge of another.
+@test "after-merge: a {role} step names every role the merge changed in one item, and a queued one carries only the roles it names (ar-5918)" {
+  local tpl='apply ansible to the hosts that run roles: {role}' sha s
+  sha=$(printf '%s' "$tpl" | sha1sum | cut -c1-7)
+  s=after-merge-$sha-42-r
+  printf '%s\n' "ansible/roles/,ansible/inventory.yml $tpl" >"$NOTES_FIXTURE/after-merge"
+  aq_add_stub
+  # NEGATIVE CONTROL: a merge that touches no role and no other named path adds nothing
+  printf '%s\n' ansible/README.md docs/roles/x.md >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'after-merge: added'
+  [ ! -e "$SANDBOX/aq.add" ]
+  # two roles changed in one PR are both named, sorted and once each, in one item whose task says them
+  printf '%s\n' ansible/roles/time-sync/tasks/main.yml apps/x.yaml ansible/roles/ci-host/tasks/main.yml ansible/roles/ci-host/defaults/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: ci-host time-sync"
+  run cat "$SANDBOX/aq.add"
+  assert_output "add --project r --priority high --from item:ship --slug $s chore(after-merge): apply ansible to the hosts that run roles: ci-host time-sync (left by o/r#42)"
+  run grep -cx 'Roles: ci-host time-sync' "$SANDBOX/aq.task"
+  assert_output 1
+  # a queued item naming both roles carries the next merge of either
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  "$SANDBOX/bin/agent-queue.real" add --project r --slug "after-merge-$sha-41-r" $'chore(after-merge): earlier\n\nRoles: ci-host time-sync' >/dev/null
+  printf '%s\n' ansible/roles/ci-host/handlers/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: after-merge-$sha-41-r still queued, applying ci-host, so it carries #42 too: apply ansible to the hosts that run roles: ci-host"
+  [ ! -s "$SANDBOX/aq.add" ]
+  # a role it does not name gets its own item naming only that role
+  printf '%s\n' ansible/roles/ci-host/tasks/main.yml ansible/roles/fleet-worker/tasks/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: fleet-worker"
+  run grep -c . "$SANDBOX/aq.add"
+  assert_output 1
+  # a change outside a role directory (the inventory) can reach any role's hosts: all, which the queued item does not cover
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  printf '%s\n' ansible/inventory.yml ansible/roles/ci-host/tasks/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: all"
+  # a queued item with no Roles line (one filed by hand) covers no role, so the merge still gets its item
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  "$SANDBOX/bin/agent-queue.real" add --project r --slug "after-merge-$sha-40-r" 'chore(after-merge): by hand' >/dev/null
+  printf '%s\n' ansible/roles/fleet-worker/tasks/main.yml >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: fleet-worker"
+  # a line naming one role's directory gives that role, and a role name with a quote passes whole
+  : >"$SANDBOX/aq.add" >"$SANDBOX/aq.slugs"
+  printf '%s\n' "ansible/roles/it's/ $tpl" >"$NOTES_FIXTURE/after-merge"
+  printf '%s\n' "ansible/roles/it's/tasks/main.yml" >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line "after-merge: added $s: apply ansible to the hosts that run roles: it's"
 }
 
 @test "partial landing holds after items and the board until the other repo lands" {
@@ -865,10 +1032,55 @@ load 'agent_land/common'
   assert_output 1
 }
 
+@test "Forgejo: the base moves on again during the merged-up head's checks: merged up and re-checked again, not landed behind it (ar-6115)" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  printf '0\n1\n3\n0\n' >"$NOTES_FIXTURE/behind.seq"
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'landing that green head behind it'
+  assert_line 'fetch: merged origin/main (1 behind) into the head and pushed it'
+  assert_line 'fetch: merged origin/main (3 behind) into the head and pushed it'
+  assert_line 'fetch: current with origin/main'
+  assert_line 'landed #42'
+  run grep -c '^checks: green$' <<<"$output"
+  assert_output 3
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 2
+  # The merge comes after the last push and the status read of that head.
+  [ "$(grep -n '^git push -q origin' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n '^curl GET commits/.*/status' "$LOG" | tail -1 | cut -d: -f1)" ]
+  [ "$(grep -n '^curl GET commits/.*/status' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n '^curl POST pulls/42/merge' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "Forgejo: a base that keeps moving through FJ_CATCHUP_MAX merged-up runs exits 3 with nothing merged (ar-6115)" {
+  forgejo
+  export AGENT_LAND_FJ_CATCHUP_MAX=2
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  printf '0\n' >"$NOTES_FIXTURE/behind.seq"
+  printf '1\n' >"$NOTES_FIXTURE/behind"
+  run "$LAND" 42 --item ship
+  assert_failure 3
+  assert_output --partial 'origin/main moved on by 1 during each of 2 merged-up check runs'
+  assert_output --partial 'nothing merged'
+  refute_output --partial 'landing that green head behind it'
+  run grep -c '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_output 2
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
+}
+
+@test "Forgejo --dry-run says a moved base is merged up and re-checked, landed behind only when the pick clears it (ar-6115)" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  run "$LAND" 42 --item ship --dry-run
+  assert_success
+  assert_output --partial 'fetch: on Forgejo a base that moved on during the checks is merged up and re-checked every time'
+}
+
 @test "a Forgejo check that failed stops at checks, naming it; nothing merged" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
-  echo '{"statuses":[{"status":"success","context":"lint"},{"status":"failure","context":"checks / test"}]}' >"$NOTES_FIXTURE/fj.status"
+  echo '[{"id":1,"status":"success","context":"lint"},{"id":2,"status":"failure","context":"checks / test"}]' >"$NOTES_FIXTURE/fj.status"
   run "$LAND" 42 --item ship
   assert_failure 1
   assert_output --partial 'checks failed: checks / test'
@@ -913,7 +1125,7 @@ load 'agent_land/common'
 @test "a Forgejo base whose protection rule requires statuses refuses a head with none; with no rule it lands" {
   forgejo
   printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
-  echo '{"statuses":[]}' >"$NOTES_FIXTURE/fj.status"
+  echo '[]' >"$NOTES_FIXTURE/fj.status"
   export AGENT_LAND_CHECKS_TRIES=1 AGENT_LAND_CHECKS_POLL=0
   echo '[{"rule_name":"main","enable_status_check":true,"block_on_outdated_branch":false}]' >"$NOTES_FIXTURE/fj.protections"
   run "$LAND" 42 --item ship
@@ -1215,6 +1427,90 @@ EOF
   assert_success
   assert_line 'watch: spend OK'
   assert_line --partial 'board: closed "ship red"'
+  assert_line 'landed #42'
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
+}
+
+@test "a red watch item routed to its owner lands while the watch trips, and its PR still resolves the watch (ar-5414)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+# the quarantine read (no quarantine here) is no probe, so it is not logged
+[ "$1" != quarantined ] || exit 0
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+echo "TRIP: spend still over limit"
+exit 1
+EOF
+  cat >"$SANDBOX/bin/fleet-bench" <<'EOF'
+#!/usr/bin/env bash
+[ "$1 $2" = "triage --route" ] || exit 2
+printf '%s\towned:ar-1\t-\t\n' "$3"
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop" "$SANDBOX/bin/fleet-bench"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-spend.md" <<'EOF'
+slug: red-spend
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch cause:ab12
+row: dotfiles:ship red
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped since 2026-11-20, expected: spend under cap
+EOF
+
+  run "$LAND" 42 --item red-spend
+  assert_success
+  assert_line 'watch spend routes to owned:ar-1, so its close is not probed'
+  assert_line 'landed #42'
+  # The merge is recorded as the fix watermark, and nothing else probes the watch.
+  [ "$(grep -c '^watch-companion-loop ' "$LOG")" -eq 1 ]
+  grep -q '^watch-companion-loop resolve spend --pr o/r#42$' "$LOG"
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
+}
+
+@test "a red watch item lands while its watch trips under a quarantine with an owner, and records it; with none it still refuses (ar-5973)" {
+  cat >"$SANDBOX/bin/watch-companion-loop" <<'EOF'
+#!/usr/bin/env bash
+printf 'watch-companion-loop %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+[ "$1" != quarantined ] || { cat "$NOTES_FIXTURE/quarantined" 2>/dev/null; exit 0; }
+echo "TRIP: spend still over limit"
+exit 1
+EOF
+  chmod +x "$SANDBOX/bin/watch-companion-loop"
+
+  cat >"$AGENT_QUEUE_DIR/running/20261103-100000-red-spend.md" <<'EOF'
+slug: red-spend
+project: dotfiles
+mode: oneshot
+priority: urgent
+from: fleet-bench
+agent: claude
+tags: red watch cause:ab12
+row: dotfiles:ship red
+queued: 2026-11-03T10:00:00Z
+started: 2026-11-03T10:00:00Z
+---
+check(watch): spend tripped since 2026-11-20, expected: spend under cap
+EOF
+
+  # No quarantine in force: the trip still refuses.
+  run "$LAND" 42 --item red-spend
+  assert_failure 1
+  assert_output --partial 'item failed: watch spend did not read OK on resolve (exit 1)'
+  run agent-queue show red-spend --json
+  assert_equal "$(jq -r .state <<<"$output")" 'running'
+
+  # A quarantine under an owner: the item closes, and the line names the owner and expiry.
+  printf 'spend\t2026-12-02T00:00:00-08:00\task:aRMp2v\tthe cap waits on the human\n' >"$NOTES_FIXTURE/quarantined"
+  run "$LAND" 42 --item red-spend
+  assert_success
+  assert_line 'watch: spend still trips on resolve, quarantined under ask:aRMp2v until 2026-12-02T00:00:00-08:00, so its close is not probed'
   assert_line 'landed #42'
   run agent-queue show red-spend --json
   assert_equal "$(jq -r '[.state, .status] | join("|")' <<<"$output")" 'done|ok'
@@ -1709,4 +2005,71 @@ EOF
   assert_failure 1
   assert_output --partial 'was worked by session s-hand, which also worked crit'
   assert_equal "$(merges)" 0
+}
+
+# GitHub refuses to merge a PR that changes .github/workflows for an OAuth token with no workflow scope,
+# and says so only at the merge, after the checks (platform#1672, ar-5191).
+@test "a PR that changes .github/workflows fails before the checks when the token lacks the workflow scope, and lands once it has it (ar-5191)" {
+  item ship
+  printf '%s\n' README.md .github/workflows/ci.yml >"$NOTES_FIXTURE/files"
+  printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: admin:org, gist, repo\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'agent-land: workflow failed: #42 changes .github/workflows and this gh token'"'"'s scopes (admin:org,gist,repo) have no workflow'
+  run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+  # Negative control: the same PR with a token that has the scope lands.
+  printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: gist, repo, workflow\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
+}
+
+@test "a token whose scopes lack workflow lands a PR that changes no workflow file (ar-5191)" {
+  item ship
+  printf '%s\n' README.md .github/actions/x.yml >"$NOTES_FIXTURE/files"
+  printf 'HTTP/2.0 200 OK\r\nX-Oauth-Scopes: repo\r\n\r\n' >"$NOTES_FIXTURE/user.headers"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
+}
+
+@test "a workflow PR lands when the token's scopes cannot be read: the merge itself says what it lacks (ar-5191)" {
+  item ship
+  printf '%s\n' .github/workflows/ci.yml >"$NOTES_FIXTURE/files"
+  touch "$NOTES_FIXTURE/user.fail"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
+}
+
+# A hold's --scope locks a repo or path for every project's work, not only the rows its #hold/ tag is on:
+# home-config #1333, a unity-core-playground row's work, changed a held path (2026-11-20, ar-4187).
+@test "a PR whose changed files a hold's --scope covers fails before the checks, and lands once the hold grants its item (ar-4187)" {
+  export AGENT_HOLD_DIR="$HOME/.agent/holds"
+  HOLD="$REPO_ROOT/.local/bin/agent-hold"
+  item ship
+  printf '%s\n' README.md apps/gov/main.go >"$NOTES_FIXTURE/files"
+  "$HOLD" set lock --kind resource --by coordinator --scope 'R:apps/gov,other' "the human locked the governor"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'agent-land: hold failed: held: lock since'
+  assert_output --partial '(scope R:apps/gov covers apps/gov/main.go)'
+  run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+  # Negative control: the same PR lands once the hold grants the item by a name grant-names gives it.
+  "$HOLD" grant lock "$(agent-queue grant-names ship | cut -d' ' -f1)"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
+}
+
+@test "a hold scoped to another repo or path costs no file read and does not stop a landing (ar-4187)" {
+  export AGENT_HOLD_DIR="$HOME/.agent/holds"
+  item ship
+  printf '%s\n' apps/govx/main.go >"$NOTES_FIXTURE/files"
+  "$REPO_ROOT/.local/bin/agent-hold" set lock --kind resource --by coordinator --scope 'r:apps/gov,home-config' "locked"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
 }

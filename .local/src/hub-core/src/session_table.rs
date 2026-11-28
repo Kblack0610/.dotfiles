@@ -5,6 +5,9 @@
 //! registry so a session shows the day it ends; each row names its source.
 //! Filtering, sorting and the chips are `crate::table`'s; this module is the join.
 
+mod live;
+pub use live::{join_agents, split_worker, worker_pane, Live, RowAgent, Sidebar, WorkerPane};
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -154,6 +157,10 @@ pub struct SessionRow {
     /// The shepherd, or a NIGHTLY or SHARED row: the fleet's own, which `fleet-sessions`
     /// `.counts` leave out, so the Sessions card does too.
     pub machine: bool,
+    /// The live agent behind the row, here or on a worker (`join_agents`); None for a row no
+    /// pane backs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<RowAgent>,
 }
 
 impl Row for SessionRow {
@@ -417,7 +424,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
             .or_else(|| item.and_then(|i| i.model.as_deref()).map(str::trim))
             .map(crate::costs::alias)
             .unwrap_or_default(),
-        trainee: item.is_some_and(|i| !extra_str(i, "trainee").trim().is_empty()),
+        trainee: item.is_some_and(|i| i.is_trainee()),
         close: s["close"]["verdict"].as_str().unwrap_or("").to_string(),
         unlinked: is_live(s) && is_unlinked(s),
         machine: is_machine(s),

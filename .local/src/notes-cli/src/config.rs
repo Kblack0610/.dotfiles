@@ -10,6 +10,7 @@
 //!   `$NOTES_CONFIG`, `~/.config/notes/config.toml`, `~/.dotfiles/.config/notes/config.toml`.
 //! A unit-test build reads `$NOTES_CONFIG` alone (`config_paths`, ar-4202).
 //! If none exist, a built-in `personal` default is used so the tool works out of the box.
+//! Either way, `profiles.toml` beside it adds the profiles every machine shares (`merge_shared`).
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -472,12 +473,13 @@ struct RawProfile {
     /// field keep working — resolve() falls back to `<root>/meetings`.
     #[serde(default)]
     meetings: Option<String>,
-    /// Dated capture drop (`/remember`, `notes inbox add`).
-    /// Defaults to `inbox` so configs predating this field keep working.
-    #[serde(default = "default_inbox")]
-    inbox: String,
+    /// Dated capture drop (`/remember`, `notes inbox add`), `captures/` by default. The key
+    /// was `inbox` until that name went to the reports inbox; a config still carrying
+    /// `inbox = ...` is ignored and falls back to this default.
+    #[serde(default = "default_captures")]
+    captures: String,
     /// Dirs `notes tags` scans for `#hashtag`/frontmatter tags. Optional — when empty,
-    /// resolve() derives a sensible default (daily, inbox, permanent, backlogs, knowledge).
+    /// resolve() derives a sensible default (daily, captures, permanent, backlogs, knowledge).
     #[serde(default)]
     tag_dirs: Vec<String>,
     /// Dirs `notes find` searches. Optional: when empty, resolve() searches the whole vault.
@@ -520,8 +522,12 @@ fn default_ideas() -> String {
     "lab/ideas/_IDEAS.md".to_string()
 }
 
-fn default_inbox() -> String {
-    "inbox".to_string()
+/// The reports inbox, under every profile's root (`notes report`, reports only). Fixed, not a
+/// config key: the old `inbox` key named the capture folder.
+pub const INBOX_DIR: &str = "inbox";
+
+fn default_captures() -> String {
+    "captures".to_string()
 }
 
 // The org layout, as one place instead of once per org; `personal` overrides all of them.
@@ -638,13 +644,21 @@ pub struct Profile {
     pub ideas: PathBuf,
     /// The outbox (`notes outbox`). Cross-org, like `board`.
     pub outbox: PathBuf,
-    pub inbox: PathBuf,
+    /// Dated captures (`notes inbox add`, the outbox's `#ask` answers): `<root>/captures`.
+    pub captures: PathBuf,
     /// Dirs scanned by `notes tags` (existing dirs only; missing ones are dropped).
     pub tag_scan: Vec<PathBuf>,
     /// Dirs searched by `notes find` (existing dirs only).
     pub search_dirs: Vec<PathBuf>,
     pub state_dir: PathBuf,
     pub log_file: PathBuf,
+}
+
+impl Profile {
+    /// The reports agents file for the human: `<root>/inbox`.
+    pub fn inbox(&self) -> PathBuf {
+        self.root.join(INBOX_DIR)
+    }
 }
 
 /// One resolved comms account (email mailbox) with defaults filled in.
@@ -699,13 +713,16 @@ fn detect_hostname() -> String {
         .unwrap_or_default()
 }
 
+/// `$NOTES_CONFIG`, expanded, when set and not empty.
+fn env_config() -> Option<PathBuf> {
+    std::env::var("NOTES_CONFIG")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(|p| expand(&p))
+}
+
 fn config_paths() -> Vec<PathBuf> {
-    let mut v = Vec::new();
-    if let Ok(p) = std::env::var("NOTES_CONFIG") {
-        if !p.is_empty() {
-            v.push(expand(&p));
-        }
-    }
+    let mut v: Vec<PathBuf> = env_config().into_iter().collect();
     // A unit test reads $NOTES_CONFIG alone, as CI does: with this machine's config, a fixture
     // project named like a live one (`binks`) resolved across the live orgs, and the test ran
     // `migrate` on the live copy (ar-4202).
@@ -744,7 +761,7 @@ fn builtin_default() -> RawConfig {
             knowledge: default_knowledge(),
             projects: None,
             meetings: None,
-            inbox: "inbox".into(),
+            captures: default_captures(),
             tag_dirs: Vec::new(),
             search_dirs: Vec::new(),
             rollup: Vec::new(),
@@ -778,10 +795,73 @@ fn load_raw() -> Result<(RawConfig, String)> {
                 .with_context(|| format!("reading config {}", path.display()))?;
             let raw: RawConfig = toml::from_str(&text)
                 .with_context(|| format!("parsing config {}", path.display()))?;
-            return Ok((raw, path.display().to_string()));
+            let from_env = env_config().as_deref() == Some(path.as_path());
+            let src = path.display().to_string();
+            return with_shared(raw, src, from_env.then_some(path.as_path()));
         }
     }
-    Ok((builtin_default(), "built-in default".to_string()))
+    with_shared(builtin_default(), "built-in default".into(), None)
+}
+
+/// The profile tables every machine shares. notes-bootstrap links `~/.config/notes/profiles.toml`
+/// to the private overlay's `.config/notes/profiles.toml`, the one tracked copy of the org and job
+/// profiles, so a fleet worker resolves the same roots and flags as the workstation; `config.toml`
+/// keeps what is machine-local (ar-6354).
+const SHARED_PROFILES: &str = "profiles.toml";
+
+/// `raw` plus the shared profiles, read beside a `$NOTES_CONFIG` file (a sandbox brings its own),
+/// else from `~/.config/notes/`, where notes-bootstrap links them; a unit test without
+/// `$NOTES_CONFIG` reads none, as [`config_paths`] reads no machine config.
+fn with_shared(
+    mut raw: RawConfig,
+    src: String,
+    env_config: Option<&Path>,
+) -> Result<(RawConfig, String)> {
+    let Some(shared) = shared_profiles_path(env_config) else {
+        return Ok((raw, src));
+    };
+    let src = merge_shared(&mut raw, src, &shared)?;
+    Ok((raw, src))
+}
+
+fn shared_profiles_path(env_config: Option<&Path>) -> Option<PathBuf> {
+    match env_config {
+        Some(c) => Some(c.with_file_name(SHARED_PROFILES)),
+        None if cfg!(test) => None,
+        None => Some(home().join(".config/notes").join(SHARED_PROFILES)),
+    }
+}
+
+/// Only `[profile.<name>]` tables: anything else belongs to the machine's own config.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SharedProfiles {
+    #[serde(default)]
+    profile: HashMap<String, RawProfile>,
+}
+
+/// Add `path`'s profiles to `raw` and return the source line naming both files. No file is no
+/// change; a link to a missing file is an error, so a moved overlay cannot drop the profiles
+/// unseen. A profile defined in both files is an error too: one of the two would be a stale copy.
+fn merge_shared(raw: &mut RawConfig, src: String, path: &Path) -> Result<String> {
+    let text = match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && path.symlink_metadata().is_err() => {
+            return Ok(src)
+        }
+        r => r.with_context(|| format!("reading shared profiles {}", path.display()))?,
+    };
+    let shared: SharedProfiles = toml::from_str(&text)
+        .with_context(|| format!("parsing shared profiles {}", path.display()))?;
+    let mut names: Vec<&String> = shared.profile.keys().collect();
+    names.sort();
+    if let Some(dup) = names.into_iter().find(|n| raw.profile.contains_key(*n)) {
+        return Err(anyhow!(
+            "profile '{dup}' is defined in both {src} and {}: keep one of the two",
+            path.display()
+        ));
+    }
+    raw.profile.extend(shared.profile);
+    Ok(format!("{src} + {}", path.display()))
 }
 
 fn pick_profile(raw: &RawConfig, override_name: Option<&str>) -> (String, String) {
@@ -904,9 +984,9 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         .unwrap_or_else(|| home().join(".local/state/watch-companion"));
 
     // Dirs scanned by `notes tags`. Explicit `tag_dirs` wins; otherwise derive a
-    // sensible default from existing paths (daily, inbox, permanent, backlogs, knowledge).
+    // sensible default from existing paths (daily, captures, permanent, backlogs, knowledge).
     let mut tag_scan: Vec<PathBuf> = if rp.tag_dirs.is_empty() {
-        let mut v = vec![join(&rp.daily), join(&rp.inbox), join(&rp.zettel)];
+        let mut v = vec![join(&rp.daily), join(&rp.captures), join(&rp.zettel)];
         v.push(backlog.clone()); // the FILE: its parent is the journal or org root
         v.push(join(&rp.knowledge));
         v
@@ -973,7 +1053,7 @@ pub fn resolve(override_name: Option<&str>) -> Result<Profile> {
         board: vault.join(&raw.board),
         ideas: vault.join(&raw.ideas),
         outbox: vault.join(&raw.outbox),
-        inbox: join(&rp.inbox),
+        captures: join(&rp.captures),
         tag_scan,
         search_dirs,
         state_dir,
@@ -1225,7 +1305,7 @@ pub(crate) fn test_profile(root: &str) -> Profile {
         board: PathBuf::from(root).join("lab/projects/board.md"),
         ideas: PathBuf::from(root).join("lab/ideas/_IDEAS.md"),
         outbox: PathBuf::from(root).join("outbox.md"),
-        inbox: r.join("inbox"),
+        captures: r.join("captures"),
         tag_scan: Vec::new(),
         search_dirs: Vec::new(),
         state_dir: r.join(".state"),
@@ -1303,7 +1383,8 @@ pub fn print(p: &Profile) {
     println!("meetings    {}", p.meetings.display());
     println!("index       {}", p.index.display());
     println!("knowledge   {}", p.knowledge.display());
-    println!("inbox       {}", p.inbox.display());
+    println!("captures    {}", p.captures.display());
+    println!("inbox       {}", p.inbox().display());
     println!("outbox      {}", p.outbox.display());
     println!("summaries   {}", p.summaries.display());
     println!(
@@ -1348,6 +1429,70 @@ mod tests {
         // ar-4202: the live config's orgs leaked into fixtures that share a live project's name
         let set = std::env::var("NOTES_CONFIG").is_ok_and(|c| !c.is_empty());
         assert_eq!(config_paths().len(), usize::from(set));
+    }
+
+    /// `profiles.toml` (written when `text` is given) in a fresh dir; the test removes the dir.
+    fn shared_scratch(tag: &str, text: Option<&str>) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("notes-shared-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join(SHARED_PROFILES);
+        if let Some(t) = text {
+            std::fs::write(&p, t).unwrap();
+        }
+        p
+    }
+
+    // ar-6354: a worker reads the shared tables beside its own config, with the same flags.
+    #[test]
+    fn shared_profiles_join_the_machine_config() {
+        let p = shared_scratch(
+            "join",
+            Some("[profile.gig]\nroot = \"~/.notes/gig\"\nautomation = false\ndaily = \"log\"\n"),
+        );
+        let mut raw = builtin_default();
+        let src = merge_shared(&mut raw, "cfg".into(), &p).unwrap();
+        assert_eq!(src, format!("cfg + {}", p.display()));
+        assert!(raw.profile.contains_key("personal"));
+        assert!(!raw.profile["gig"].automation);
+        assert_eq!(raw.profile["gig"].daily, "log");
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+
+    // Beside a $NOTES_CONFIG file, else the one place notes-bootstrap links; a unit test reads none.
+    #[test]
+    fn shared_profiles_sit_beside_an_env_config_and_nowhere_else_in_a_test() {
+        assert_eq!(
+            shared_profiles_path(Some(Path::new("/s/c/config.toml"))),
+            Some(PathBuf::from("/s/c/profiles.toml"))
+        );
+        assert_eq!(shared_profiles_path(None), None);
+    }
+
+    #[test]
+    fn no_shared_file_changes_nothing_but_a_dangling_link_is_an_error() {
+        let p = shared_scratch("none", None);
+        let mut raw = builtin_default();
+        assert_eq!(merge_shared(&mut raw, "cfg".into(), &p).unwrap(), "cfg");
+        assert_eq!(raw.profile.len(), 1);
+        std::os::unix::fs::symlink(p.with_file_name("gone.toml"), &p).unwrap();
+        assert!(merge_shared(&mut raw, "cfg".into(), &p).is_err());
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_profile_in_both_files_or_a_non_profile_key_is_an_error() {
+        let p = shared_scratch("dup", Some("[profile.personal]\nroot = \"/x\"\n"));
+        let err = merge_shared(&mut builtin_default(), "cfg".into(), &p).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'personal' is defined in both cfg and"),
+            "{err}"
+        );
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
+        let p = shared_scratch("key", Some("default_profile = \"gig\"\n"));
+        assert!(merge_shared(&mut builtin_default(), "cfg".into(), &p).is_err());
+        std::fs::remove_dir_all(p.parent().unwrap()).unwrap();
     }
 
     #[test]
@@ -1495,7 +1640,7 @@ mod tests {
         assert_eq!(raw.archive, "daily_archive");
         assert_eq!(raw.zettel, "permanent");
         assert_eq!(raw.index, "index");
-        assert_eq!(raw.inbox, "inbox");
+        assert_eq!(raw.captures, "captures");
         assert_eq!(raw.projects.as_deref(), Some("projects/current"));
     }
 

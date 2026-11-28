@@ -10,7 +10,7 @@ on:
       runs-on:
         description: "one runner label, or a JSON label list; the private repo passes [\"self-hosted\",\"light\"]"
         type: string
-        default: ubuntu-24.04
+        required: true
 
 permissions:
   contents: read

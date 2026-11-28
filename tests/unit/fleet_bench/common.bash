@@ -17,7 +17,7 @@ setup() {
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
   export BENCH_TRAINEE_CMD=false   # nor the real trainee pool and floor
-  export BENCH_SOURCES_CMD=false BENCH_HARNESSES="$SANDBOX/no-harnesses.json" BENCH_ROOM_CMD=false BENCH_CANARY_LANES="$SANDBOX/no-canary-lanes"   # nor the real sources, harnesses or lanes
+  export BENCH_SOURCES_CMD=false BENCH_HOLDS_CMD="echo {}" BENCH_HARNESSES="$SANDBOX/no-harnesses.json" BENCH_ROOM_CMD=false BENCH_CANARY_LANES="$SANDBOX/no-canary-lanes"   # nor the real sources, harnesses or lanes
   export BENCH_SKILL_CMD=true   # nor the real runner confs: no dangling SKILL unless a test serves one
   export BENCH_SYSTEMS_CMD=false   # nor the real skill tree: systems_no_skill reads ? unless a test serves one
   export BENCH_BRANCHES_CMD=true   # nor the real clones' branches: none unless a test serves them
@@ -67,6 +67,10 @@ setup() {
   export BENCH_JUDGE_CMD=judge-stub JUDGEKPI="$SANDBOX/judgekpi"
   printf '#!/usr/bin/env bash\n[ "$*" = "kpi --json" ] && cat "%s" 2>/dev/null\n' "$JUDGEKPI" > "$SANDBOX/bin/judge-stub"
   chmod +x "$SANDBOX/bin/judge-stub"
+  # fact-owners count --json, canned: serves $OWNERSKPI when it exists, else fails like a checkout with no Owners table
+  export BENCH_OWNERS_CMD=owners-stub OWNERSKPI="$SANDBOX/ownerskpi"
+  printf '#!/usr/bin/env bash\n[ "$*" = "count --json" ] && cat "%s" 2>/dev/null\n' "$OWNERSKPI" > "$SANDBOX/bin/owners-stub"
+  chmod +x "$SANDBOX/bin/owners-stub"
   # agent-ask list --all, canned: serves $ASKSALL when it exists, else nothing (no asks)
   export BENCH_ASKS_ALL_CMD=asks-all-stub ASKSALL="$SANDBOX/asksall"
   printf '#!/usr/bin/env bash\ncat "%s" 2>/dev/null; exit 0\n' "$ASKSALL" > "$SANDBOX/bin/asks-all-stub"
@@ -225,8 +229,9 @@ log_triage_setup() {
   chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
   # the ask stub logs each call; post prints the id agent-ask would, show the status ASKSTATUS names
+  # and, when set, the closed_at ASKCLOSED, closed_reason ASKWHY and answered_at ASKANSWERED name
   ASKLOG="$SANDBOX/ask.log"; export TRIAGE_ASK_CMD=ask-stub
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\ncase $1 in post) echo Ask123 ;; show) echo "status: ${ASKSTATUS:-pending}" ;; esac\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> %q\ncase $1 in post) echo Ask123 ;; show) echo "status: ${ASKSTATUS:-pending}"; [ -z "${ASKCLOSED:-}" ] || echo "closed_at: $ASKCLOSED"; [ -z "${ASKWHY:-}" ] || echo "closed_reason: $ASKWHY"; [ -z "${ASKANSWERED:-}" ] || echo "answered_at: $ASKANSWERED" ;; esac\n' "$ASKLOG" > "$SANDBOX/bin/ask-stub"
   chmod +x "$SANDBOX/bin/promote-stub" "$SANDBOX/bin/ask-stub"
   # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
   # outside the window, and a range the log rotation took away
@@ -320,14 +325,14 @@ chain_fixture() {
 }
 
 # pipeline_fixture: one item at each queue step, one open agent row waiting and one the queued item
-# started, three inbox lines, two items finished (one inside 24h), and a record that holds each
+# started, three inbox lines, two items finished (one inside 24h), and a record that holds the three lines and each
 # item where the queue folders do. Ages: queued 2h, running 1h, on a PR 30m, waiting 10m, the row 3 days and 4h.
 # The board also holds rows the backlog must not count: a human-lane row, one with automation off,
 # one of another profile and one parked behind a backlog token.
 pipeline_fixture() {
   kpi_setup
   at() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%SZ; }
-  printf '%s\n' chain_drift_max=0 step_age_p90_queued_max=180 step_age_p90_running_max=120 >> "$KPI_THRESHOLDS"
+  printf '%s\n' chain_drift_max=0 chain_inbox_drift_max=0 step_age_p90_queued_max=180 step_age_p90_running_max=120 >> "$KPI_THRESHOLDS"
   export BENCH_ITEMS_CMD=items-stub BENCH_DONE_ITEMS_CMD=done-stub BENCH_BOARD_CMD=board-stub BENCH_STEPS_CMD=steps-stub
   export BENCH_INBOX_CMD=inbox-stub
   printf '#!/usr/bin/env bash\necho %q\n' '["one","two","three"]' > "$SANDBOX/bin/inbox-stub"
@@ -348,7 +353,7 @@ pipeline_fixture() {
     {profile: "work", project: "client", lane: "agent", state: "open", id: "c-1", since: $d},
     {profile: "personal", project: "game", lane: "agent", state: "open", id: "g-5", since: $d, backlog: true}]}' > "$BJSON"
   jq -cn --arg s "$(at 172800)" --arg i "$(at 86400)" '{since: $s, items_since: $i, steps: [
-    {step: "inbox", in_1h: 2, out_1h: 1, in_24h: 5, out_24h: 4, dwell_p50_min: 0, dwell_p90_min: 3, items: []},
+    {step: "inbox", open: 3, in_1h: 2, out_1h: 1, in_24h: 5, out_24h: 4, dwell_p50_min: 0, dwell_p90_min: 3, items: []},
     {step: "backlog", in_1h: 0, out_1h: 1, in_24h: 3, out_24h: 1, items: []},
     {step: "queued", in_1h: 1, out_1h: 0, in_24h: 2, out_24h: 1, dwell_p50_min: 16, dwell_p90_min: 20, items: ["q1"]},
     {step: "running", in_1h: 1, out_1h: 1, in_24h: 2, out_24h: 1, items: ["r1"]},
@@ -388,7 +393,8 @@ EOF
 
 # sources_fixture: two Claude accounts, Codex and a gateway key; VictoriaMetrics has points for all but
 # Codex and list dollars by email. Items land on an account, an `account:`, a session's account, a
-# harness source, or nowhere. main's sessions s2 and s3 used 300 and 100 tokens, bnb's s1 100.
+# harness source, or nowhere. main's sessions s2 and s3 used 300 and 100 tokens, bnb's s1 100. Every
+# points series starts at the window's first instant unless SRC_FIRST_MAIN or SRC_FIRST_RESERVE (an epoch) moves main's or reserve's.
 sources_fixture() {
   export BENCH_NOW=$T0 BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_DONE_ITEMS_CMD=done-stub ITEMS="$SANDBOX/done.jsonl"
   export BENCH_SOURCES_CMD=status-stub BENCH_HARNESSES="$SANDBOX/harnesses.json" BENCH_LANE_LOG="$SANDBOX/runs.jsonl"
@@ -416,6 +422,7 @@ STUB
   out_row game '{session_id: "s6", updated_epoch: ($t - 3600), tokens_total: 10}'
   stub_prom 'exit 7'   # every other Prometheus read stays dead, as before
   stub_vm 'case "$*" in
+  *tfirst_over_time*) w=$(( BENCH_NOW - ${BENCH_QUEUE_DAYS:-7} * 86400 )); echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"${SRC_FIRST_MAIN:-$w}\"]},{\"metric\":{\"account\":\"bnb\"},\"value\":[1,\"$w\"]},{\"metric\":{\"account\":\"reserve\"},\"value\":[1,\"${SRC_FIRST_RESERVE:-$w}\"]},{\"metric\":{\"account\":\"lazer\"},\"value\":[1,\"$w\"]}]}}" ;;
   *week_used_percent*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"10\"]},{\"metric\":{\"account\":\"bnb\"},\"value\":[1,\"4\"]},{\"metric\":{\"account\":\"reserve\"},\"value\":[1,\"5\"]},{\"metric\":{\"account\":\"lazer\"},\"value\":[1,\"2\"]}]}}" ;;
   *cost_usage*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"user_email\":\"m@x\"},\"value\":[1,\"50\"]},{\"metric\":{\"user_email\":\"b@x\"},\"value\":[1,\"30\"]}]}}" ;;
   *) exit 7 ;;

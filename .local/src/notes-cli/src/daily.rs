@@ -18,9 +18,11 @@
 //! the three files was ever a backlog, which is why the footer used to list three
 //! "backlogs" for two concepts.
 //!
-//! Below the human's own lists the note carries one generated section, `## Morning`: one line
-//! each for the briefing (plus its "Needs you" items), the day log and the knowledge engine,
-//! each linking the file that holds the detail. Everything that changes during the day is a
+//! The line directly under the `# <date>` title is `Briefing: <headline> [[link]]`, once the
+//! briefing is written. Below the human's own lists the note carries one generated section,
+//! `## Morning`: one line each for the briefing (plus its "Needs you" items), YESTERDAY's day
+//! log (today's is a partial day) and the knowledge engine, each linking the file that holds
+//! the detail. Everything that changes during the day is a
 //! status page (`status.rs`: watches, comms, inbox) or a regenerated file (`board.rs`), reached
 //! from the footer, one link per line.
 //!
@@ -78,8 +80,9 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         // makes a project silently resolve to "" and vanish from its bus. `?` because an org may
         // legitimately have no projects root, which is not the same as an unknown target.
         "projects" => p.projects.clone()?,
-        "inbox" => p.inbox.clone(),
-        "inbox-today" => p.inbox.join(format!(
+        "captures" => p.captures.clone(),
+        "inbox" => p.inbox(),
+        "captures-today" => p.captures.join(format!(
             "{}.md",
             Local::now().date_naive().format("%Y-%m-%d")
         )),
@@ -509,8 +512,10 @@ const SHIPPED: &str = "shipped";
 
 /// `## Morning`: what happened while you were away, below Notes and Focus. It leads with the
 /// two intake links, the outbox to post to and the inbox page saying what the sweep did with
-/// each line, count-free so a sweep never rewrites the note. Then the briefing's headline and its "Needs you" items, the day log's
-/// headline, then what the knowledge engine compiled since the last note listed it.
+/// each line, count-free so a sweep never rewrites the note. Then the briefing's link and its
+/// "Needs you" items (its headline is the line under the title, `briefing_line`), YESTERDAY's
+/// day log headline (today's log is a partial day until it ends), then what the knowledge
+/// engine compiled since the last note listed it.
 fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> String {
     let today_s = today.format("%Y-%m-%d").to_string();
     let (briefing, link) = briefing(p, &today_s);
@@ -528,16 +533,7 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
     s.push_str(&format!("- Inbox: [[{inbox}]]\n"));
     match fs::read_to_string(&briefing) {
         Ok(text) => {
-            let headline = text
-                .lines()
-                .find(|l| l.starts_with("As of "))
-                .unwrap_or("")
-                .trim();
-            if headline.is_empty() {
-                s.push_str(&format!("- Briefing: [[{link}]]\n"));
-            } else {
-                s.push_str(&format!("- Briefing: [[{link}]] {headline}\n"));
-            }
+            s.push_str(&format!("- Briefing: [[{link}]]\n"));
             for item in md::section_lines(&text, "Needs you").unwrap_or_default() {
                 let Some(body) = item.strip_prefix("- ") else {
                     continue;
@@ -550,20 +546,91 @@ fn morning_section(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> St
         }
         Err(_) => s.push_str("- Briefing: not written yet\n"),
     }
-    // The day log, as one line: its first sentence is the count of what merged.
-    let (shipped, link) = refs_note(p, &today_s, SHIPPED);
-    if let Ok(text) = fs::read_to_string(shipped) {
-        let first = crate::knowledge_gate::body(&text)
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty() && !l.starts_with('#'))
-            .map(|l| l.split(". ").next().unwrap_or(l).trim_end_matches('.'))
-            .unwrap_or("");
-        s.push_str(format!("- Shipped: [[{link}]] {first}").trim_end());
-        s.push('\n');
+    // Yesterday's day log, as one line: its first sentence is the count of what merged. Today's
+    // log is the partial day since midnight, so the briefing's "Yesterday N PRs" would disagree.
+    let yesterday = today
+        .pred_opt()
+        .unwrap_or(today)
+        .format("%Y-%m-%d")
+        .to_string();
+    let (shipped, link) = refs_note(p, &yesterday, SHIPPED);
+    match fs::read_to_string(shipped) {
+        Ok(text) => {
+            let first = crate::knowledge_gate::body(&text)
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(|l| l.split(". ").next().unwrap_or(l).trim_end_matches('.'))
+                .unwrap_or("");
+            s.push_str(format!("- Shipped: [[{link}]] {first}").trim_end());
+            s.push('\n');
+        }
+        Err(_) => s.push_str("- Shipped: not written yet\n"),
     }
     s.push_str(&crate::knowledge::morning_lines(p, prev_note, today));
     s
+}
+
+/// The line directly under the `# <date>` title: `Briefing: <As of headline> [[link]]`. `None`
+/// until the briefing is written, so the note never shows a line it cannot back.
+fn briefing_line(p: &Profile, day: &str) -> Option<String> {
+    let (file, link) = briefing(p, day);
+    let text = fs::read_to_string(file).ok()?;
+    let headline = text
+        .lines()
+        .find(|l| l.starts_with("As of "))
+        .unwrap_or("")
+        .trim();
+    Some(if headline.is_empty() {
+        format!("Briefing: [[{link}]]")
+    } else {
+        format!("Briefing: {headline} [[{link}]]")
+    })
+}
+
+/// Put `line` (or nothing) directly under the `# ` title, replacing the `Briefing: ` line an
+/// earlier render left there. A note without a title is left alone.
+fn set_title_line(content: &str, line: Option<&str>) -> String {
+    let mut lines: Vec<&str> = content.lines().collect();
+    // A `# ` line inside the front matter is a YAML comment, not the title.
+    let body = if lines.first() == Some(&"---") {
+        lines
+            .iter()
+            .skip(1)
+            .position(|l| *l == "---")
+            .map_or(0, |i| i + 2)
+    } else {
+        0
+    };
+    let Some(title) = lines
+        .iter()
+        .skip(body)
+        .position(|l| l.starts_with("# "))
+        .map(|i| i + body)
+    else {
+        return content.to_string();
+    };
+    let at = title + 2;
+    if lines.get(title + 1) == Some(&"")
+        && lines.get(at).is_some_and(|l| l.starts_with("Briefing: "))
+    {
+        lines.remove(at);
+        if lines.get(at) == Some(&"") {
+            lines.remove(at);
+        }
+    }
+    if let Some(line) = line {
+        if lines.get(title + 1) != Some(&"") {
+            lines.insert(title + 1, "");
+        }
+        lines.insert(at, "");
+        lines.insert(at, line);
+    }
+    let mut out = lines.join("\n");
+    if content.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 /// Render `## Morning` into the note, below Notes and Focus. Rewritten only when it changes, which
@@ -574,6 +641,7 @@ fn refresh_morning(p: &Profile, note: &Path, today: NaiveDate) -> Result<()> {
     let block = morning_section(p, prev_note.as_deref(), today);
     let content = fs::read_to_string(note)?;
     let stripped = remove_section(&content, "Morning");
+    let stripped = set_title_line(&stripped, briefing_line(p, &today_s).as_deref());
     // Directly under Focus: the first `## ` heading after it (Projects, Refs), else the footer.
     let anchor = stripped.find("\n## Focus\n").and_then(|focus| {
         let after = focus + "\n## Focus\n".len();
@@ -610,19 +678,17 @@ fn link_refs_on(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
 
 /// Rebuild `day`'s refs index (`report::rebuild_index`) and make that day's note's `## Refs`
 /// the one link to it. The section carries the link once the day has a ref that `## Morning`
-/// does not already render (anything but the briefing and the day log). Lines the old per-file
+/// does not already render (anything but the briefing: Morning shows yesterday's day log, so
+/// today's partial one is reached through the index). Lines the old per-file
 /// linker wrote for that day are replaced by the link; anything else under `## Refs` is the
-/// human's and stays. `notes report add` calls this for the day it files to, so a late write
-/// is listed by the index with no second pass.
+/// human's and stays.
 pub(crate) fn link_day_refs(p: &Profile, log: &Logger, day: NaiveDate) -> Result<()> {
     let entries = crate::report::rebuild_index(p, day)?;
     let note = p.daily.join(format!("{}.md", day.format("%Y-%m-%d")));
     if !note.exists() {
         return Ok(());
     }
-    let wanted = entries
-        .iter()
-        .any(|e| e.stem != BRIEFING && e.stem != SHIPPED);
+    let wanted = entries.iter().any(|e| e.stem != BRIEFING);
     let content = fs::read_to_string(&note)?;
     let index = wanted.then(|| crate::report::index_target(p, day));
     let updated = refs_section(&content, &p.refs_rel, day, index.as_deref());
@@ -1145,7 +1211,7 @@ fn read_bounded(
 /// - Reports (first): the report stream, [`crate::report::inbox_lines`].
 /// - Needs you: each line still in the outbox, once, with intake's latest why when it left the
 ///   line unfiled (`in the outbox, not filed: <line>`); each ask intake made of the human; and
-///   today's quick-captures (the bullet lines in `inbox/<today>.md`, each with a short
+///   today's quick-captures (the bullet lines in `captures/<today>.md`, each with a short
 ///   `(sess <id>)` suffix when it carried a session marker, so it links back via `claude -r`).
 ///   A line intake left that is no longer in the outbox, and a write intake refused, are
 ///   intake's own, so they are counted and never listed here.
@@ -1262,7 +1328,7 @@ fn inbox_page_in(p: &Profile, dirs: &[(String, PathBuf)], score: Option<&str>) -
             detail,
         });
     }
-    let captures: Vec<String> = fs::read_to_string(p.inbox.join(format!("{today}.md")))
+    let captures: Vec<String> = fs::read_to_string(p.captures.join(format!("{today}.md")))
         .unwrap_or_default()
         .lines()
         .filter(|l| l.trim_start().starts_with("- "))
@@ -1497,7 +1563,7 @@ fn refresh_inbox(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
 }
 
 fn inbox_present(p: &Profile) -> bool {
-    p.inbox.is_dir() && crate::ingest::path(p).exists()
+    p.captures.is_dir() && crate::ingest::path(p).exists()
 }
 
 /// `notes ingest page`: publish the inbox page alone, which the sweep runs after each pass so
@@ -2611,8 +2677,8 @@ mod tests {
 
     /// `## Morning` sits below Notes and Focus: the briefing headline and its "Needs you" items as
     /// written, the day log's first sentence, then one line for the knowledge logs
-    /// the previous note did not list. Re-running it changes nothing, and `## Refs` lists neither
-    /// the briefing nor the day log.
+    /// the previous note did not list. Re-running it changes nothing, and `## Refs` is the one
+    /// index link that reaches today's partial day log (Morning links yesterday's).
     #[test]
     fn morning_shows_the_briefing_and_unlisted_knowledge_above_notes() {
         let dir = std::env::temp_dir().join(format!("notes-morning-{}", std::process::id()));
@@ -2625,9 +2691,16 @@ mod tests {
             "---\ngenerated: true\n---\n\n# Morning briefing\n\nAs of Tue 06:45: 1 thing needs you.\n\n## Needs you\n\n- Unblock: plan awaiting approval (session wave-roll, 9h).\n\n## Quiet\n\n- 15 watches OK\n",
         )
         .unwrap();
+        // Today's log is a partial day: it must NOT be the one the note counts.
         std::fs::write(
             dir.join("journal/refs/2026-09-30/shipped.md"),
-            "---\ngenerated: true\n---\n\n# Day log, 2026-09-30\n\n3 PRs merged in 2 repos; 4 sessions spent $4.5. Gathered by `day-log`.\n",
+            "---\ngenerated: true\n---\n\n# Day log, 2026-09-30\n\n1 PR merged in 1 repo. Gathered by `day-log`.\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.join("journal/refs/2026-09-29")).unwrap();
+        std::fs::write(
+            dir.join("journal/refs/2026-09-29/shipped.md"),
+            "---\ngenerated: true\n---\n\n# Day log, 2026-09-29\n\n3 PRs merged in 2 repos; 4 sessions spent $4.5. Gathered by `day-log`.\n",
         )
         .unwrap();
         for (d, line) in [
@@ -2652,8 +2725,12 @@ mod tests {
         refresh_morning(&p, &note, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
 
-        let expected = "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45: 1 thing needs you.\n  - Unblock: plan awaiting approval (session wave-roll, 9h).\n- Shipped: [[journal/refs/2026-09-30/shipped]] 3 PRs merged in 2 repos; 4 sessions spent $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
+        let expected = "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: [[journal/refs/2026-09-30/briefing]]\n  - Unblock: plan awaiting approval (session wave-roll, 9h).\n- Shipped: [[journal/refs/2026-09-29/shipped]] 3 PRs merged in 2 repos; 4 sessions spent $4.5\n- Knowledge: 0 new, 1 updated (2026-09-29) [[knowledge/_log/2026/09/2026-09-29]]\n";
         assert!(out.contains(expected), "{out}");
+        assert!(
+            out.contains("# 2026-09-30\n\nBriefing: As of Tue 06:45: 1 thing needs you. [[journal/refs/2026-09-30/briefing]]\n\n## Notes"),
+            "headline under the title, above Notes:\n{out}"
+        );
         let at = |h: &str| out.find(h).unwrap_or_else(|| panic!("no {h}:\n{out}"));
         assert!(
             at("## Notes") < at("## Focus") && at("## Focus") < at("## Morning"),
@@ -2673,9 +2750,8 @@ mod tests {
         link_refs_on(&p, &log, d("2026-09-30")).unwrap();
         let after = std::fs::read_to_string(&note).unwrap();
         assert!(
-            !after.contains("## Refs"),
-            "Morning already links both:
-{after}"
+            after.contains("## Refs") && after.contains("2026-09-30/_index"),
+            "today's partial log is reached through the refs index:\n{after}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2705,10 +2781,12 @@ mod tests {
         link_refs_on(&p, &log, d("2026-09-30")).unwrap();
         let out = std::fs::read_to_string(&note).unwrap();
         assert!(
-            out.contains("- Briefing: [[journal/refs/2026-09-30/briefing]] As of Tue 06:45"),
+            out.contains(
+                "\nBriefing: As of Tue 06:45, 0 page(s). [[journal/refs/2026-09-30/briefing]]\n"
+            ),
             "{out}"
         );
-        assert!(!out.contains("not written yet"), "{out}");
+        assert!(!out.contains("Briefing: not written yet"), "{out}");
         assert!(
             !out.contains("## Refs"),
             "the briefing is not listed twice:\n{out}"
@@ -2790,7 +2868,7 @@ mod tests {
         let out = std::fs::read_to_string(&note).unwrap();
         assert_eq!(
             out,
-            "# 2026-09-30\n\n## Notes\n\n## Focus\n- [ ] a\n\n---\n### Done\n\n## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: not written yet\n- Knowledge: nothing compiled yet\n\n## Projects\n- [[x]]\n"
+            "# 2026-09-30\n\n## Notes\n\n## Focus\n- [ ] a\n\n---\n### Done\n\n## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: not written yet\n- Shipped: not written yet\n- Knowledge: nothing compiled yet\n\n## Projects\n- [[x]]\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2804,9 +2882,52 @@ mod tests {
         let p = profile(dir.to_str().unwrap());
         assert_eq!(
             morning_section(&p, None, d("2026-09-30")),
-            "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: not written yet\n- Knowledge: nothing compiled yet\n"
+            "## Morning\n- Outbox: [[outbox]]\n- Inbox: [[status/inbox]]\n- Briefing: not written yet\n- Shipped: not written yet\n- Knowledge: nothing compiled yet\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Control: yesterday's log is missing but today's partial one exists. The line says "not
+    /// written yet" and never falls back to today's count.
+    #[test]
+    fn morning_shipped_never_falls_back_to_today() {
+        let dir = std::env::temp_dir().join(format!("notes-morning-ship-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/refs/2026-09-30")).unwrap();
+        std::fs::write(
+            dir.join("journal/refs/2026-09-30/shipped.md"),
+            "# Day log\n\n71 PRs merged in 3 repos.\n",
+        )
+        .unwrap();
+        let p = profile(dir.to_str().unwrap());
+        let out = morning_section(&p, None, d("2026-09-30"));
+        assert!(out.contains("- Shipped: not written yet\n"), "{out}");
+        assert!(!out.contains("71 PRs"), "{out}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The headline line lands under the title, is replaced (not stacked) when the briefing
+    /// changes, and a title-less note is left alone.
+    #[test]
+    fn title_line_is_set_replaced_and_removed() {
+        let note = "---\ndate: x\n---\n\n# 2026-09-30\n\n## Notes\n";
+        let a = set_title_line(note, Some("Briefing: one [[b]]"));
+        assert_eq!(
+            a,
+            "---\ndate: x\n---\n\n# 2026-09-30\n\nBriefing: one [[b]]\n\n## Notes\n"
+        );
+        let b = set_title_line(&a, Some("Briefing: two [[b]]"));
+        assert_eq!(b, a.replace("one", "two"));
+        assert_eq!(set_title_line(&b, None), note);
+        let commented = "---\n# not a title\n---\n\n# 2026-09-30\n";
+        assert_eq!(
+            set_title_line(commented, Some("Briefing: x")),
+            "---\n# not a title\n---\n\n# 2026-09-30\n\nBriefing: x\n\n"
+        );
+        assert_eq!(
+            set_title_line("no title\n", Some("Briefing: x")),
+            "no title\n"
+        );
     }
 
     /// A note whose `## Refs` was joined onto the previous section gets its blank line back, once.

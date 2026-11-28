@@ -79,8 +79,12 @@ takes passes; a 429 or 5xx ends the pass's reads and is recorded as the repo's `
                           hub's run detail read jobs here, never from actions/jobs
   schedules-sync pending <repo> [--day YYYY-MM-DD]
                           what an agent-queue `nightly:<repo>` hold still waits for, one line;
-                          exit 0 and no output when nothing is (repo: owner/name or name);
-                          --day judges that local date's runs instead of today's
+                          exit 0 and no output when nothing is (repo: owner/name or name). It
+                          waits on the night set's members only (config/ci/nightly.json `night`
+                          and `wide`, by their full runs on the base in the run ledger), never
+                          on a cron; a repo with no night set holds and names it. Without --day,
+                          each member's newest full run; --day judges the full runs created on
+                          that local date, waiting until the day is over for one not yet started
   schedules-sync runs <repo> [--branch B] [--since T] [--until T]
                           the ledger's runs of one repo (owner/name, or forgejo:owner/name),
                           as a JSON array in created_at order, one object per run: its newest
@@ -92,7 +96,9 @@ takes passes; a 429 or 5xx ends the pass's reads and is recorded as the repo's `
                           than the ledger's 30 days, 3 when the list does not sync the repo (a
                           caller tells "unknown" from "no runs"), 4 when a past --until is
                           after the last sync: that window is not yet complete, and the next
-                          pass completes it
+                          pass completes it, 5 when the repo is stale for a cause every repo
+                          of the pass shares (no pass in 30 minutes, the GitHub REST budget, the
+                          exporter feed), its reason `ledger down: <cause>[, resets <ISO>]`
 
   schedules-sync run-tags <repo> <workflow path>...
                           backfill: for each finished dispatched run of those workflows whose name
@@ -104,7 +110,8 @@ takes passes; a 429 or 5xx ends the pass's reads and is recorded as the repo's `
 Each pass also refreshes the PR store, SCHEDULES_PRS_DIR (~/.agent/prs), one file per repo of the
 list (a prs-only repo is read for this alone: no runs, schedules or quarantine), <owner>__<repo>.jsonl (Forgejo: <host>__<owner>__<repo>.jsonl), one JSON row per PR each time
 it changes, kept forever and compacted like the ledger; a row updated before the newest one the store or the read holds
-(a lagging page) is dropped, never appended. It reads pulls?state=all newest update
+(a lagging page) is dropped, never appended. A PR's row is its newest by updated_at, not its last line: store-sync merges
+*.jsonl as a union, which can put a peer's older OPEN row after the MERGED one, and a sync rewrites a file it finds so. It reads pulls?state=all newest update
 first back to the last sync less an hour, the whole history on a cold start or, in a pass (never agent-land's sync-prs), once its row shape (PR_ROW) changed; GitHub's first page
 is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
 page; a Forgejo pull mirror, whose PRs are off, is synced with none. A Forgejo PR the store holds OPEN
@@ -159,15 +166,12 @@ A repo gh cannot read keeps its last good entry, with `error` set and `synced_at
 the last success, so a reader can tell stale from fresh per repo; the exit status is 1, and
 the other repos still land. A repo with no scheduled workflow is an empty list, not an error.
 
-`pending` reads the state file and nothing else. Each scheduled workflow's cron slots on
-one local date (--day, else today) must each have a finished run, or be past the slot (or
-the run's start) plus the workflow's timeout, which a triage reads as red. A slot still to
-come that day holds. agent-queue passes the date of the item's `at:` tag, so a nightly pass that
-finished stays released: judged by today, a 22:00 slot (soak.yml) left a hold free only
-until midnight, when every slot of the new day held again (nightly-validate-20261108).
-A missing file, a repo not in it, or one not synced in 30 minutes holds (fails
-closed, like the `pr:` hold when gh cannot answer). A frequent cron holds all day, so tag
-only repos whose schedules run nightly.
+`pending` reads the state file's night set and the run ledger, never a cron: a frequent
+cron (drop-closed-gates.yml) once held a nightly: item all day (ar-1585). How it judges the
+night set's full runs is on pending(). agent-queue passes the date of the item's `at:` tag, so
+a night that finished stays released past midnight (nightly-validate-20261108). A missing
+file, a repo not in it, one not synced in 30 minutes, no night set, or no ledger holds (fails
+closed, like the `pr:` hold when gh cannot answer).
 """
 
 import base64
@@ -179,10 +183,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import zipfile
 from datetime import datetime, timedelta, timezone
-
-import yaml
 
 HOME = os.path.expanduser("~")
 GH = os.environ.get("SCHEDULES_GH", "gh")
@@ -196,6 +199,10 @@ LEDGER = os.environ.get(
     os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "ci/runs.jsonl"),
 )
 SYNC = os.path.join(os.path.dirname(LEDGER), "sync.json")
+# The gh wrapper's one shared reading of the REST budget, "<remaining> <reset epoch> <read at>"
+# (.local/bin/gh budget_left): a pass keeps its reset with a budget error, which `runs` names.
+GH_BUDGET = os.path.join(os.environ.get("GH_CALLS_DIR")
+                         or os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "gh-calls"), "budget")
 JOBS_LEDGER = os.environ.get("SCHEDULES_JOBS_LEDGER", os.path.join(os.path.dirname(LEDGER), "jobs.jsonl"))
 # The tag (or uploaded run) each dispatched release run's log names, for runs whose name does not
 # carry it; the hub's release graph reads it beside the ledger (hub_core::release_graph).
@@ -213,6 +220,7 @@ QUARANTINE_FILES = ("quarantine.py", "quarantine.txt")
 QUARANTINE_WITH = ("flake_patterns.py", "flake-causes.json")
 QUARANTINE_RECHECK = timedelta(days=1)  # how often a repo with no quarantine is asked again
 NIGHT_FILE = "config/ci/nightly.json"  # the repo's night set: which workflows the nightly runs (night, then wide) or holds
+NIGHT_BROKEN = f"{NIGHT_FILE}: not a JSON object"  # the error a broken file keeps until its sha moves
 # The nightly: the full run's title (playground scripts/test/last-nightly.py TITLES), its joined
 # summary, uploaded only when every shard reported (test.yml playmode-report), and each job's
 # suite output, where results.py names a quarantined test that passed.
@@ -247,6 +255,14 @@ FJ_DONE = ("success", "failure", "cancelled", "skipped")
 # 2026-11-20 at about 0.2 s a call on the LAN. A 429 or 5xx ends the pass's reads (no retry here);
 # the next pass, ten minutes on, is the backoff.
 FJ_JOB_CALLS = int(os.environ.get("SCHEDULES_FJ_JOB_CALLS", "150"))
+# A plain-text 403 "Forbidden" is the proxy's, not Forgejo's (its API errors are JSON): the CrowdSec
+# bouncer in front of it fails closed when its LAPI lookup times out (5 s), in bursts of up to about
+# 30 s (home-config row hc-440). fj() sends such a GET again, FJ_GATE_TRIES in all, waits doubling
+# from FJ_GATE_WAIT seconds, the rule so_forgejo_get keeps in lib/session-outcomes.sh. Once one call
+# runs out of tries the bouncer is down, not bursting, so FJ_GATED makes the rest of the pass try once.
+FJ_GATE_TRIES = 4
+FJ_GATE_WAIT = float(os.environ.get("SCHEDULES_FJ_GATE_WAIT", "5"))
+FJ_GATED = []
 KEEP = timedelta(days=30)  # the ledger's window, and how far back a cold pass reads
 RUNS_KEPT = int(os.environ.get("SCHEDULES_RUNS", "14"))
 PER_PAGE = int(os.environ.get("SCHEDULES_PER_PAGE", "100"))
@@ -257,9 +273,13 @@ FAILED = ("failure", "timed_out")
 GH_CALL_TIMEOUT_S = 60  # a guard: one hung call must not eat the whole pass
 STALE = timedelta(minutes=30)  # three missed 10-minute passes
 RUN_OPTS = {"--branch", "--since", "--until"}
-CRON_NAMES = {n: i for i, n in enumerate(["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"])}
-CRON_NAMES.update({n: i + 1 for i, n in enumerate(
-    ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"])})
+# How long a night member's full run may stay unfinished before a nightly: hold stops waiting on
+# it: night.sh gives up on a pass within 12 h, and a hung run is the nightly watch's red, not a hold.
+NIGHT_TIMEOUT = timedelta(hours=12)
+# How long past the core step's end a nightly: hold waits for a wide run to appear: night.sh starts
+# the wide step within a minute (its poll) and a sync records it within 10; one that never comes
+# was skipped (it already passed that commit), and no event says so.
+WIDE_START = timedelta(minutes=30)
 
 
 class GhError(Exception):
@@ -270,7 +290,17 @@ class GhError(Exception):
         self.detail = detail or msg
 
 
-class GhDeferred(GhError):
+class GhShared(GhError):
+    """A cause every repo of the pass meets, not this repo's own: the REST budget (`budget`), or
+    the exporter feed (`feed`). sync.json keeps the kind as the entry's `error_shared`, and `runs`
+    exits 5 on it, so a reader shows one outage, not one unreadable repo per repo (ar-230)."""
+
+    def __init__(self, msg, detail=None, kind="budget"):
+        super().__init__(msg, detail)
+        self.kind = kind
+
+
+class GhDeferred(GhShared):
     """The gh wrapper held this read for the shared REST reserve (its exit 75). The repo keeps
     its last state with this as its error, but the pass is not a failure: the wait is by design."""
 
@@ -317,8 +347,8 @@ def gh_fail(path, text, rc=None):
     except (ValueError, AttributeError):
         first = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
     if "rate limit" in low and "exceeded" in low:
-        why = "GitHub API rate limit hit"
-    elif "http 401" in low or "bad credentials" in low or "gh auth login" in low:
+        return GhShared("GitHub API rate limit hit", f"gh api {path}: {raw}")
+    if "http 401" in low or "bad credentials" in low or "gh auth login" in low:
         why = "gh is not logged in: run gh auth login"
     else:
         why = first.removeprefix("gh: ").split(". If you reach out")[0][:160] or "gh failed with no output"
@@ -403,21 +433,35 @@ def fj_token():
 
 
 def fj(host, path):
-    """GET https://<host>/api/v1/<path> as JSON; the token goes in on curl's stdin, never argv."""
+    """GET https://<host>/api/v1/<path> as JSON; the token goes in on curl's stdin, never argv. A
+    refusal by the proxy in front (FJ_GATE_TRIES) is sent again."""
     tok = fj_token()
     conf = f'header = "Authorization: token {tok}"\n' if tok else ""
-    try:
-        p = subprocess.run([CURL, "-sSf", "-K", "-", "--max-time", "30", f"https://{host}/api/v1/{path}"],
-                           input=conf, capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        raise GhError(f"forgejo {path}: no answer in {GH_CALL_TIMEOUT_S}s")
+    wait, tries = FJ_GATE_WAIT, 1 if FJ_GATED else FJ_GATE_TRIES
+    no_tok = "" if tok else f" ({FJ_TOKEN[1]})"
+    for t in range(1, tries + 1):
+        try:
+            p = subprocess.run([CURL, "-sS", "--fail-with-body", "-K", "-", "--max-time", "30",
+                                f"https://{host}/api/v1/{path}"],
+                               input=conf, capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            raise GhError(f"forgejo {path}: no answer in {GH_CALL_TIMEOUT_S}s")
+        if p.returncode != 22 or p.stdout.strip() != "Forbidden":
+            break
+        if t == tries:
+            FJ_GATED.append(path)
+            raise GhError(f"forgejo {path}: the proxy in front of Forgejo refused it {t} time(s) with a"
+                          ' plain-text 403 "Forbidden", not Forgejo\'s (the CrowdSec bouncer fails closed'
+                          " when its LAPI is slow)" + no_tok)
+        time.sleep(wait)
+        wait *= 2
     if p.returncode == 0:
         try:
             return json.loads(p.stdout)
         except ValueError:
             pass
     why = (p.stderr or p.stdout).strip()[:200]
-    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" ({FJ_TOKEN[1]})"))
+    raise GhError(f"forgejo {path}: {why}" + no_tok)
 
 
 def read_map():
@@ -511,8 +555,15 @@ def needs_of(job):
 
 
 def parse_workflow(text):
-    """-> (name, crons, jobs, timeout_min) or None when the file has no schedule."""
-    doc = yaml.safe_load(text)
+    """-> (name, crons, jobs, timeout_min) or None when the file has no schedule or does not parse.
+    PyYAML is imported here, not at the top: `sync-prs` (agent-land, on any host) never reads a
+    workflow file and must run where PyYAML is missing (tr-469)."""
+    import yaml
+
+    try:
+        doc = yaml.safe_load(text)
+    except (yaml.YAMLError, ValueError, RecursionError):  # ValueError: a bad date scalar
+        return None  # GitHub would not schedule an unparseable file either
     if not isinstance(doc, dict):
         return None
     on = doc.get("on", doc.get(True))  # YAML 1.1 reads a bare `on` key as true
@@ -562,10 +613,7 @@ def scheduled_workflows(repo, base, prev):
             unscheduled[path] = sha
             continue
         text = blob_bytes(repo, sha).decode("utf-8", "replace")
-        try:
-            parsed = parse_workflow(text)
-        except yaml.YAMLError:
-            parsed = None  # GitHub would not schedule an unparseable file either
+        parsed = parse_workflow(text)
         if not parsed:
             unscheduled[path] = sha
             continue
@@ -826,8 +874,9 @@ PRS_ONLY = "prs-only"  # a tracker with prsOnly: the PR store reads the repo, no
 PRS_SYNC = os.path.join(PRS_DIR, "sync.json")
 PR_PAGES = int(os.environ.get("SCHEDULES_PR_PAGES", "100"))  # a cold read of a repo's whole PR history
 # The shape of a PR row. A store whose sync entry names another reads its whole history once more,
-# so a field added to pr_row reaches the rows of PRs that will never update again.
-PR_ROW = 2
+# so a field added to pr_row reaches the rows of PRs that will never update again. 3: revert prs
+# reparsed (ar-2636).
+PR_ROW = 3
 PR_STATES = ("open", "merged", "closed", "all")
 PR_OPTS = {"--state", "--since", "--branch"}
 RED = FAILED + ("cancelled", "action_required", "startup_failure")  # pr-ci.sh's red_re
@@ -853,10 +902,16 @@ def utc(s):
     return iso(t.astimezone(timezone.utc)) if t else None
 
 
+# What a revert word names: a quoted title (the Revert button's, `Revert "feat: x (#5)"`) or a list
+# of PR refs right after it (`Reverts #7`, `reverts PR #3 and o/r#4`). A ref later in the line is
+# context: platform #1523's "Reverts #1509: ... from #1510 is unchanged" read #1510 as reverted (ar-2636).
+REVERT_REFS_RE = r'[\s:]*(?:"[^"\n]*"|(?:(?i:prs?)\s+)?[\w./-]*#[0-9]+(?:\s*(?:,|and|&)\s*[\w./-]*#[0-9]+)*)'
+
+
 def revert_of(title, body):
     """What a PR's title and body say it reverts, parsed once here for so_pr_index: {title (the
-    `Revert "<title>"` button's), prs (each `#N` after a revert word on its line), shas ("This
-    reverts commit <sha>")}, or None when no revert word appears."""
+    `Revert "<title>"` button's), prs (each `#N` that directly follows a revert word, REVERT_REFS_RE),
+    shas ("This reverts commit <sha>")}, or None when no revert word appears."""
     text = f"{title or ''}\n{body or ''}"
     if not re.search(REVERT_RE, text):
         return None
@@ -864,8 +919,9 @@ def revert_of(title, body):
     refs = []
     for line in text.split("\n"):
         hit = re.search(REVERT_RE + r"(?P<rest>.*)", line)
-        if hit:
-            refs += [int(n) for n in re.findall(r"#([0-9]+)\b", hit.group("rest"))]
+        lead = hit and re.match(REVERT_REFS_RE, hit.group("rest"))
+        if lead:
+            refs += [int(n) for n in re.findall(r"#([0-9]+)\b", lead.group(0))]
     return {"title": m.group(1) if m else None, "prs": refs,
             "shas": re.findall(r"(?i)this reverts commit ([0-9a-f]{7,40})", text)}
 
@@ -979,6 +1035,15 @@ def fj_vanished(host, repo, name, last, got):
     return rows
 
 
+def older(r, had):
+    """Whether PR row `r` was updated before `had`, the same PR's row it would replace: the PR store's
+    rule is one row a PR, its newest by updated_at, an equal time keeping the later row, except that an
+    OPEN row never replaces a closed one of its time. A reopen moves updated_at, and Forgejo's CLOSED on
+    a 404 keeps the OPEN row's time, so a peer's OPEN copy merged in after it would win the tie."""
+    new, old = when(r.get("updated_at")), when(had.get("updated_at"))
+    return bool(new and old and (new < old or new == old and r.get("state") == "OPEN" != had.get("state")))
+
+
 def newest_prs(name, rows, last):
     """`rows` less any updated before the newest row of its PR, stored or read this pass, one row a
     PR. A lagging list page hands back an old row (dotfiles#2573 read OPEN at 02:54:01Z after its
@@ -988,8 +1053,7 @@ def newest_prs(name, rows, last):
     out = {}
     for r in rows:
         had = out.get(r["number"]) or last.get(r["number"]) or {}
-        new, old = when(r.get("updated_at")), when(had.get("updated_at"))
-        if new and old and new < old:
+        if older(r, had):
             print(f"schedules-sync: PRs of {name}: #{r['number']} read at {r.get('updated_at')}, "
                   f"older than {had.get('updated_at')}: dropped", file=sys.stderr)
             continue
@@ -1011,7 +1075,8 @@ def sync_prs(forge, repo, host, t, wait=True):
             return f"{name}: a pass holds the PR store"
         state = read_sync(path=PRS_SYNC)
         name = next((k for k in state if k.lower() == name.lower()), name)  # case-blind: keep the store's name
-        last, n, torn = read_ledger(path=pr_file(name), key=pr_key)
+        stale = []
+        last, n, torn = read_ledger(path=pr_file(name), key=pr_key, stale=stale)
         entry = dict(state.get(name) or {}) if last is not None else {}  # no store: read it all again
         last, err = last or {}, None
         try:
@@ -1024,7 +1089,10 @@ def sync_prs(forge, repo, host, t, wait=True):
             else:
                 rows = [gh_pr_row(name, p) for p in got or [] if "number" in p]
             rows = newest_prs(name, rows, last)
-            write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None)
+            write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None, rewrite=bool(stale))
+            if stale:
+                print(f"schedules-sync: PRs of {name}: " + ", ".join(f"#{k}" for k in sorted(set(stale)))
+                      + ": an older row after the newest (a store-sync merge): rewritten", file=sys.stderr)
             entry.update(etag=etag, synced_at=iso(t), error=None)  # the ETag only once its rows are kept
             if not since:  # a whole read: its rows have this shape
                 entry["row"] = PR_ROW
@@ -1135,7 +1203,7 @@ def prs(argv, t):
         entry, at = synced[name], when(synced[name].get("synced_at"))
         last = None
         if at and at >= t - STALE:
-            last, _, _ = read_ledger(path=pr_file(name), key=pr_key)
+            last, _, _ = read_ledger(path=pr_file(name), key=pr_key, stale=[])
         if last is None:
             stale.append(stale_why(f"{name}: PRs", entry) if not at or at < t - STALE
                          else f"{name}: no PR store at {pr_file(name)}")
@@ -1181,10 +1249,13 @@ def job_key(r):
     return (r["forge"], r["repo"].lower(), r["run_id"], r["attempt"])  # GitHub names are case-blind
 
 
-def read_ledger(repo=None, path=None, key=run_key):
+def read_ledger(repo=None, path=None, key=run_key, stale=None):
     """-> ({key: last row}, rows read, whether the file ends mid-line); None for no ledger. With
     <repo> (owner/name) only lines naming it are parsed: a reader of one repo skips the rest.
-    The run ledger by default; the job archive with path=JOBS_LEDGER, key=job_key."""
+    The run ledger by default; the job archive with path=JOBS_LEDGER, key=job_key. With a list in
+    <stale> (the PR store), a key keeps its newest row by updated_at (`older`) and the key of each
+    older row that follows it is added to the list: store-sync merges *.jsonl as a union, which puts a
+    peer's older OPEN rows after the MERGED row (dotfiles#3104, #3271, #3377, #3387; ar-5949)."""
     try:
         f = open(path or LEDGER)
     except OSError:
@@ -1196,16 +1267,21 @@ def read_ledger(repo=None, path=None, key=run_key):
                 continue
             try:
                 r = json.loads(line)
-                last[key(r)] = r
+                k = key(r)
                 n += 1
+                if stale is not None and k in last and older(r, last[k]):
+                    stale.append(k)
+                    continue
+                last[k] = r
             except (ValueError, KeyError, TypeError):
                 continue  # a torn last line, or not a row
     return last, n, bool(line) and not line.endswith("\n")
 
 
-def write_ledger(last, n, torn, rows, t, path=None, key=run_key, keep=KEEP):
+def write_ledger(last, n, torn, rows, t, path=None, key=run_key, keep=KEEP, rewrite=False):
     """Append the rows that changed since their key's last row. Rewrite instead, through a tmp
-    file, when a run has aged past `keep` (None keeps every key) or superseded rows outnumber live ones. -> the rows the
+    file, when a run has aged past `keep` (None keeps every key), superseded rows outnumber live ones,
+    or `rewrite` (a key's last line is not the row `last` holds). -> the rows the
     file now holds; `last` is left holding only the live runs."""
     path = path or LEDGER
     changed = []
@@ -1216,7 +1292,7 @@ def write_ledger(last, n, torn, rows, t, path=None, key=run_key, keep=KEEP):
     live = dict(last) if keep is None else {k: r for k, r in last.items() if (when(r.get("created_at")) or t) >= t - keep}
     os.makedirs(os.path.dirname(path), exist_ok=True)
     line = lambda r: json.dumps(r, separators=(",", ":")) + "\n"
-    if len(live) < len(last) or n + len(changed) - len(live) > len(live):
+    if rewrite or len(live) < len(last) or n + len(changed) - len(live) > len(live):
         tmp = f"{path}.{os.getpid()}"
         with open(tmp, "w") as f:
             f.writelines(line(r) for r in sorted(live.values(), key=lambda r: (r.get("created_at") or "", key(r))))
@@ -1385,6 +1461,31 @@ def stale_why(label, entry):
     return f"{label} last synced {entry.get('synced_at')}, older than {int(STALE.total_seconds() // 60)}m{why}"
 
 
+def ledger_down(entry, t):
+    """The cause a stale repo shares with every repo of the pass, as `ledger down: <cause>`, or None
+    when its staleness is its own: a sync file no pass has written in STALE (the timer or the pass is
+    down), or the entry's shared error (GhShared). A REST budget cause names the reset the pass
+    recorded with it: `, resets <ISO>`."""
+    gen = when(read_sync("generated_at") or None)
+    if gen and gen < t - STALE:
+        return f"ledger down: no sync pass since {iso(gen)} (schedules-sync.timer)"
+    if not entry.get("error_shared") or not entry.get("error"):
+        return None
+    reset = entry.get("error_reset")
+    return f"ledger down: {entry['error']}" + (f", resets {reset}" if reset else "")
+
+
+def budget_reset():
+    """The reset of the gh wrapper's shared REST budget reading, ISO, or None when it has none. A pass
+    keeps it on the entry its budget error stopped (`error_reset`), so the reset `runs` names stays
+    put once it passes, until the next good read: the wrapper renews its reading to the next hour's."""
+    try:
+        with open(GH_BUDGET) as f:
+            return iso(datetime.fromtimestamp(int(f.read().split()[1]), timezone.utc))
+    except (OSError, ValueError, IndexError, OverflowError):
+        return None
+
+
 def read_sync(part="repos", path=SYNC):
     try:
         with open(path) as f:
@@ -1491,7 +1592,8 @@ def runs(argv, t):
     if until and synced and until <= t and not complete:
         return 4, f"{argv[0]} last synced {entry.get('synced_at')}, not yet past {opts['--until']}"
     if not complete and (not synced or synced < t - STALE):
-        return 1, stale_why(argv[0], entry)
+        down = ledger_down(entry, t)
+        return (5, down) if down else (1, stale_why(argv[0], entry))
     last, _, _ = read_ledger(f'"repo":"{name.lower()}"')
     if last is None:
         return 1, f"no ledger at {LEDGER}"
@@ -1602,7 +1704,9 @@ def night_set(repo, base, prev, t):
         kept = {"night": dict(old, error=str(e))} if old else {}
         return kept or ({"night_absent": prev["night_absent"]} if absent else {})
     if got is None or (old and isinstance(got, dict) and got.get("sha") == old.get("sha")):
-        return {"night": dict(old, etag=etag or old.get("etag"))}  # unchanged since the last pass
+        # Unchanged since the last pass: a read error from an earlier pass clears, a broken file's stays.
+        kept = {k: v for k, v in old.items() if k != "error" or v == NIGHT_BROKEN}
+        return {"night": dict(kept, etag=etag or old.get("etag"))}
     if not isinstance(got, dict) or not got.get("sha"):
         return {"night_absent": iso(t)}
     try:
@@ -1611,7 +1715,7 @@ def night_set(repo, base, prev, t):
     except ValueError:
         doc = None
     if doc is None:  # a broken file is shown as one, never read as an empty night
-        return {"night": {"night": {}, "wide": {}, "held": {}, "sha": got["sha"], "etag": etag, "error": f"{NIGHT_FILE}: not a JSON object"}}
+        return {"night": {"night": {}, "wide": {}, "held": {}, "sha": got["sha"], "etag": etag, "error": NIGHT_BROKEN}}
     pick = lambda k: {f: str(n) for f, n in (doc.get(k) or {}).items()} if isinstance(doc.get(k), dict) else {}
     return {"night": {"night": pick("night"), "wide": pick("wide"), "held": pick("held"), "sha": got["sha"], "etag": etag}}
 
@@ -1827,43 +1931,17 @@ def quarantine_pass(repos, runs_last, t):
         print(f"schedules-sync: {QUARANTINE}: {e}", file=sys.stderr)
 
 
-def cron_field(spec, lo, hi):
-    vals = set()
-    for part in spec.upper().split(","):
-        part, _, step = part.partition("/")
-        step = int(step) if step else 1
-        if part == "*":
-            a, b = lo, hi
-        else:
-            a, _, b = part.partition("-")
-            a = CRON_NAMES[a] if a in CRON_NAMES else int(a)
-            b = (CRON_NAMES[b] if b in CRON_NAMES else int(b)) if b else (hi if step > 1 else a)
-        vals.update(range(a, b + 1, step))
-    return vals
-
-
-def cron_slots(cron, start, end):
-    """The UTC minutes in [start, end) that a 5-field cron fires on, as GitHub reads it (UTC,
-    and a day matches on day-of-month OR day-of-week when both are restricted)."""
-    f = cron.split()
-    if len(f) != 5:
-        raise ValueError(cron)
-    mins, hours, doms, months = cron_field(f[0], 0, 59), cron_field(f[1], 0, 23), cron_field(f[2], 1, 31), cron_field(f[3], 1, 12)
-    dows = {d % 7 for d in cron_field(f[4], 0, 7)}
-    either = f[2] != "*" and f[4] != "*"
-    out, t = [], start
-    while t < end:
-        dom, dow = t.day in doms, t.isoweekday() % 7 in dows
-        if (t.month in months and t.hour in hours and t.minute in mins
-                and ((dom or dow) if either else (dom and dow))):
-            out.append(t)
-        t += timedelta(minutes=1)
-    return out
-
-
 def pending(name, t, day=None):
-    """-> what a nightly:<name> hold still waits for on local date `day` (default: t's);
-    empty when it releases."""
+    """-> what a nightly:<name> hold still waits for, empty when it releases. It waits only on the
+    repo's night set (NIGHT_FILE), never on a cron like drop-closed-gates.yml: its `night` (core)
+    workflows, then its `wide` ones, which night.sh starts once every core run has finished. Each is
+    judged by its full runs on the base in the run ledger, matched by the set's full-run title, as a
+    PR's run of the same file is not the night. A core member's run is its newest one, or with `day`
+    (a local date) its newest created that day; one with none that day waits until the day is over,
+    then releases, as a night night.sh skipped (already passed) or never started is the nightly
+    watch's to report. A wide member's run is its newest since that pass's first core run; one with
+    none waits WIDE_START past the core step's end. An unfinished run holds until NIGHT_TIMEOUT
+    past its start. No night set holds and names it."""
     try:
         with open(STATE) as f:
             repos = json.load(f).get("repos", [])
@@ -1874,30 +1952,46 @@ def pending(name, t, day=None):
         return [f"{name} not in the schedules state"]
     if not entry.get("synced_at") or t - parse_iso(entry["synced_at"]) > STALE:
         return [f"schedules state for {name} stale since {entry.get('synced_at')}"]
-    day = day or t.astimezone().date()  # local time; naive datetimes below are local too
-    start = datetime(day.year, day.month, day.day).astimezone(timezone.utc)
-    end = (datetime(day.year, day.month, day.day) + timedelta(days=1)).astimezone(timezone.utc)
-    out = []
-    for w in entry.get("workflows", []):
-        wf = os.path.basename(w["path"])
-        try:
-            slots = sorted({s for c in w.get("crons", []) for s in cron_slots(c, start, end)})
-        except (ValueError, KeyError):
-            out.append(f"{wf} cron unreadable")
-            continue
-        timeout = timedelta(minutes=w.get("timeout_min") or 0)
-        for i, slot in enumerate(slots):
-            if slot > t:
-                out.append(f"{wf} due {slot.astimezone():%H:%M}")
-                break
-            upto = slots[i + 1] if i + 1 < len(slots) else end
-            run = next((r for r in w.get("runs", []) if r.get("created_at")
-                        and slot <= parse_iso(r["created_at"]) < upto), None)
-            if run and run.get("status") == "completed":
-                continue
-            if t < (parse_iso(run["created_at"]) if run else slot) + timeout:
-                out.append(f"{wf} {'running' if run else 'not started'}")
-                break
+    night = entry.get("night") or {}
+    core, wide = night.get("night") or {}, night.get("wide") or {}
+    if night.get("error"):
+        return [f"no night set for {name}: {NIGHT_FILE} unreadable ({night['error'].removeprefix(NIGHT_FILE + ': ')})"]
+    if not core:
+        return [f"no night set for {name} ({NIGHT_FILE} names no night workflow)" if night else f"no night set for {name} (no {NIGHT_FILE})"]
+    last, _, _ = read_ledger(f'"repo":"{entry["repo"].lower()}"')
+    if last is None:
+        return [f"no run ledger at {LEDGER}"]
+    repo = entry["repo"].lower()
+    full = sorted((r for r in newest_attempts(last.values()).values() if r.get("forge") == "github"
+                   and r.get("repo", "").lower() == repo and r.get("branch") == entry.get("base")
+                   and r.get("created_at") and parse_iso(r["created_at"]) <= t),
+                  key=lambda r: (r["created_at"], r["id"]))
+    runs_of = lambda wf, title: [r for r in full if os.path.basename(r.get("path") or "") == wf and r.get("workflow") == title]
+    going = lambda r: r.get("status") != "completed" and t < parse_iso(r["created_at"]) + NIGHT_TIMEOUT
+    if day:  # local time; naive datetimes are local
+        start = datetime(day.year, day.month, day.day).astimezone(timezone.utc)
+        end = (datetime(day.year, day.month, day.day) + timedelta(days=1)).astimezone(timezone.utc)
+    out, picked = [], []
+    for wf, title in sorted(core.items()):
+        mine = [r for r in runs_of(wf, title) if not day or start <= parse_iso(r["created_at"]) < end]
+        if mine:
+            picked.append(mine[-1])
+            if going(mine[-1]):
+                out.append(f"{wf} running")
+        elif not day:
+            out.append(f"{wf} has no full run ({title}) in the ledger")
+        elif t < end:
+            out.append(f"{wf} not started")
+    if out or not picked or not wide:
+        return out  # the wide step starts only once the core one has finished
+    since = min(parse_iso(r["created_at"]) for r in picked)
+    core_end = max(parse_iso(r.get("ended_at") or r["created_at"]) for r in picked)
+    for wf, title in sorted(wide.items()):
+        mine = [r for r in runs_of(wf, title) if parse_iso(r["created_at"]) >= since]
+        if mine and going(mine[-1]):
+            out.append(f"{wf} running")
+        elif not mine and t < core_end + WIDE_START:
+            out.append(f"{wf} not started")
     return out
 
 
@@ -2012,15 +2106,26 @@ def main(argv):
                 state = sync_repo(repo, base, p, t, [r for r in got if r.get("event") == "schedule"], jlast)
                 if exporter.get("error"):
                     # The pages it served before failing are kept above: the cursor is past them.
-                    raise GhError(f"exporter feed: {exporter['error']}")
+                    raise GhShared(f"exporter feed: {exporter['error']}", kind="feed")
                 out.append(state)
             else:
                 raise GhError(f"unknown forge {forge} (github, forgejo)")
             entry.update(synced_at=iso(t), error=None)
+            entry.pop("error_shared", None)
+            entry.pop("error_reset", None)
         except GhError as e:
             bad += not isinstance(e, GhDeferred)
             print(f"schedules-sync: {repo}: {e.detail}", file=sys.stderr)
             entry["error"] = str(e)
+            if isinstance(e, GhShared):
+                entry["error_shared"] = e.kind
+            else:
+                entry.pop("error_shared", None)
+            reset = budget_reset() if getattr(e, "kind", None) == "budget" else None
+            if reset:
+                entry["error_reset"] = reset
+            else:
+                entry.pop("error_reset", None)
             if forge == "github":
                 kept = dict(state or p or {"repo": repo, "base": base, "synced_at": None, "workflows": []})
                 kept["error"] = str(e)

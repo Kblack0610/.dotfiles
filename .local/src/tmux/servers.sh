@@ -354,32 +354,45 @@ _current_loc() {
 # is skipped. The hooks in .tmux.conf call `mark` on every arrival; `back` goes to the place
 # before. Keyed by tty, which survives a hop while the client does not.
 PLACES_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmx/places"
+# How long a mark waits on the places lock. The holder runs one list-clients; past this a
+# server is wedged, and the mark fails loudly rather than queue every later hook behind it.
+MARK_LOCK_SECS=5
 
 _places_file() { printf '%s/%s\n' "$PLACES_DIR" "${1//\//_}"; }
 
-# _mark_one <tty> <server> <session> <window_id> -- the file holds "now" then "before".
+# _mark_one <tty> <server> <session> <window_id> -- the file holds "now" then "before". The
+# caller holds the places lock; the temp name is this process's own, so a rename never takes
+# another mark's half-written file.
 _mark_one() {
   local f here now
   f="$(_places_file "$1")" here="$2"$'\t'"$3"$'\t'"$4"
   now="$(head -1 "$f" 2>/dev/null)"
   [ "$now" = "$here" ] && return 0
-  printf '%s\n%s\n' "$here" "$now" > "$f.tmp" 2>/dev/null && mv -f "$f.tmp" "$f"
+  { printf '%s\n%s\n' "$here" "$now" > "$f.$$" && mv -f "$f.$$" "$f"; } 2>/dev/null ||
+    { rm -f "$f.$$"; return 1; }
 }
 
 # mark <socket_path> <session> <window_id> [<tty>] -- this terminal is now here. With no tty
 # (session-window-changed has no client), every terminal attached to that session.
+#
+# Hooks fire several marks per arrival, and a hop fires them on two servers at once, so each
+# mark reads and rewrites the file under one lock. It records only a client that list-clients
+# shows on that window right now: a hook that ran late, after the client moved on (a hop to
+# another world, a second jump), would otherwise make the place it left "now", and L would go
+# nowhere. The move's own hook records where the client went; a place left before its hook
+# ran is skipped.
 cmd_mark() {
-  local sock="${1:-}" sess="${2:-}" win="${3:-}" tty="${4:-}" srv
+  local sock="${1:-}" sess="${2:-}" win="${3:-}" tty="${4:-}" srv t w
   [ -n "$sock" ] && [ -n "$sess" ] && [ -n "$win" ] || return 0
   srv="${sock##*/}"
   mkdir -p "$PLACES_DIR" 2>/dev/null || return 0
-  if [ -n "$tty" ]; then
-    _mark_one "$tty" "$srv" "$sess" "$win"
-    return 0
-  fi
-  while IFS= read -r tty; do
-    [ -n "$tty" ] && _mark_one "$tty" "$srv" "$sess" "$win"
-  done < <(tmux -L "$srv" list-clients -t "=$sess" -F '#{client_tty}' 2>/dev/null)
+  {
+    flock -w "$MARK_LOCK_SECS" 9 || return 1
+    while IFS=$'\t' read -r t w; do
+      [ -n "$t" ] && [ "$w" = "$win" ] && { [ -z "$tty" ] || [ "$t" = "$tty" ]; } &&
+        _mark_one "$t" "$srv" "$sess" "$win"
+    done < <(tmux -L "$srv" list-clients -t "=$sess" -F '#{client_tty}'$'\t''#{window_id}' 2>/dev/null)
+  } 9>>"$PLACES_DIR/.lock"
   return 0
 }
 
@@ -575,7 +588,7 @@ _hop_redirect() {
   mkdir -p "$HOP_DIR" || return 1
   find "$HOP_DIR" -type f -mtime +1 -delete 2>/dev/null   # a request the home side never read
   f="$HOP_DIR/$tok"
-  printf '%s\n' "$@" > "$f.tmp" && mv -f "$f.tmp" "$f" || return 1
+  { printf '%s\n' "$@" > "$f.$$" && mv -f "$f.$$" "$f"; } || { rm -f "$f.$$"; return 1; }
   tmux detach-client -t "$tty" -E "exit $HOP_RC" || { rm -f "$f"; return 1; }
 }
 

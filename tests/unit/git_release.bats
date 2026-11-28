@@ -241,33 +241,28 @@ tag() { git -C "$REPO" tag "$1"; }
 
 # ── git_open_prs ─────────────────────────────────────────────────────────────
 
-# ss_stub <rc> <json> -- a schedules-sync that logs its argv and answers with <json> and <rc>.
-ss_stub() {
-  export SCHEDULES_SYNC="$BATS_TEST_TMPDIR/ss"
-  printf '#!/bin/sh\necho "$*" >>"%s/ss.calls"\nprintf %%s %q\nexit %s\n' "$BATS_TEST_TMPDIR" "$2" "$1" >"$SCHEDULES_SYNC"
-  chmod +x "$SCHEDULES_SYNC"
-}
-
 @test "git_open_prs: open non-draft PRs from the PR store by the origin's owner/repo, title-filtered and capped" {
+  ss_stub
   git -C "$REPO" remote add origin git@github.com:acme/game.git
-  ss_stub 0 '[{"number":9,"title":"app: nine","draft":false},{"number":8,"title":"app: draft","draft":true},{"number":7,"title":"web: seven","draft":false},{"number":6,"title":"app: six","draft":false},{"number":5,"title":"app: five","draft":false}]'
+  ss_answer out '[{"number":9,"title":"app: nine","draft":false},{"number":8,"title":"app: draft","draft":true},{"number":7,"title":"web: seven","draft":false},{"number":6,"title":"app: six","draft":false},{"number":5,"title":"app: five","draft":false}]'
   run git_open_prs "$REPO"
   assert_success
   assert_output "$(printf '#9 app: nine\n#7 web: seven\n#6 app: six\n#5 app: five')"
   run git_open_prs "$REPO" '^app:' 2
   assert_output "$(printf '#9 app: nine\n#6 app: six')"
-  run cat "$BATS_TEST_TMPDIR/ss.calls"
-  assert_line 'prs acme/game --state open'
+  run calls
+  assert_line 'schedules-sync prs acme/game --state open'
 }
 
 @test "git_open_prs: a non-GitHub origin is keyed host/owner/repo; a store that cannot answer is empty and successful" {
+  ss_stub
   git -C "$REPO" remote add origin https://git.example.test/o/r.git
-  ss_stub 1 ''
+  ss_answer rc 1
   run git_open_prs "$REPO"
   assert_success
   assert_output ''
-  run cat "$BATS_TEST_TMPDIR/ss.calls"
-  assert_output 'prs git.example.test/o/r --state open'
+  run calls
+  assert_output 'schedules-sync prs git.example.test/o/r --state open'
 }
 
 @test "git_open_prs: a path that is not a repo is empty and successful" {

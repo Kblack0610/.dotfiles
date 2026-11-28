@@ -34,6 +34,7 @@ stdout_tty=0
 : "${GH_BUDGET_RESERVE:=1000}"  # calls left under which a read waits for the reset
 : "${GH_BUDGET_STALE_S:=30}"    # age of the shared reading before one rate_limit call renews it
 : "${GH_RETRY_TRIES:=4}"        # runs of a read that keeps failing with a 5xx; 1 turns the retry off
+: "${GH_RETRY_ERR:=HTTP 5[0-9][0-9]|unexpected end of JSON input}" # gh's stderr on a 5xx, or on an empty or cut-off reply
 : "${GH_RETRY_BASE_S:=2}"       # seconds before the first rerun, whole seconds
 : "${GH_RETRY_CAP_S:=10}"       # the longest single wait
 # The programs whose reads spend the reserve: a gate, a merge, the night. A read with one of them
@@ -41,7 +42,14 @@ stdout_tty=0
 # of who waits let each new script spend the reserve: ci-cost.py took it to 14 on 2026-11-17.
 : "${GH_RESERVE_CALLERS:=agent-land gh-run-wait gate-and-land.sh ci-gate.sh gate-line.py night.sh agentctl-playground-night}"
 
-[ -z "${GH_WRAPPED:-}" ] || exec "${GH_REAL:?}" "$@" # a gh that gh itself started: already counted
+# wrapper_copy <file>: this wrapper or a copy of it from another checkout, told by the opening of
+# line 2, which every copy back to the first shares; tests/unit/gh_wrapper.bats checks it stays.
+# A worktree's .local/bin ahead of ~/.local/bin (a session profiling a worktree script) put two copies
+# on PATH: each took the other for the real gh and, with GH_WRAPPED set, exec'd it, at 100% CPU (ar-4949).
+# An older copy still hands GH_REAL a copy, so a GH_REAL that is one is refused, never exec'd.
+wrapper_copy() { head -c 256 "$1" 2>/dev/null | grep -qa "^# gh - the fleet's gh:"; }
+not_wrapper() { ! wrapper_copy "$1" || { echo "gh: GH_REAL ($1) is a copy of this wrapper, not gh" >&2; exit 127; }; }
+[ -z "${GH_WRAPPED:-}" ] || { not_wrapper "${GH_REAL:?}"; exec "$GH_REAL" "$@"; } # a gh that gh itself started: already counted
 # A sandboxed HOME (a test's temp home) never reaches GitHub. A test that forgot to put its gh stub
 # first on PATH acts on the real repos with the real token otherwise: tests/playground-night.sh
 # started hd.yml and soak.yml on unity-core-playground main on 2026-11-12.
@@ -50,10 +58,11 @@ acct_home=$(getent passwd "$(id -un)" | cut -d: -f6)
   || { echo "gh: HOME is ${HOME:-unset}, not $acct_home: a sandboxed caller never reaches GitHub" >&2; exit 3; }
 self=$(readlink -f "${BASH_SOURCE[0]}")
 real="${GH_REAL:-}"
+[ -z "$real" ] || not_wrapper "$real"
 if [ -z "$real" ]; then
   IFS=: read -r -a dirs <<<"$PATH"
   for d in "${dirs[@]}"; do
-    [ -f "$d/gh" ] && [ -x "$d/gh" ] && [ "$(readlink -f "$d/gh")" != "$self" ] && { real="$d/gh"; break; }
+    [ -f "$d/gh" ] && [ -x "$d/gh" ] && ! wrapper_copy "$d/gh" && { real="$d/gh"; break; }
   done
 fi
 [ -n "$real" ] || { echo "gh: no gh on PATH besides this wrapper ($self)" >&2; exit 127; }
@@ -282,7 +291,8 @@ exec_once() {
   if [ -n "$t" ]; then GH_TOKEN="$t" "$real" "$@"; else "$real" "$@"; fi
 }
 
-# exec_retry <token or ""> <gh args>: exec_once, and for a retryable read, again after a 5xx. The failed
+# exec_retry <token or ""> <gh args>: exec_once, and for a retryable read, again after a 5xx or an
+# unparseable reply (ar-4283: an annotations read answered "unexpected end of JSON input"). The failed
 # run's output is dropped, so a caller sees one answer, never a failure body followed by the retry's.
 rtmp=""
 exec_retry() {
@@ -293,7 +303,7 @@ exec_retry() {
   while :; do
     exec_once "$t" "$@" >"$rtmp/out" 2>"$rtmp/err"
     r=$?
-    [ "$r" -ne 0 ] && [ "$n" -lt "$GH_RETRY_TRIES" ] && grep -qE 'HTTP 5[0-9]{2}' "$rtmp/err" || break
+    [ "$r" -ne 0 ] && [ "$n" -lt "$GH_RETRY_TRIES" ] && grep -qE "$GH_RETRY_ERR" "$rtmp/err" || break
     sleep "$pause"
     pause=$((pause * 2 > GH_RETRY_CAP_S ? GH_RETRY_CAP_S : pause * 2))
     n=$((n + 1))
@@ -301,7 +311,7 @@ exec_retry() {
   cat "$rtmp/out"
   cat "$rtmp/err" >&2
   # said only when it still failed: a notice on a recovered read would break `gh api ... 2>&1 | jq`
-  [ "$n" -eq 1 ] || [ "$r" -eq 0 ] || echo "gh: HTTP 5xx on a read, still failing after $n runs" >&2
+  [ "$n" -eq 1 ] || [ "$r" -eq 0 ] || echo "gh: a read still failing after $n runs (a 5xx or an unparseable reply)" >&2
   return "$r"
 }
 

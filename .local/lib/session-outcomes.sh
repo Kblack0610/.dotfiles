@@ -59,10 +59,23 @@ SO_PR_JQ='
 # assignments, wrappers with their options, `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path,
 # the text and a boundary. agent-usage-burn.py matches the same way;
 # tests/fixtures/time-use-commands.tsv holds the three readers to it.
-SO_TIME_USE_LINES="$(jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture("^(?<kind>gate|test|build)\\s+(?<text>.*)$")
-  | .re = "(^|[;&|(\\n`])\\s*((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*(\\S*/)?"
-      + (.text | gsub("(?<c>[\\\\.^$|?*+()\\[\\]{}])"; "\\\(.c)")) + "($|[^\\w.])"]' \
-  "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
+# SO_TU_WRAP: the regex (a jq string body) for what may stand before a command word: assignments, wrappers with their
+# options, `timeout N`, `flock FILE` and if/while/until/do/then/else/!. SO_TU_START puts a command start before it (a
+# line start, ; & | ( or a backtick), shared by the lines below and by time_use_wrapper_paths. SO_TU_ARGV_START is the
+# start of one process's argv (fleet-sessions' live_wait): the line start only, since an argv holds no shell operator,
+# and first any interpreter a script runs under, by path or not (`/bin/bash run.sh`, `python3 /usr/bin/pytest`,
+# `node .../vitest`), which a command string rarely names and a /proc cmdline always does.
+SO_TU_WRAP='((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*'
+SO_TU_START='(^|[;&|(\\n`])\\s*'"$SO_TU_WRAP"
+SO_TU_ARGV_START='^\\s*((\\S*/)?(env|sh|bash|zsh|python3?|node|ruby|perl)(\\s+-\\S+)*\\s+)*'"$SO_TU_WRAP"
+# time_use_lines_json <conf> [<start regex>] -> a JSON array of {kind, text, re} for each gate, test or build line of <conf>,
+# `re` wanting the line's text after <start regex> (default SO_TU_START) and any path, then a boundary.
+time_use_lines_json() {
+  jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture("^(?<kind>gate|test|build)\\s+(?<text>.*)$")
+    | .re = "'"${2:-$SO_TU_START}"'(\\S*/)?"
+        + (.text | gsub("(?<c>[\\\\.^$|?*+()\\[\\]{}])"; "\\\(.c)")) + "($|[^\\w.])"]' "$1"
+}
+SO_TIME_USE_LINES="$(time_use_lines_json "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
 [ "$SO_TIME_USE_LINES" != '[]' ] ||
   echo "session-outcomes: no gate or test line in ${TIME_USE_CONF:-time-use.conf}; every command counts as jobs" >&2
 # edit_tools: the tools that write a file (edit-tools.conf), for the since-edit and lesson counts.
@@ -73,6 +86,13 @@ SO_PR_JQ="$SO_PR_JQ
     gsub("(?<!<)<<(?!<)-?[ \\t]*(?<q>[\u0027\"]?)(?<w>[A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\\k<q>(?<rest>[^\\n]*)(?:\\n[^\\n]*)*?\\n[ \\t]*\\k<w>[ \\t]*(?![^\\n])"; "\(.rest)")
     | gsub("(?:^|(?<=[\\s;&|(`/]))(?<sh>(?:ba|z)?sh(?:\\s+-\\S+)*?\\s+-[a-z]*c\\s+)(?:\u0027(?<sq>[^\u0027]*)\u0027|\"(?<dq>(?:\\\\.|[^\"\\\\])*)\")"; "\(.sh)\n\(.sq // .dq)\n")
     | gsub("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\""; "\u0027\u0027");
+  # The files a command runs by path (a command word with a `/` or ending `.sh`, joined to $cwd), the
+  # candidates for a session-written script; time_use.rs `wrapper_wait` reads their text.
+  def time_use_wrapper_paths($cwd):
+    time_use_unquoted as $u
+    | [$u | match("'"$SO_TU_START"'(?<w>[^\\s;&|(`-][^\\s;&|(`]*)"; "g") | .captures[] | select(.name == "w") | .string
+        | select(contains("/") or endswith(".sh"))
+        | if startswith("/") then . else $cwd + "/" + . end] | unique;
   def time_use_class:
     . as $c
     | [time_use_lines[] | select(.text as $t | $c | contains($t))]
@@ -130,7 +150,13 @@ so_mapped_repos() {
 # record is how a PR made in a subagent, or whose output was persisted to a file, reaches
 # this transcript, since neither prints its URL in a tool result here. Claude Code also writes
 # a pr-link for a PR URL it only saw printed (a test's fixture o/r#99, session 5642f5f8), so `run`
-# drops a claim in a repo gh cannot resolve. (`run` also claims a PR whose body names the
+# drops a claim in a repo gh cannot resolve.
+# Claude Code also rewrites the record every turn after a `gh pr view` or `gh pr comment` of a
+# PR that is another session's (ar-2957 on #3239, whose own merged PR had no record), so a pr-link
+# for a PR such a command named, with no pr_cmd result printing it, is not claimed. The
+# command must run (not sit in a heredoc or quoted text) and name the PR as its first argument.
+# A PR of the session's own that it also viewed is still claimed by its body's session link:
+# so_session_links. (`run` also claims a PR whose body names the
 # session's own claude.ai/code link: so_session_links.)
 # lessons_written counts corrections (the rule is "after ANY correction, update lessons");
 # most land as `cat >>` through Bash, not Edit, so both are counted. Malformed lines are skipped, not fatal:
@@ -151,15 +177,26 @@ so_mapped_repos() {
 # plan_gate counts ExitPlanMode calls and how many of them plan-standard.sh denied;
 # the human rejecting a plan is `denied` under hard_errors, not a gate denial.
 so_transcript_metrics() {
-  jq -nR --argjson sigs "${2:-[]}" "$CLAUDE_END_JQ$SO_PR_JQ"'
+  local m
+  m=$(jq -nR --argjson sigs "${2:-[]}" "$CLAUDE_END_JQ$SO_PR_JQ"'
     def text_of: if type == "string" then .
                  elif type == "array" then ([.[]? | .text? // empty] | join("\n"))
                  else "" end;
+    # The PRs a `gh pr view|comment` command names as {repo, number}: its first argument after the
+    # flags, a number or a /pull/N URL, with the repo from -R or the URL ("" when neither names one).
+    def looked_at:
+      time_use_unquoted as $u
+      | [ $u | match("'"$SO_TU_START"'gh\\s+pr\\s+(?:view|comment)\\b(?<rest>[^\\n;&|]*)"; "g").captures[]
+          | select(.name == "rest") | .string
+          | ((capture("(?:-R|--repo)[=\\s]+(?<r>\\S+)") | .r) // "") as $repo
+          | gsub("(?:-R|--repo)[=\\s]+\\S+"; " ") | gsub("\\s-\\S+"; " ")
+          | capture("^\\s*(?:https?://[^/\\s]+/(?<ur>[^/\\s]+/[^/\\s]+)/pull/)?(?<n>[0-9]+)(?![\\w-])")
+          | {repo: ((.ur // $repo) | ascii_downcase), number: (.n | tonumber)} ];
     reduce (inputs | fromjson? | select(type == "object")) as $r (
-      { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], entrypoint: null,
+      { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], linked: [], looked: {}, entrypoint: null,
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0,
-        tool_calls: 0, test_runs: 0, ci_polls: 0, messages: {}, since_edit: {},
+        tool_calls: 0, edit_calls: 0, test_runs: 0, ci_polls: 0, wrap: {}, messages: {}, since_edit: {},
         plan_exits: 0, plan_denied: 0, guards: {}, lesson_hits: {},
         compactions: { auto: 0, manual: 0 },
         uses: { subagents: {}, skills: {}, slash: {} } };
@@ -180,6 +217,7 @@ so_transcript_metrics() {
                elif $u.name == "Skill" and ($u.input.skill | type) == "string" then
                  .uses.skills[$u.input.skill] += 1
                else . end)
+            | (if (edit_tools | index($u.name)) != null then .edit_calls += 1 else . end)
             | (if (edit_tools | index($u.name)) != null
                   and (($u.input.file_path // $u.input.notebook_path // "") | test("/\\.agent/|/\\.claude/(plans|projects)/") | not) then
                  .since_edit = {}
@@ -189,8 +227,13 @@ so_transcript_metrics() {
               | ($c | time_use_class) as $k
               | .test_runs += (if $k == "test" then 1 else 0 end)
               | .ci_polls += (if $k == "gate" then 1 else 0 end)
+              | (if $k == "jobs" and ($r.cwd | type) == "string" and $r.cwd != "" then
+                   ($c | time_use_wrapper_paths($r.cwd)) as $w
+                   | if ($w | length) > 0 then .wrap[$w | tojson] += 1 else . end
+                 else . end)
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
               | (if ($c | pr_cmd) then .pr_ids[$u.id] = true else . end)
+              | reduce ($c | looked_at)[] as $l (.; .looked["\($l.repo)#\($l.number)"] = true)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)
               | reduce ($sigs[] | select((($r.timestamp // "") | .[0:10]) > .since)
                         | select(.sig as $re | try ($c | test($re)) catch false)) as $s (.;
@@ -239,44 +282,63 @@ so_transcript_metrics() {
             else . end)
         end
       elif $r.type == "pr-link" and ($r.prNumber | type) == "number" and (($r.prRepository // "") | test("^[^/\\s]+/[^/\\s]+$")) then
-        .prs += [{repo: $r.prRepository, number: $r.prNumber}]
+        .linked += [{repo: $r.prRepository, number: $r.prNumber}]
       elif $r.type == "system" and $r.subtype == "compact_boundary" then
         .compactions[if $r.compactMetadata.trigger == "manual" then "manual" else "auto" end] += 1
       else . end)
-    | { prs: (.prs | unique),
+    | .looked as $looked
+    | { prs: ((.prs + [.linked[] | select(($looked["\(.repo | ascii_downcase)#\(.number)"] or $looked["#\(.number)"]) | not)]) | unique),
         entrypoint,
         corrections: { interrupts, lessons_written },
         board_done: { proof, unverified },
         hard_errors: { api_error, denied, tool_errors },
         plan_gate: { exits: .plan_exits, denied: .plan_denied },
         guards, lesson_hits,
-        activity: { tool_calls, test_runs, ci_polls, api_messages: (.messages | length),
+        activity: { tool_calls, edit_calls, test_runs, ci_polls, api_messages: (.messages | length),
                     tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0),
                     compactions },
-        uses }
-  ' < "$1"
+        uses, wrap }
+  ' < "$1") || return 1
+  so_wrapper_adjust <<<"$m"
 }
 
-# so_project_of DIR -> the project an opencode or Codex session in DIR files under: the resolver's
-# name when the registry knows it (project_known), else the reserved `_unscoped`. The resolver names
-# an unregistered repo by its checkout, a key project-map-doctor FAILs, and these readers re-read
-# every session on disk each run, so a stray key moved to ~/.agent/_archive/ came back the next
-# night (qmk_firmware, bnb-agents). With no registry to read
-# (project_known rc 2, or a resolver lib without it) the resolver's name stands.
-so_project_of() {
-  local p rc=0
-  p="$(resolve_project_name "$1")"
-  case "$p" in _*) ;; *) project_known "$p" 2>/dev/null || rc=$?; [ "$rc" -ne 1 ] || p=_unscoped ;; esac
-  printf '%s\n' "$p"
+# so_wrapper_adjust - stdin: so_transcript_metrics' object with its `wrap` (script paths of the commands that
+# named no gate or test line, counted per command). stdout: the object without it, a command whose script's
+# text runs a test counted in test_runs, a gate in ci_polls: the strongest class of its scripts wins, as in
+# time_use.rs `wrapper_wait`. A script gone from disk, over SO_WRAPPER_MAX_BYTES or not UTF-8 is a plain job, and the
+# class is the file's text now.
+SO_WRAPPER_MAX_BYTES=65536
+so_wrapper_adjust() {
+  local m p classes='{}'
+  local -a files=()
+  m=$(cat) || return 1
+  if [ "$SO_TIME_USE_LINES" != '[]' ]; then
+    while IFS= read -r p; do
+      [ -n "$p" ] && [ -f "$p" ] && [ "$(wc -c < "$p")" -le "$SO_WRAPPER_MAX_BYTES" ] &&
+        iconv -f UTF-8 -t UTF-8 "$p" > /dev/null 2>&1 && files+=("$p")
+    done < <(jq -r '[(.wrap // {}) | keys[] | fromjson[]] | unique[]' <<<"$m")
+    if [ "${#files[@]}" -gt 0 ]; then
+      classes=$(jq -nR "$SO_PR_JQ"'reduce inputs as $l ({}; .[input_filename] += $l + "\n") | map_values(time_use_class)' "${files[@]}") || classes='{}'
+    fi
+  fi
+  jq --argjson cls "$classes" '
+    def rank: {gate: 3, test: 2, build: 1}[.] // 0;
+    reduce ((.wrap // {}) | to_entries[]) as $e (.;
+      (($e.key | fromjson) | map($cls[.] // "jobs") | max_by(rank) // "jobs") as $k
+      | if $k == "test" then .activity.test_runs += $e.value
+        elif $k == "gate" then .activity.ci_polls += $e.value
+        else . end)
+    | del(.wrap)' <<<"$m"
 }
 
 # so_dir_projects - stdin: a session directory a line; stdout: one {dir: project} object
-# (so_project_of on each distinct dir), the map every harness's row reader files its rows by.
+# (resolve_project_name on each distinct dir, `_unscoped` for one the registry does not know),
+# the map every harness's row reader files its rows by.
 so_dir_projects() {
   # shellcheck source=/dev/null
   . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
   sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
+    jq -cn --arg d "$dir" --arg p "$(resolve_project_name "$dir")" '{key: $d, value: $p}'
   done | jq -cs from_entries
 }
 
@@ -476,27 +538,53 @@ SO_FORGEJO_TOKEN=""
 # so_forgejo_pr HOST/OWNER/REPO NUMBER - one PR in the `gh pr view --json
 # state,headRefName,headRefOid,body,createdAt,mergedAt,additions,deletions,mergeCommit` shape. headRefName is `#N`, the
 # branch the run ledger files a Forgejo PR's runs under (schedules-sync forgejo_rows); the API's
-# head.ref reads refs/pull/N/head once the branch is deleted. Why it failed goes to stderr.
+# head.ref reads refs/pull/N/head once the branch is deleted. Why it failed goes to stderr. Fails 3 when
+# the forge says the PR does not exist: pulls/N is a 404 while the repo's pull list still reads, since
+# Forgejo also answers 404 for a private repo the token cannot see. The forge lost home-config ~#940-960
+# and bnb-game-servers #47-48 (merged 2026-11-14; the PR store still holds them), and each one failed
+# a whole fleet-bench review (ar-5951).
 so_forgejo_pr() {
-  local repo="$1" n="$2" pr
+  local repo="$1" n="$2" pr err rc=1
   so_forgejo_auth "$repo" || { printf '%s\n' "$SO_FORGEJO_ERR" >&2; return 1; }
-  pr="$(so_forgejo_get "$repo" "pulls/$n")" || return 1
+  err=$(mktemp) || return 1
+  pr="$(so_forgejo_get "$repo" "pulls/$n" 2>"$err")" || {
+    # Forgejo's own 404 is JSON with a .message; a proxy's is not, so it stays a failed read
+    grep -q 'returned error: 404' "$err" && jq -e '.message' <<<"$pr" >/dev/null 2>&1 &&
+      so_forgejo_get "$repo" "pulls?limit=1" >/dev/null 2>&1 && rc=3
+    [ "$rc" -eq 3 ] || cat "$err" >&2
+    rm -f "$err"; return "$rc"
+  }
+  cat "$err" >&2; rm -f "$err"
   jq -c '{state: (if .merged then "MERGED" elif .state == "open" then "OPEN" else "CLOSED" end),
           headRefName: "#\(.number)", headRefOid: .head.sha, body, createdAt: .created_at, mergedAt: .merged_at,
           additions, deletions, mergeCommit: (if .merge_commit_sha then {oid: .merge_commit_sha} else null end)}' <<<"$pr"
 }
 
-# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state, context}],
-# so pr-ci.sh CI_JQ reads them unchanged: a Forgejo status is pending, success, warning, error or
-# failure, and warning is a pass (Forgejo's own combined state does not fail on it). After so_forgejo_auth.
+# so_forgejo_checks HOST/OWNER/REPO SHA - the commit's statuses as gh's statusCheckRollup, [{state, name,
+# detailsUrl}], so pr-ci.sh CI_JQ reads them unchanged: a Forgejo status is pending, success, warning, error
+# or failure, and warning is a pass (Forgejo's own combined state does not fail on it). It reads every post
+# (commits/SHA/statuses, paged) and keeps the newest (highest id) of each context and Actions run (the
+# /actions/runs/N in target_url; a status with none is one per context); CI_JQ then keeps only each
+# context's newest run. The combined commits/SHA/status keeps whichever post came last, so on home-config
+# PR #1521 (head 1fbd16c8) run 5863 re-posted its red zomboid-scripts at 13:18:59, after run 5864's green
+# at 13:14:08, and agent-land refused a head whose newer run was green (2026-11-25, ar-5884). A failed
+# page fails the read, which callers retry as a lost one. After so_forgejo_auth.
 so_forgejo_checks() {
-  local st
-  st="$(so_forgejo_get "$1" "commits/$2/status")" || return 1
-  jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end), context}]' <<<"$st"
+  local page=1 got all=''
+  while :; do
+    got="$(so_forgejo_get "$1" "commits/$2/statuses?limit=$SO_FORGEJO_PAGE&page=$page")" || return 1
+    all+="$got"$'\n'
+    [ "$(jq length <<<"$got")" -ge "$SO_FORGEJO_PAGE" ] || break
+    page=$((page + 1))
+  done
+  jq -cs 'add // [] | map(. + {_run: ((.target_url // "") | capture("/actions/runs/(?<r>[0-9]+)").r // null)})
+    | group_by([.context, ._run]) | map(max_by(.id))
+    | map({state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end), name: .context, detailsUrl: .target_url})' <<<"$all"
 }
 
 # so_pr_view <owner/repo#N or N> <checkout> <fields> <jq> -> <jq> over the PR's <fields>, as `gh pr view -q`
-# prints it; fails when its forge cannot be read. The one forge rule for reading a recorded PR
+# prints it; fails when its forge cannot be read, 3 when gh says the PR does not exist (so_gh_pr_view).
+# The one forge rule for reading a recorded PR
 # (fleet-dispatch item_pr_state, agent-queue pr_state). A checkout whose canonical forge is Forgejo
 # (forge_canonical; home-config) is read from that forge's API in gh's shape (so_forgejo_pr,
 # so_forgejo_checks): gh sees only its GitHub mirror, which has no PRs, so fix-traefik's reap logged
@@ -513,9 +601,33 @@ so_pr_view() {
     [[ ",$3," == *,statusCheckRollup,* ]] || { jq -r "$4" <<<"$pr"; return; }
     ci=$(so_forgejo_checks "$repo" "$(jq -r .headRefOid <<<"$pr")" 2>/dev/null) || return 1
     jq -r --argjson ci "$ci" ".statusCheckRollup = \$ci | $4" <<<"$pr"
-  elif [[ "$1" == */*#* ]]; then gh pr view "$n" -R "${1%#*}" --json "$3" -q "$4" 2>/dev/null
-  else [ -n "$2" ] && (cd "$2" && gh pr view "$n" --json "$3" -q "$4" 2>/dev/null)
+  elif [[ "$1" == */*#* ]]; then so_gh_pr_view "$(so_repo_here "$2" "${1%#*}" && echo 1)" "$n" "$3" "$4" -R "${1%#*}"
+  else [ -n "$2" ] && (cd "$2" && so_gh_pr_view 1 "$n" "$3" "$4")
   fi
+}
+
+# so_gh_pr_view <known> <N> <fields> <jq> [gh args] -- so_pr_view's gh read. Fails 3 when gh answers that
+# the PR does not exist, so a caller does not wait on it as on a forge that did not answer: ar-77's pr:
+# named kblack0610/dotfiles#802, and land_orphan waited on it silently on every pass (ar-4702). A repo gh
+# cannot resolve is missing only when <known> is empty (so_repo_here): for a repo the fleet works in,
+# GitHub says the same to a token that cannot see it. Else 1.
+so_gh_pr_view() {
+  local known=$1 err
+  shift
+  { err=$(gh pr view "$1" "${@:4}" --json "$2" -q "$3" 2>&1 >&3); } 3>&1 && return 0
+  [[ "$err" != *"Could not resolve to a PullRequest"* ]] || return 3
+  [ -n "$known" ] || [[ "$err" != *"Could not resolve to a Repository"* ]] || return 3
+  return 1
+}
+
+# so_repo_here <checkout> <owner/repo> -- a remote of <checkout> is that repo, on any host, in any case.
+so_repo_here() {
+  local name
+  [ -n "$1" ] || return 1
+  for name in $(git -C "$1" remote 2>/dev/null); do
+    [ "$(url_repo "$(git -C "$1" remote get-url "$name" 2>/dev/null)" | tr '[:upper:]' '[:lower:]')" != "${2,,}" ] || return 0
+  done
+  return 1
 }
 
 # so_pr_dir <pr ref> [project] -> the checkout a recorded PR's repo lives in, for so_pr_view: the repo
@@ -726,12 +838,19 @@ so_rework_commits() {
       capture("^(?<sha>[0-9a-f]+) (?<at>[0-9]+) (?<s>.*)$") | .at |= tonumber | .fix = (.s | ascii_downcase | test($re))'
 }
 
-# so_rework_repos MAP - one `owner/repo<TAB>dir` line per project-map checkout whose origin is on
-# GitHub, so a PR's repo finds the clone blame runs in.
+# so_rework_repos MAP - one `<store key><TAB>dir` line per project-map checkout whose origin is on
+# GitHub (owner/repo) or on a Forgejo alias host (host/owner/repo under the store's host, so_store_key),
+# so a PR's repo finds the clone blame and attribution run in. Why: GitHub alone left every Forgejo PR's
+# project null, 214 rows from home-config, bnb-game-servers and audio (ar-883). Any other host is left out.
 so_rework_repos() {
-  local dir repo
+  local dir repo host
+  [ -n "${SO_CANON_ALIASES+set}" ] || so_canon_init "$1" || return 1
   jq -r '.paths // {} | keys[]' "$1" 2>/dev/null | while IFS= read -r dir; do
-    repo=$(origin_repo "$dir" github.com) || continue
+    if ! repo=$(origin_repo "$dir" github.com); then
+      host=$(origin_host "$dir") && [ -n "$host" ] && repo=$(origin_repo "$dir") || continue
+      repo=$(so_store_key "$1" "$host/$repo")
+      [ -n "${SO_CANON_STORE:-}" ] && [[ "${repo,,}" == "${SO_CANON_STORE,,}"/* ]] || continue
+    fi
     printf '%s\t%s\n' "$repo" "$dir"
   done
 }

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# plan-standard.sh - holds plans to three rules of ~/.local/src/docs/planning.md (Epic, Phases,
-# Chain), read at the two moments a plan forms:
-#   UserPromptSubmit in plan mode: inject those three rules.
+# plan-standard.sh - holds plans to four rules of ~/.local/src/docs/planning.md (Epic, Phases,
+# Chain, Owners), read at the two moments a plan forms:
+#   UserPromptSubmit in plan mode: inject those rules.
 #   PreToolUse on ExitPlanMode: deny, naming each gap, before the human sees the plan.
 # The doc's Sections table is the written standard and is not checked here (the human released
 # that gate, 2026-11-22). A rule that must be recalled at a trigger does not hold, which is why
-# these three are a check. Fails open: a missing doc or an empty plan passes. "plan-standard:"
+# these four are a check. Fails open: a missing doc or an empty plan passes. "plan-standard:"
 # opens every deny; session outcomes count on it.
 
 DOC="$HOME/.local/src/docs/planning.md"
@@ -36,7 +36,7 @@ if [ "$event" = UserPromptSubmit ]; then
   tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
   [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
   # A rule's "Why:" history is for editing the doc; the deny below names any gap.
-  rules=$(grep -E '^(Chain|Phases): ' "$DOC")
+  rules=$(grep -E '^(Chain|Phases|Owners): ' "$DOC")
   ! epic_checked || rules+=$'\n'$(grep -E '^Epic: ' "$DOC")
   rules=$(sed -E 's/ Why: .*//' <<<"$rules")
   jq -nc --arg c "Plan standard for $label. ExitPlanMode is denied unless the plan meets these rules:
@@ -97,15 +97,41 @@ if [ -n "$phased" ] && [ -x "$aq" ] && tmpd=$(mktemp -d); then
   }
 fi
 
+# The doc's Owners: rule. A plan whose ## Changes names code under .local/bin, .local/lib or .local/src
+# (the private repo's bin is the same path) needs an `Owners:` line; a line that is there is checked
+# either way. A name is a row key or writer file of the Owners table, read by `fact-owners names`, its
+# one parser; `none:` carries its search. Fails open with no table or no fact-owners.
+fo="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/bin/fact-owners"
+owners_doc="$HOME/.local/src/docs/fleet-states.md"
+if declare -F plan_owners_line >/dev/null && [ -x "$fo" ] && [ -r "$owners_doc" ] &&
+  known=$("$fo" names --doc "$owners_doc" 2>/dev/null) && [ -n "$known" ]; then
+  touched=$(awk '/^```/ { f = !f; next } !f && /^## / { on = ($0 ~ /^## Changes[[:space:]]*$/); next } !f && on' <<<"$plan" |
+    grep -oE '(^|[^[:alnum:]_.-])\.local/(bin|lib|src)(/[^[:space:]`,;:)]*)?([^[:alnum:]_/-]|$)' | sed -E 's/[^[:alnum:]_\/]*$//' | sed -E 's/^[^.]*//' | grep -vE "^\.local/src/docs(/|$)" | head -n1)
+  if owners=$(plan_owners_line <<<"$plan"); then
+    if [[ "$owners" == none:* ]]; then
+      grep -qE '^none:[[:space:]]+rg[[:space:]]+[^[:space:]]' <<<"$owners" ||
+        gaps+=("Owners: line says \"$owners\": a none: names the search that found no owner, as \"none: rg <query>\", never free text")
+    elif [ -z "$owners" ]; then
+      gaps+=("Owners: line is empty: name the Owners-table rows this plan reads or writes, or \"none: rg <query>\"")
+    else
+      unknown=$(grep -vxFf <(printf '%s\n' "$known") <<<"$owners" | paste -sd, | sed 's/,/, /g')
+      [ -z "$unknown" ] ||
+        gaps+=("Owners: line names $unknown, no row key or writer file of the Owners table (fact-owners names lists them): fix the name, or say \"none: rg <query>\"")
+    fi
+  elif [ -n "$touched" ]; then
+    gaps+=("## Changes names $touched but ## Reviewed has no Owners: line: name the Owners-table rows (fleet-states.md) this change reads or writes, or \"none: rg <query>\" for the search that found none")
+  fi
+fi
+
 # The doc's Epic: rule (epic_checked, above). The id must be an epic( row on some lab sheet, open
 # or closed; a plan with more than one phase is a feature, so its epic is not a standing
 # "epic(<system>): <system> to standard" one.
 # epic_new_gaps <proposal> -> one gap a line for an `epic: new` (plan_epic_new): the read-only part of
-# the self-check `notes ptask add` runs on it at approval (plan-approved.sh). The shortlist is the CLI's:
-# `similar` on both lanes, merged best first, its SHORTLIST_TOP (project_tasks.rs) rows, every id of
-# which the plan names on Overlap:, its review of them.
+# the self-check `notes ptask add` runs on it at approval (plan-approved.sh). The shortlist is the CLI's
+# own (`similar --epic`, project_tasks.rs shortlist): the rows of both lanes, and the open epics and live
+# plans most like it, every id of which the plan names on Overlap:, its review of them.
 epic_new_gaps() {
-  local t="$1" board sys ids lane short missing
+  local t="$1" board sys ids short missing
   board=$(project_board "$project")
   if ! [[ "$t" =~ ^epic\(([a-z0-9-]+)\):[[:space:]]*[^[:space:]] ]]; then
     echo "epic: new $t is no epic(<system>): <outcome>"; return
@@ -120,12 +146,14 @@ epic_new_gaps() {
   elif ! grep -qxF -- "$sys" <<<"$ids"; then
     echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")$([ -n "$target" ] || echo "; $board is this session's board, so a plan for another project names only that project's rows on Overlap:")"
   fi
-  short=$(for lane in '' --agent; do
-      notes ptask "$board" $lane similar --top 5 --json -- "$t" 2>/dev/null | jq -r '.[] | "\(.percent)\t\(.id)"' 2>/dev/null
-    done | sort -s -t$'\t' -k1,1nr | awk 'NR <= 5' | cut -f2)
+  if ! short=$(notes ptask "$board" similar --epic --json -- "$t" 2>/dev/null) || [ -z "$short" ] ||
+    ! short=$(jq -r 'if type == "array" then .[].id | select(. != "") else error("no list") end' <<<"$short" 2>/dev/null); then
+    echo "epic: new: notes ptask $board similar --epic --json printed no shortlist, so Overlap: cannot be checked against it"; return
+  fi
+  short=$(awk '!seen[$0]++' <<<"$short")
   missing=$(comm -23 <(sort -u <<<"$short" | awk 'NF') <(plan_overlap_ids <<<"$plan"))
   [ -z "$missing" ] ||
-    echo "epic: new: the open rows most like it on $board are $(paste -sd' ' <<<"$short"), and Overlap: does not name $(paste -sd' ' <<<"$missing"): read each (notes ptask $board similar -- \"$t\", and --agent), then put its id on Overlap: with why it is other work, or name the one that is this work on the epic: line instead"
+    echo "epic: new: the open rows, epics and live plans most like it on $board name $(paste -sd' ' <<<"$short"), and Overlap: does not name $(paste -sd' ' <<<"$missing"): read each (notes ptask $board similar --epic -- \"$t\"), then put its id on Overlap: with why it is other work, or name the one that is this work on the epic: line instead"
 }
 
 if epic_checked; then

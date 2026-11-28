@@ -10,6 +10,15 @@ setup() {
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-assess"
   FLEET_GH_PROBE_TTL_S=0 # every test reads the stubbed bucket fresh; the cache tests set their own
+  # No sensor unless a test makes one: a hot CI runner must not flip the probe tests to a critical HOLD.
+  export CPU_TEMP_HWMON="$BATS_TEST_TMPDIR/hwmon" CPU_TEMP_THERMAL="$BATS_TEST_TMPDIR/thermal"
+}
+
+# hwmon_tctl <millidegrees> -- a k10temp hwmon under CPU_TEMP_HWMON reading that Tctl.
+hwmon_tctl() {
+  mkdir -p "$CPU_TEMP_HWMON/hwmon0"
+  echo k10temp > "$CPU_TEMP_HWMON/hwmon0/name"
+  echo "$1" > "$CPU_TEMP_HWMON/hwmon0/temp1_input"
 }
 
 # v <load> <tctl> <mem%> <held> on a 24-core box -> the verdict word
@@ -115,7 +124,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   FLEET_HOLD_LOAD_X=0 run "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_failure 1
   assert_output --partial 'HOLD'
-  FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 \
+  FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CRIT_TCTL=1000 \
     run "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_success
 }
@@ -141,7 +150,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   local hold="$REPO_ROOT/.local/bin/agent-hold"
   "$hold" set dispatch --by t "maintenance" >/dev/null
   "$hold" claim mac-desktop --by t "store form" >/dev/null
-  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
+  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CRIT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_success
   assert_output --partial 'OK'
@@ -153,7 +162,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
 @test "--thermal-probe between the marks: a tripped watch stays tripped, and dispatch's --watch-probe does not" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch"
   mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
-  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
+  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CRIT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_success
   echo OK > "$SENTINEL_STATE/fleet-thermal.state"
@@ -171,9 +180,62 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch"
   mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
   printf TRIP > "$SENTINEL_STATE/fleet-thermal.state"
-  run env FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=1000 FLEET_CLEAR_MEM_PCT=0 FLEET_CLEAR_STALL_PCT=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  run env FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CRIT_TCTL=1000 FLEET_CLEAR_LOAD_X=1000 FLEET_CLEAR_MEM_PCT=0 FLEET_CLEAR_STALL_PCT=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_success
   assert_output --partial 'CLEAR'
+}
+
+# 2026-11-25: tuf-b550 read 101-105 C at a load of 0.5-0.85x cores and powered off at 110 C; the hot
+# rule needed 1.5x cores, so nothing held it.
+@test "critical tctl: HOLD at any load; the boost band still needs load" {
+  run fleet_verdict 12 24 110 60 0
+  assert_output 'HOLD tctl 110 C >= 100 C critical'
+  [ "$(fleet_verdict 12 24 100 60 0 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 12 24 99.9 60 0 | cut -d' ' -f1)" = OK ]
+  [ "$(fleet_verdict 12 24 96 60 0 | cut -d' ' -f1)" = OK ]
+  [ "$(fleet_verdict 38.4 24 96 60 0 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 12 24 - 60 0 | cut -d' ' -f1)" = OK ]
+  # The mark is the knob in cpu-temp.sh.
+  FLEET_CRIT_TCTL=111 run fleet_verdict 12 24 110 60 0
+  assert_output --partial 'OK'
+}
+
+@test "critical tctl: a held machine clears only back under the throttle point, so 99.9 C does not flap" {
+  run fleet_verdict 12 24 99.9 60 1
+  assert_output 'HOLD held, tctl 99.9 C not yet under 95 C'
+  [ "$(fleet_verdict 12 24 95 60 1 | cut -d' ' -f1)" = HOLD ]
+  [ "$(fleet_verdict 12 24 94.9 60 1 | cut -d' ' -f1)" = CLEAR ]
+  [ "$(fleet_verdict 12 24 - 60 1 | cut -d' ' -f1)" = CLEAR ]
+}
+
+@test "thermal_page: a critical tctl pages urgent at any load, naming the host and its temperature" {
+  FLEET_HOST=tuf-b550 run thermal_page 1 24 105
+  assert_line 'page: urgent'
+  assert_line 'reason: tuf-b550 CPU at 105 C, at or over the 100 C critical mark (near its thermal shutdown)'
+  run thermal_page 1 24 99.9
+  assert_output 'page: low'
+  run thermal_page 1 24 -
+  assert_output 'page: low'
+}
+
+@test "--thermal-probe: a stubbed hwmon at 105000 holds at an idle load and pages urgent naming the Tctl" {
+  export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch" FLEET_LOADAVG="$BATS_TEST_TMPDIR/loadavg"
+  mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"
+  echo "0.10 0.10 0.10 1/1 1" > "$FLEET_LOADAVG"
+  hwmon_tctl 105000
+  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOST=tuf-b550 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  assert_failure 1
+  assert_line --partial 'HOLD tctl 105.0 C >= 100 C critical'
+  assert_line 'page: urgent'
+  assert_line 'reason: tuf-b550 CPU at 105.0 C, at or over the 100 C critical mark (near its thermal shutdown)'
+  # Dispatch's gate holds on it too, with no page line.
+  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
+  assert_failure 1
+  refute_output --partial 'page:'
+  # Negative control: the same host at 99 C is OK.
+  hwmon_tctl 99000
+  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  assert_success
 }
 
 @test "thermal_page: a 5-min load at 3x cores pages urgent with its reason, just under pages low" {
@@ -202,7 +264,7 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_failure 1
   refute_output --partial 'page:'
   echo "0.00 $(( n * 4 )) 1.00 1/1 1" > "$FLEET_LOADAVG"
-  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
+  run env FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CRIT_TCTL=1000 "$REPO_ROOT/.local/bin/fleet-assess" --thermal-probe
   assert_success
   refute_output --partial 'page:'
 }
@@ -287,6 +349,18 @@ textfile_fixture() {
   run write_textfile "$BATS_TEST_TMPDIR/absent"
   assert_failure
   assert_output --partial 'is not a directory'
+}
+
+@test "textfile: the CPU temperature is a gauge from read_tctl; no sensor publishes no series" {
+  textfile_fixture
+  hwmon_tctl 101250
+  write_textfile "$OUT"
+  run grep '^fleet_cpu_tctl_celsius' "$OUT/fleet_local.prom"
+  assert_output 'fleet_cpu_tctl_celsius 101.2'
+  rm -r "$CPU_TEMP_HWMON"
+  write_textfile "$OUT"
+  run grep -c '^fleet_cpu_tctl_celsius' "$OUT/fleet_local.prom"
+  assert_output 0
 }
 
 @test "textfile: no gates still publishes the session count, so 0 gates reads 0, not stale" {
@@ -379,26 +453,11 @@ EOF
   assert_output 1
 }
 
-# The governor's rows for this host as prom_q answers them: <seats> <held> <waiting> (waiting 0
-# is no series, as the governor writes none), or "none" for a host it has no row for.
-governor_fixture() {
-  GOVERNOR_HOST=ws
-  GOV_ROWS="$*"
-  prom_q() {
-    local seats held waiting
-    read -r seats held waiting <<< "$GOV_ROWS"
-    [ "$GOV_ROWS" != down ] || return 1
-    [ "$GOV_ROWS" != none ] || { echo '{"status":"success","data":{"result":[]}}'; return 0; }
-    printf '{"status":"success","data":{"result":[{"metric":{"__name__":"ci_governor_capacity_units","host":"ws"},"value":[1,"%s"]},{"metric":{"__name__":"ci_governor_busy_units","host":"ws"},"value":[1,"%s.000"]}%s]}}' \
-      "$seats" "$held" "$([ "$waiting" = 0 ] || printf ',{"metric":{"__name__":"waiting","kind":"local"},"value":[1,"%s.000"]}' "$waiting")"
-  }
-}
-
 # slots.sh's directory with seats 1-3, and a /proc/locks written from the fixture files' own
 # ids: seats 1 and 3 held, a waiter on seat 2 (waiting is not held), and seat 2's inode on
-# another device (not this file); the governor says 3 seats, 2 held, 2 waiting.
+# another device (not this file), and a waiter on queue.lock, which is no seat: 3 seats, 2 held,
+# 1 queued.
 slot_fixture() {
-  governor_fixture 3 2 2
   SLOT_DIR="$BATS_TEST_TMPDIR/slots"; mkdir -p "$SLOT_DIR"
   touch "$SLOT_DIR"/{1,2,3,queue}.lock
   PROC_LOCKS="$BATS_TEST_TMPDIR/locks"
@@ -421,7 +480,7 @@ editor_parents() {
   parent_of() { case "$1" in 101) echo 11 ;; 102) echo 50 ;; 50) echo 12 ;; 103) echo 900 ;; 900) echo 1 ;; esac; }
 }
 
-@test "textfile: the governor's units and the editors outside a seat are not republished" {
+@test "textfile: the seats and the editors outside a seat are not republished" {
   textfile_fixture
   slot_fixture
   editor_parents
@@ -443,30 +502,18 @@ editor_parents() {
   assert_output 0
 }
 
-@test "governor_seats: a host's seats, held (rounded) and waiting, nothing waiting is 0" {
-  governor_fixture 3 1 0
-  run governor_seats
-  assert_output "3 1 0"
-  governor_fixture 3 0 4
-  run governor_seats
-  assert_output "3 0 4"
-}
-
-@test "governor_seats: no row or no answer fails, so the gate line is absent, and backlog series are summed" {
+@test "seat_counts: seats are the N.lock files, busy the held ones, queued the runs blocked on one" {
   slot_fixture
-  local why
-  for why in none down; do
-    governor_fixture "$why"
-    run governor_seats
-    assert_failure
-    run gate_line
-    assert_output ""
-  done
-  prom_q() {
-    printf '{"status":"success","data":{"result":[{"metric":{"__name__":"ci_governor_capacity_units"},"value":[1,"3"]},{"metric":{"__name__":"waiting","kind":"local"},"value":[1,"1"]},{"metric":{"__name__":"waiting","kind":"local","pool":"x"},"value":[1,"2"]}]}}'
-  }
-  run governor_seats
-  assert_output "3 0 3"
+  run seat_counts
+  assert_output "3 2 1"
+  : > "$PROC_LOCKS"
+  run seat_counts
+  assert_output "3 0 0"
+  rm "$SLOT_DIR"/[0-9]*.lock
+  run seat_counts
+  assert_failure
+  run gate_line
+  assert_output ""
 }
 
 @test "textfile: the last day of the run ledger, by result, with nearest-rank run times" {
@@ -869,7 +916,7 @@ gate_ledger() {
   gate_rows() { :; }
   gate_ledger
   run gate_line
-  assert_output "gate: 2/3 units busy, 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
+  assert_output "gate: 2/3 seats busy, 1 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
 }
 
 @test "gate_line: a reaped worktree reads merged, and a ledger with no run names no branch" {
@@ -882,16 +929,16 @@ gate_ledger() {
   refute_output --partial 'not merged'
   RUN_LEDGER="$BATS_TEST_TMPDIR/none.tsv"
   run gate_line
-  assert_output "gate: 2/3 units busy, 2 queued, 2h: 0 fail, 0 pass"
+  assert_output "gate: 2/3 seats busy, 1 queued, 2h: 0 fail, 0 pass"
 }
 
-@test "gate_line: an editor outside any seat is named beside the governor's units, never added to them" {
+@test "gate_line: an editor outside any seat is named beside the seats, never added to them" {
   slot_fixture
   editor_parents
   gate_rows() { printf '%s\t%s\t%s\t%s\n' 600 x build 103; }
   RUN_LEDGER="$BATS_TEST_TMPDIR/none.tsv"
   run gate_line
-  assert_output "gate: 2/3 units busy, 2 queued, 1 outside a seat, 2h: 0 fail, 0 pass"
+  assert_output "gate: 2/3 seats busy, 1 queued, 1 outside a seat, 2h: 0 fail, 0 pass"
 }
 
 @test "gate_line: a branch the worktree no longer has is not named, a conflicting one is" {
@@ -912,14 +959,14 @@ gate_ledger() {
   assert_output --partial 'not merged: feat/a x5'
 }
 
-@test "gate_line: no governor row prints no gate line, and --gate runs it from main" {
+@test "gate_line: --gate runs it from main, and no seat file prints no gate line" {
   slot_fixture
   editor_parents
   gate_rows() { :; }
   gate_ledger
   run main --gate
-  assert_output --partial "gate: 2/3 units busy, 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
-  GOV_ROWS=none
+  assert_output --partial "gate: 2/3 seats busy, 1 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
+  rm "$SLOT_DIR"/[0-9]*.lock
   run main --gate
   assert_output ""
 }

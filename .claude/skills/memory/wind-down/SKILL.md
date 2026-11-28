@@ -252,7 +252,7 @@ The script prints what it armed. Relay that to the user. Two cases to handle:
 
 - **Not in tmux, and not a background session** - `arm` prints a notice and exits non-zero without arming. The note is still
   written; tell the user there's no tmux window to close so nothing was armed.
-- **A background session** (`claude daemon`, `CLAUDE_CODE_SESSION_KIND=bg`) - it has no window,
+- **A background session** (`claude daemon`: the job in `CLAUDE_JOB_DIR` names this session) - it has no window,
   so `arm` arms `claude stop <job>` for this session instead; the conversation is kept, and
   `claude attach <job>` reopens it. The pane the human views it from is never closed.
 - **Sole window in the session** - `arm` notes that closing the window ends the session too.

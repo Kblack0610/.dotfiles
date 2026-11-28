@@ -19,8 +19,8 @@ use crate::fmt::{clock, dash, heading, Palette};
 use crate::innertabs;
 
 /// `Alert::COLUMNS` in capitals, in its order, the sort mark placed by that index.
-const HEADER: [&str; 7] = [
-    "SEV", "WHAT", "PROJECT", "SOURCE", "SINCE", "OWNER", "STATE",
+const HEADER: [&str; 8] = [
+    "SEV", "WHAT", "PROJECT", "SYSTEM", "SOURCE", "SINCE", "OWNER", "STATE",
 ];
 /// The width of an opened row's labels, as the longest one.
 const LABEL: usize = 14;
@@ -201,12 +201,12 @@ impl AlertsView {
         let (mut table, starts) = Table {
             header: HEADER.to_vec(),
             rows: cells,
-            keep: vec![1, 6, 5, 0, 4, 2, 3],
+            keep: vec![1, 7, 6, 0, 5, 2, 4, 3],
             flex: Some(1),
             flexmin: 16,
             flexkeep: true,
-            right: vec![4],
-            cap: vec![(5, 22), (2, 16)],
+            right: vec![5],
+            cap: vec![(6, 22), (2, 16), (3, 16)],
             mark: self.table.mark::<Alert>(),
         }
         .fit_wrapped(w, p.head());
@@ -269,6 +269,7 @@ fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line
                 cell(x.state.clone(), style),
                 cell(x.severity.clone(), p.dim()),
                 cell(dash(&x.project), p.dim()),
+                cell(dash(&x.system), p.dim()),
                 at(x.since).into(),
                 at(x.lastrun).into(),
                 cell(x.place.clone(), p.dim()),
@@ -279,11 +280,11 @@ fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line
         out.extend(
             Table {
                 header: vec![
-                    "WATCH", "STATE", "SEVERITY", "PROJECT", "SINCE", "LAST RUN", "WHERE",
+                    "WATCH", "STATE", "SEVERITY", "PROJECT", "SYSTEM", "SINCE", "LAST RUN", "WHERE",
                 ],
                 rows,
-                keep: vec![0, 1, 4, 5, 2, 3, 6],
-                flex: Some(6),
+                keep: vec![0, 1, 5, 6, 2, 3, 7, 4],
+                flex: Some(7),
                 flexmin: 10,
                 ..Default::default()
             }
@@ -319,6 +320,7 @@ fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
             many => format!("{} ({} alerts)", r.what, many.len()).into(),
         },
         cell(dash(&r.project), p.dim()),
+        cell(dash(&r.system), p.dim()),
         cell(r.source.clone(), p.dim()),
         r.since
             .map_or("-".into(), |t| hub_core::display::fmt::age(now - t))
@@ -779,7 +781,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_runner_the_governor_powered_off_is_not_firing() {
+    fn an_offline_cloud_runner_is_down() {
         let flat = |v: serde_json::Value| {
             hub_core::prom::flatten(
                 &serde_json::json!({"status": "success", "data": {"result": [v]}}),
@@ -792,34 +794,17 @@ pub(crate) mod tests {
             .unwrap()
             .extend(flat(serde_json::json!({"metric":
             {"host": "aws-burst-1", "name": "aws-1", "state": "offline", "site": "cloud"}, "value": [0, "0"]})));
-        let firing = |i: &hub_core::infra::Infra| {
-            let a = hub_core::alerts::join(
-                i,
-                Ok(vec![]),
-                Ok(Reds::default()),
-                Ok(String::new()),
-                Ok(vec![]),
-                NOW,
-            );
-            page(&AlertsView::default(), &a, 160).0
-        };
-        let power = |state: &str| {
-            flat(
-                serde_json::json!({"metric": {"__name__": "ci_governor_power_state",
-                "host": "aws-burst-1", "state": state}, "value": [0, "1"]}),
-            )
-        };
-        // A cloud host with nothing online and no power series is off, as the governor leaves
-        // its stopped hosts while it publishes none (ar-3326): not down.
-        assert!(!firing(&i).contains("aws-1"), "unmanaged cloud: off");
-        i.instant.insert("power", power("running"));
-        assert!(
-            firing(&i).contains("aws-1 offline"),
-            "governor running: down"
+        let a = hub_core::alerts::join(
+            &i,
+            Ok(vec![]),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
         );
-        i.instant.insert("power", power("stopped"));
-        let s = firing(&i);
-        assert!(!s.contains("aws-1"), "{s}");
+        // Nothing holds a runner off on purpose, so an offline one is down wherever it runs.
+        let s = page(&AlertsView::default(), &a, 160).0;
+        assert!(s.contains("aws-1 offline"), "{s}");
         assert!(s.contains("mini-1 offline"), "{s}");
     }
 

@@ -11,7 +11,8 @@
 # the old one beside it: platform#1551's failed `Task line` stayed next to the passing one 40s later and
 # read CI red while `gh pr checks` was all green (2026-11-14). A check is its workflow plus its name, and
 # only its entries from the newest Actions run (the run id in detailsUrl) count, so matrix shards that
-# share a name all stay; a status or an entry with no run id is kept as it is. A cancelled matrix job
+# share a name all stay; a status or an entry with no run id is kept as it is. A Forgejo status (so_forgejo_checks) comes
+# with its run id in detailsUrl and its context as its name, so each context counts only its newest run (ar-5884). A cancelled matrix job
 # that never expanded keeps its template name (`fast (${{ matrix.n }})`), which no newer entry shares: it
 # goes once an entry of a newer run of its workflow matches the template. A PR opened and pushed to in the
 # same second gets two pull_request runs on one head and concurrency cancels the older (dotfiles#2437

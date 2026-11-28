@@ -175,7 +175,7 @@ started_item() {
 # first whose key contains it. A row going to [/] with no id gets the next gm-N and the id goes
 # out on its own line, unless the fixture says the project has no code (nocode.<project>).
 # `board --json` lists each row with its #tags, an [x] one under `done` as the real board does, and
-# `--id` those rows by id;
+# `--id` those rows by id ($F/board.id.fail fails that read with its text);
 # `tag (--add|--remove <tag>)... <id>` edits the row's tags.
 stub_notes() {
   cat > "$SANDBOX/bin/notes" <<'EOF'
@@ -206,6 +206,7 @@ case "${args[0]}" in
       else printf -- '-\t-\t%s\t0\n' "$l"; fi
     done ;;
   board)
+    [[ " ${args[*]} " != *" --id "* ]] || [ ! -f "$F/board.id.fail" ] || { cat "$F/board.id.fail" >&2; exit 1; }
     # A fixture with board.sprints (one JSON array of the feed's `sprints`) adds them to the feed; without one it is [], as the real feed always carries it.
     { if [ -f "$F/board.rows" ]; then jq -sc '{rows: ., done: []}' "$F/board.rows"
     else
@@ -219,9 +220,12 @@ case "${args[0]}" in
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
             since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
-            marker: ((.[1] | capture("<!--.* (?<m>dropped:)") | .m) // ""),
+            marker: ((.[1] | capture("<!-- (?<m>.*) -->") | .m) // ""),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
-      done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
+      done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}' |
+        # $F/later.version names a release past the open one (v2.0.0): its open rows answer only --id, as the real feed lists the open release alone
+        if [[ " ${args[*]} " == *" --id "* ]] || [ ! -f "$F/later.version" ]; then cat
+        else jq -c --arg later "$(cat "$F/later.version")" '.rows |= map(select(.tags | index($later) | not))'; fi
     fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else jq -c '. + {sprints: (.sprints // [])}'; fi |
     # --id <ID>...: `{today, rows}` of every row, open or closed, with one of those ids, as the real lookup.
     if [[ " ${args[*]} " == *" --id "* ]]; then
@@ -230,7 +234,7 @@ case "${args[0]}" in
     else cat; fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"
-    [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit 1   # a sheet that refuses the row: touch $F/refuse.<project>
+    [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit "$(grep -m1 . "$F/refuse.$p" || echo 1)"   # a sheet that refuses the row: touch $F/refuse.<project>, or write notes' exit code in it (6: the daily cap)
     [ -f "$f" ] || exit 0
     case "${args[2]}" in
       list) awk -F'\t' -v f="$f" '$2 ~ /^- \[[ \/]\]/ { print f "\t" NR "\t" $1 "\t" $2 }' "$f" ;;
@@ -603,9 +607,9 @@ fj_item() {
   printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
   gh_script 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
   stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"; printf "%s %s\n" "$url" "$(cat)" >> "$NOTES_FIXTURE/fj.auth"
-case "$url" in */pulls/12) cat "$NOTES_FIXTURE/fj.pr" ;; */commits/*/status) cat "$NOTES_FIXTURE/fj.status" ;; *) exit 22 ;; esac'
+case "$url" in */pulls/12) cat "$NOTES_FIXTURE/fj.pr" ;; */commits/*/statuses*) cat "$NOTES_FIXTURE/fj.status" ;; *) exit 22 ;; esac'
   fj_pr "$1" "${3:-}"
-  jq -cn --arg s "$2" '{state: $s, statuses: [{status: $s}, {status: "success"}]}' > "$NOTES_FIXTURE/fj.status"
+  jq -cn --arg s "$2" '[{id: 2, status: $s, context: "checks / test"}, {id: 1, status: "success", context: "checks / lint"}]' > "$NOTES_FIXTURE/fj.status"
 }
 # fj_pr <state> [merge sha] [body] -- what Forgejo's API says of PR 12
 fj_pr() {

@@ -3,11 +3,16 @@
 # a message.
 #
 #   agent-hold set <resource> [--roster a,b,c] [--by name] [--kind load|resource]
-#                  [--until <time>] [--quote '<words>'] "<reason>"
+#                  [--until <time>] [--quote '<words>'] [--scope <repo>[:<path>],...] "<reason>"
+#                                   --scope: the repos or paths the hold locks for every project's
+#                                   work, not only rows tagged #hold/<resource>: dispatch skips a row
+#                                   that lands there (fleet-dispatch row_off_set) and agent-land
+#                                   refuses a PR whose changed files are under it (covers). <repo> is
+#                                   the forge repo name (home-config), <path> a file or directory in it
 #                                   --kind: load (the default) is the fleet pacing itself, which
 #                                   the shepherd lifts once the machine reads CLEAR; resource is
 #                                   anything else (bad RAM, a maintenance pause), released by hand
-#                                   (the default for dispatch). A re-set writes the kind,
+#                                   (the default for dispatch). A re-set writes the kind, scope,
 #                                   roster and reason afresh, drops the grants and keeps since;
 #                                   a hold by: human is re-set only --by human. --until (any time
 #                                   date -d reads, at most 24h ahead) ends the hold on its own:
@@ -32,7 +37,11 @@
 #                                   the id is kept beside each name on granted_ask:
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
-#   agent-hold release <resource>
+#   agent-hold release <resource> [--by name] [--force]   ends the hold, restoring what lower
+#                                   slowed, and answers grant each open ask that asked only for a
+#                                   grant under it. A claim in force is released only by its holder
+#                                   (one of its names or its session id, from the caller or given
+#                                   as --by, audited); --force frees one whose holder is gone
 #   agent-hold check <resource> [--no-caller] [--for <id>...]   exit 1 (and print the hold) while
 #                                   held, 0 when free, past its until, or when the caller is
 #                                   granted or holds the claim; --no-caller asks as no session, so neither counts; --for
@@ -44,6 +53,11 @@
 #                                   --expired lists only the holds past their until, which
 #                                   release ends (the shepherd's pace line names them)
 #   agent-hold show <resource>      print the hold file
+#   agent-hold scopes               resource<TAB>repo<TAB>path<TAB>granted, one line per --scope entry of
+#                                   each hold in force (path - for a whole repo, granted comma-separated)
+#   agent-hold covers <repo> [--for <id>...] < changed paths   exit 1, one held: line each, while a hold
+#                                   in force scopes a path given (a whole-repo scope: any path) and grants
+#                                   neither the caller nor a --for name (check decides that); else 0
 #   agent-hold aged [--days N]      each resource or human-set hold with no until, set N days ago
 #                                   or longer (1), then `page: high`, exit 1 when any; never releases
 #
@@ -51,6 +65,10 @@
 # A hold is state, not a message, because shell loops have no inbox and new sessions miss
 # a broadcast: the gate, the preflight and the coordinator all read this one file. Why and
 # how to use it: the fleet-comms and fleet-pace skills.
+#
+# A scope is what a hold locks when the work is not the holder's project's: on 2026-11-20 the human
+# locked home-config with #hold/ tags on its rows, and 40 minutes later home-config #1333, the work of
+# a unity-core-playground row, changed apps/ci-runner-governor anyway (ar-4187).
 #
 # A grant is GO as state: a staged restart lets a few sessions back in while the hold stays
 # set for the rest, and a human's narrowing lets the rows of a plan they approved run. It lives in
@@ -100,6 +118,8 @@ class_rank() { awk -F'\t' -v c="$1" '$1 == c { print $2 }' <<<"$DESK_CLASSES"; }
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
 # shellcheck source=../lib/audit.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/audit.sh"
+# shellcheck source=../lib/agent-units.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/agent-units.sh"   # agent_batch_unit
 # shellcheck source=../lib/dispatch-wake.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dispatch-wake.sh"
 
@@ -163,6 +183,33 @@ callers() {
   if [ -n "$t" ]; then printf '%s\n' "$t"; elif [ -n "${PWD##*/}" ]; then printf '%s\n' "${PWD##*/}"; fi
 }
 
+# scope_norm <list> -> the --scope list as the hold file keeps it: comma-separated <repo> or
+# <repo>:<path>, the path with no leading ./ or /, no trailing /, and no . or .. segment; fails
+# naming the bad entry. A repo is the forge's repo name, which agent-land and dispatch both read.
+scope_norm() {
+  local e r p out="" seg
+  local -a es segs
+  IFS=, read -ra es <<<"$1"
+  for e in "${es[@]}"; do
+    e="${e//[[:space:]]/}"
+    [ -n "$e" ] || continue
+    r="${e%%:*}" p=""
+    [ "$r" = "$e" ] || p="${e#*:}"
+    p="${p#./}"; while [[ "$p" == /* ]]; do p="${p#/}"; done; while [[ "$p" == */ ]]; do p="${p%/}"; done
+    [ "$r" = "$e" ] || [ -n "$p" ] ||
+      { echo "agent-hold set: --scope entry '$e' names no path after the colon (<repo> for the whole repo)" >&2; return 1; }
+    [[ "$r" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$r" != . ] && [ "$r" != .. ] ||
+      { echo "agent-hold set: --scope entry '$e' names no repo (<repo> or <repo>:<path>)" >&2; return 1; }
+    IFS=/ read -ra segs <<<"$p"
+    for seg in "${segs[@]}"; do
+      case "$seg" in ''|.|..) [ -z "$p" ] || { echo "agent-hold set: --scope path '$p' has an empty, . or .. segment" >&2; return 1; } ;; esac
+    done
+    out+="${out:+,}$r${p:+:$p}"
+  done
+  [ -n "$out" ] || { echo "agent-hold set: --scope names nothing" >&2; return 1; }
+  printf '%s' "$out"
+}
+
 # Who is holding, as set and claim record it and every reader shows it: the fleet-sessions
 # target in a tmux pane, else the working directory's basename. A claim keeps the Claude
 # session id beside it (sid:), so the name stays readable and the owner stays exact.
@@ -200,11 +247,13 @@ set_field() {
 cmd_set() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
-  local roster="" by="" reason="" kind="" until="" quote="" quoted=""
+  local roster="" by="" reason="" kind="" until="" quote="" quoted="" scope=""
+  # gate: none
   while [ $# -gt 0 ]; do
     case "$1" in
-      --roster|--by|--kind|--until|--quote) [ $# -ge 2 ] || { echo "agent-hold set: $1 needs a value" >&2; exit 2; }
+      --roster|--by|--kind|--until|--quote|--scope) [ $# -ge 2 ] || { echo "agent-hold set: $1 needs a value" >&2; exit 2; }
         case "$1" in --roster) roster="$2" ;; --by) by="$2" ;; --kind) kind="$2" ;; --until) until="$2" ;;
+          --scope) scope="$(scope_norm "$2")" || exit 2 ;;
           --quote) quote="$(oneline "$2")" quoted=1 ;; esac; shift 2 ;;
       --) shift; reason="$*"; break ;;
       -*) echo "agent-hold set: unknown flag $1" >&2; exit 2 ;;
@@ -273,6 +322,7 @@ cmd_set() {
     printf 'by: %s\n'       "$(oneline "$by")"
     printf 'roster: %s\n'   "$(oneline "$roster")"
     printf 'granted: \n'
+    [ -n "$scope" ] && printf 'scope: %s\n' "$scope"
     [ -n "$lowered" ] && printf 'lowered: %s\n' "$lowered"
     [ -n "$u" ] && printf 'until: %s\n' "$(date -d "@$u" +%Y-%m-%dT%H:%M:%S%z)"
     [ -n "$quote" ] && printf 'quote: %s\n' "$(cut -c1-300 <<<"$quote")"
@@ -292,7 +342,8 @@ cmd_set() {
 # claim: a hold that one session takes for its own use, so two sessions never drive the
 # same desktop at once. Unlike `set`, it never replaces someone else's hold: the file is
 # created with noclobber, so of two racing claims exactly one wins. Re-claiming your own
-# refreshes it. A claim left by a dead session is released by whoever finds it.
+# refreshes it. A claim left by a dead session is released by whoever finds it, with
+# `release --force`.
 cmd_claim() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
@@ -330,7 +381,7 @@ cmd_claim() {
     printf '%s\n' "$body" > "$f"; echo "claimed: $resource (refreshed)"; return 0
   fi
   # A hold past its until is over: its release, which restores what it lowered, makes way for the claim.
-  if [ -f "$f" ] && expired "$f"; then cmd_release "$resource" >/dev/null || return 1; fi
+  if [ -f "$f" ] && expired "$f"; then keep_asks=1 cmd_release "$resource" >/dev/null || return 1; fi
   if ( set -o noclobber; printf '%s\n' "$body" > "$f" ) 2>/dev/null; then
     echo "claimed: $resource"; return 0
   fi
@@ -435,8 +486,7 @@ unit_of() {
   local IFS=/
   for part in $path; do
     case "$part" in
-      tmux-spawn-*.scope|agent-*.scope|agentctl@*.service) batch="${batch:-$part}" ;;
-      *.scope|*.service) unit="$part" ;;
+      *.scope|*.service) if agent_batch_unit "$part"; then batch="${batch:-$part}"; else unit="$part"; fi ;;
     esac
   done
   unit="${batch:-$unit}"
@@ -465,10 +515,7 @@ cmd_lower() {
     esac
     # Only units that are batch work: a desktop terminal's or app's scope is the human's,
     # and the caller's own pane would slow the pass that has to lift the hold.
-    case "$unit" in
-      tmux-spawn-*.scope|agent-*.scope|agentctl@*.service) ;;
-      *) echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane, agent session or agentctl unit; left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue ;;
-    esac
+    agent_batch_unit "$unit" || { echo "agent-hold lower: pid $pid runs in $unit, not a tmux pane, agent session or agentctl unit; left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue; }
     [ "$unit" = "$self" ] && { echo "agent-hold lower: pid $pid is in this pane ($unit); left alone" >&2; [ "$rc" -gt 1 ] || rc=1; continue; }
     if in_list "$unit" "$lowered"; then echo "lowered: $unit (pid $pid, already)"; continue; fi
     # Recorded before it is applied, so no interrupted run leaves a unit lowered that the
@@ -482,13 +529,76 @@ cmd_lower() {
   return "$rc"
 }
 
+# settle_grant_asks <resource>: answer `grant` to each open ask that asked only for a grant under
+# the hold just released: its options are grant plus only GRANT_ASK_HOLD_SIDE ones, and its
+# question or context names the resource and no hold still set (names_word, the match
+# human_answer applies to a grant ask). With the hold gone a grant is what the asker gets anyway,
+# and nothing else answered it: on 2026-11-25 the critical hold was released and 7 asks to grant
+# work under it stayed on Needs (ar-6045). The answer is the human's only from their own shell (a
+# terminal on stdin, no agent session); a session's or an unattended caller's (fleet-dispatch
+# releases with stdin on /dev/null) is the agent's, and one agent-ask refuses an agent (a
+# human-only ask) is cancelled instead, since what it asked about is gone. The release stands
+# either way.
+GRANT_ASK_HOLD_SIDE="hold keep"
+settle_grant_asks() {
+  local resource="$1" id text h why by=agent answered="" cancelled="" others=()
+  [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] && [ -t 0 ] && by=human
+  for h in "$HOLD_ROOT"/*; do [ -f "$h" ] && others+=("${h##*/}"); done
+  while IFS=$'\t' read -r id text; do
+    names_word "$resource" "$text" || continue
+    for h in "${others[@]}"; do names_word "$h" "$text" && continue 2; done
+    if why="$("${AGENT_ASK:-agent-ask}" answer --by "$by" "$id" grant 2>&1 </dev/null)"; then
+      answered="${answered:+$answered }$id"
+    elif "${AGENT_ASK:-agent-ask}" cancel "$id" "hold $resource released, so there is no hold left to grant under" </dev/null 2>/dev/null; then
+      cancelled="${cancelled:+$cancelled }$id"
+    else
+      echo "agent-hold release: grant ask $id stays pending: $(oneline "$why")" >&2
+    fi
+  done < <("${AGENT_ASK:-agent-ask}" list --all --open 2>/dev/null | awk -F'\t' -v side="$GRANT_ASK_HOLD_SIDE" '
+    BEGIN { split(side, s, " "); for (i in s) keep[s[i]] = 1 }
+    # list columns: 1 id, 6 question, 7 options, 20 context (agent-ask cmd_list, which only appends).
+    { n = split(tolower($7), o, "|"); g = 0; ok = 1
+      for (i = 1; i <= n; i++) { gsub(/^ +| +$/, "", o[i]); if (o[i] == "grant") g = 1; else if (!(o[i] in keep)) ok = 0 }
+      if (g && ok && $1 != "") print $1 "\t" $6 " " $20 }')
+  [ -z "$answered" ] || echo "answered grant ($by): $answered"
+  [ -z "$cancelled" ] || echo "cancelled (no hold left to grant under): $cancelled"
+}
+
+# cmd_release <resource> [--by name] [--force]: exit 1 on a claim in force the caller does not
+# hold, unless --force. keep_asks=1 is the claim path's, which takes the resource again at
+# once, so no ask about it is settled as free.
 cmd_release() {
-  local resource="${1:-}"
+  local resource="${1:-}"; shift || true
   need_resource "$resource"
+  local by="" force=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --by) [ $# -ge 2 ] || { echo "agent-hold release: --by needs a value" >&2; exit 2; }
+        by="$(oneline "$2")"; shift 2
+        [ -n "$by" ] || { echo "agent-hold release: --by needs a value" >&2; exit 2; } ;;
+      --force) force=1; shift ;;
+      *) echo "agent-hold release: unknown argument $1" >&2; exit 2 ;;
+    esac
+  done
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || { echo "agent-hold: $resource is not held" >&2; exit 1; }
   local reason roster
   reason="$(field "$f" reason)"; roster="$(field "$f" roster)"
+  # A claim is one session's: another session's release would free a desktop still being driven
+  # (2026-11-06, a session released agent-42's mac-desktop claim, ar-751). A claim whose holder is
+  # gone is freed with --force by whoever finds it. The check catches a release by mistake; it does
+  # not prove a holder gone, and the audit line names whose claim a --force freed. A claim past
+  # its until is over, as check reads it, so anyone releases it (claim's own takeover of one does).
+  local note=""
+  if [ "$(field "$f" kind)" = claim ] && ! expired "$f"; then
+    local holder; holder="$(field "$f" by)"
+    if [ -n "$force" ]; then note=" (forced over $holder's claim)"
+    else
+      owns_claim "$f" "${by:-$(callers)}" ||
+        { echo "agent-hold release: $resource is claimed by $holder since $(field "$f" since): $reason. Only its holder releases it, from its own session; --force (audited) only when that session is gone." >&2; exit 1; }
+      [ -z "$by" ] || note=" (released as $by)"
+    fi
+  fi
   local unit failed=""
   for unit in $(field "$f" lowered | tr ',' ' '); do
     # An empty CPUWeight= drops the runtime setting. A pane closed since has no scope left.
@@ -511,10 +621,11 @@ cmd_release() {
   # A lifted hold is what held starts back: wake a kick (dispatch_wake) rather than wait for the timer.
   dispatch_wake "agent-hold release $resource"
   notify -p low -t "go: $resource" "released (was: $reason)"
-  audit_append "$(default_by)" hold.released "$resource" ok "was: $reason"
+  audit_append "$(default_by)" hold.released "$resource" ok "was: $reason$note"
   echo "released: $resource"
   # Printed so the caller can send GO to exactly the sessions that were told to stop.
   [ -n "$roster" ] && echo "roster: $roster"
+  [ -n "${keep_asks:-}" ] || settle_grant_asks "$resource"
   return 0
 }
 
@@ -614,6 +725,60 @@ cmd_aged() {
   return 1
 }
 
+# scopes -> resource, repo, path and granted, tab-separated, for each --scope entry of each hold in force.
+# A whole repo's path is -, since read with IFS=tab folds an empty field into the next one.
+cmd_scopes() {
+  # gate: none
+  [ $# -eq 0 ] || { echo "agent-hold scopes: takes no argument" >&2; exit 2; }
+  [ -d "$HOLD_ROOT" ] || return 0
+  local f e sc g
+  local -a es
+  for f in "$HOLD_ROOT"/*; do
+    [ -f "$f" ] && ! expired "$f" || continue
+    sc="$(field "$f" scope)"; [ -n "$sc" ] || continue
+    g="$(field "$f" granted)"
+    IFS=, read -ra es <<<"$sc"
+    for e in "${es[@]}"; do
+      [ -n "$e" ] || continue
+      if [[ "$e" == *:* ]]; then printf '%s\t%s\t%s\t%s\n' "${f##*/}" "${e%%:*}" "${e#*:}" "$g"
+      else printf '%s\t%s\t-\t%s\n' "${f##*/}" "$e" "$g"; fi
+    done
+  done
+}
+
+# covers <repo> [--for <id>...] < changed paths -> exit 1 with one held: line per hold in force whose
+# scope covers a path (its path, or a file under that directory; a whole-repo entry: any path) of
+# <repo>, compared case-blind, and that check does not pass for the caller or a --for name. Else 0.
+cmd_covers() {
+  local repo="${1:-}" rc=0
+  shift || true
+  # gate: none
+  [ -n "$repo" ] || { echo "agent-hold covers: name the repo" >&2; exit 2; }
+  local -a fors=()
+  case "${1:-}" in
+    '') ;;
+    --for) shift; fors=(--for "$@") ;;
+    *) echo "agent-hold covers: unknown argument $1" >&2; exit 2 ;;
+  esac
+  local files r sr sp g hit out
+  local -A seen=()
+  files="$(cat)"
+  [ -n "$files" ] || return 0
+  while IFS=$'\t' read -r r sr sp g; do
+    [ -n "$r" ] && [ -z "${seen[$r]+x}" ] || continue
+    [ "${sr,,}" = "${repo,,}" ] || continue
+    [ "$sp" != - ] || sp=''
+    if [ -z "$sp" ]; then hit="${files%%$'\n'*}"
+    else hit="$(SP="${sp,,}" awk '{ l = tolower($0) } l == ENVIRON["SP"] || index(l, ENVIRON["SP"] "/") == 1 { print; exit }' <<<"$files")"; fi
+    [ -n "$hit" ] || continue
+    seen[$r]=1
+    out="$(cmd_check "$r" "${fors[@]}" 2>/dev/null)" && continue
+    printf '%s (scope %s%s covers %s)\n' "$out" "$sr" "${sp:+:$sp}" "$hit"
+    rc=1
+  done < <(cmd_scopes)
+  return "$rc"
+}
+
 cmd_show() {
   local resource="${1:-}"
   need_resource "$resource"
@@ -622,7 +787,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,62p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
@@ -636,6 +801,8 @@ case "$verb" in
   aged)    cmd_aged "$@" ;;
   classes) cmd_classes ;;
   show)    cmd_show "$@" ;;
+  scopes)  cmd_scopes "$@" ;;
+  covers)  cmd_covers "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

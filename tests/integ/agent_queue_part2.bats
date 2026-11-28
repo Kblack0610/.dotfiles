@@ -45,6 +45,30 @@ load 'agent_queue/common'
   assert_success
 }
 
+# 2026-11-24 22:45Z: dotfiles-agent-22 returned its own item, the return killed its session, and the
+# `add --after` it chained next never ran (ar-5293).
+@test "return or cancel from the item's own session leaves that session up; another caller's still closes it" {
+  "$AQ" add --project game --running --from shepherd --session lab:game-agent-4 --slug mine "mine"
+  "$AQ" set mine origin=run
+  echo game-agent-4 > "$NOTES_FIXTURE/tmux.session"
+  TMUX="/tmp/tmux-1000/lab,1,0" AGENT_QUEUE_ITEM=mine run "$AQ" cancel mine --why "done another way"
+  assert_success
+  assert_output --partial "left lab:game-agent-4 open: it is the caller's own session"
+  run grep -c kill-session "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # negative control: the same item closed from another session kills its session
+  "$AQ" add --project game --running --from shepherd --session lab:game-agent-5 --slug theirs "theirs"
+  "$AQ" set theirs origin=run
+  TMUX="/tmp/tmux-1000/lab,1,0" AGENT_QUEUE_ITEM=mine run "$AQ" cancel theirs --why "done another way"
+  assert_success
+  run grep -- "-L lab kill-session -t =game-agent-5" "$NOTES_FIXTURE/calls.log"
+  assert_success
+  # The event is written before the kill, so a kill that ends its caller cannot lose it (ar-4902).
+  ev=$(grep -n -- "--action item-cancelled.*theirs\|theirs.*--action item-cancelled" "$NOTES_FIXTURE/calls.log" | tail -n 1 | cut -d: -f1)
+  kill=$(grep -n -- "-L lab kill-session -t =game-agent-5" "$NOTES_FIXTURE/calls.log" | cut -d: -f1)
+  [ -n "$ev" ] && [ "$ev" -lt "$kill" ]
+}
+
 # 2026-11-12: two cleanup sessions cancelled 425 items and the items said only "cancelled".
 @test "cancel from a session needs --why, and records who and why on the item and in the event" {
   "$AQ" add --project game --from shepherd --slug w1 "w1"
@@ -188,18 +212,18 @@ load 'agent_queue/common'
 
 @test "a session drops the human's work only on an answered ask that names the whole chain, and closes nothing otherwise" {
   export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
-  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\noptions: drop|keep\n%s\n' "$1" "$2" "${3:-}" "${4:-}" "${5:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   "$AQ" add --project game --from shepherd --slug ga "a"
   legacy gb "after: ga" --project game "b"
   "$AQ" set gb row=game:gm-8
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --drop
   assert_failure; assert_output --partial "gb is work the human asked for"
   [ -n "$(item queued ga)" ] && [ -n "$(item queued gb)" ]
-  ask h1 answered a human "ga only"
+  ask h1 answered drop human "ga only"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h1 --drop
   assert_failure; assert_output --partial "does not name gb"
   [ -n "$(item queued ga)" ]
-  ask h2 answered a human "ga gb"
+  ask h2 answered drop human "ga gb"
   : > "$NOTES_FIXTURE/calls.log"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" return ga --why "out of focus" --ask h2 --drop
   assert_success
@@ -284,6 +308,36 @@ load 'agent_queue/common'
   [ "$(field "$(item queued ph)" phases)" = "3 4" ]
 }
 
+@test "an add --plan item keeps phases: on its own lines when the plan gains phases above them; a line gone is kept and said (ar-3190)" {
+  story_notes
+  printf '%s\n' '# gp' '## Phases' '- [ ] one' '- [ ] two (independent)' > "$SANDBOX/gp.md"
+  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/gp.md" --project level --from shepherd --priority low >/dev/null
+  f="$(item queued gp-p2)"
+  [ "$(field "$f" phases)" = 2 ]
+  [ "$(field "$f" phase_keys)" = '["two (independent)"]' ]
+  # Two lines go in above it, and phase 1 is ticked with its PR: its line is phase 4 now.
+  printf '%s\n' '# gp' '## Phases' '- [x] one (#12)' '- [ ] found a' '- [ ] found b' '- [ ] two (independent)' > "$SANDBOX/gp.md"
+  run "$AQ" show gp-p2
+  assert_success
+  assert_line 'phases: 4'
+  assert_output --partial "gp-p2: phases: 2 -> 4"
+  # The start path reads it the same way: back to 2 by hand, then the move to running finds 4 again.
+  sed -i 's/^phases: 4$/phases: 2/' "$f"
+  "$AQ" move gp-p2 running >/dev/null 2>&1
+  [ "$(field "$(item running gp-p2)" phases)" = 4 ]
+  # NEGATIVE CONTROL: its line reworded, the item keeps its number and says why.
+  sed -i 's/^- \[ \] two (independent)$/- [ ] two, reworded/' "$SANDBOX/gp.md"
+  run "$AQ" show gp-p2
+  assert_success
+  assert_line 'phases: 4'
+  assert_output --partial "a phase line it was filed for is gone from $SANDBOX/gp.md"
+  # A number set by hand wins: the keys go, so no later read moves it back.
+  "$AQ" set gp-p2 phases=5 >/dev/null
+  [ -z "$(field "$(item running gp-p2)" phase_keys)" ]
+  run "$AQ" show gp-p2
+  assert_line 'phases: 5'
+}
+
 @test "set review_fix= takes none or small, what a trainee's review changed before it landed the diff, and refuses anything else" {
   "$AQ" add --project game --slug rf "A trainee row" >/dev/null
   "$AQ" set rf review_fix=small >/dev/null
@@ -298,7 +352,7 @@ load 'agent_queue/common'
 # bulk cancel (10 or more records) with the human.
 @test "a session cancels the human's work only on an answered ask naming it; the human and other work are not held" {
   export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
-  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
+  ask() { printf 'id: %s\nstatus: %s\nanswer: %s\nanswered_by: %s\noptions: drop|keep\n' "$1" "$2" "${3:-}" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
   "$AQ" add --project game --slug mkt-16 "mkt-16" >/dev/null
   for n in 17 18 19 20; do legacy "mkt-$n" "after: mkt-$((n - 1))" --project game "mkt-$n"; done
   "$AQ" add --project game --from board:game:g2-9 --tags requested --slug asked "row the human asked for" >/dev/null
@@ -306,7 +360,7 @@ load 'agent_queue/common'
   # The terminal cancel (no session env) is the human's: mkt-16 goes, and its chain is dead.
   "$AQ" cancel mkt-16 >/dev/null
   run bash -c "'$AQ' show mkt-17 --json | jq -r .hold"
-  assert_output --partial "a cancel by hand takes --why and --ask <an answered ask naming it>"
+  assert_output --partial "a cancel by hand takes --why and --ask <an ask naming it, answered cancel or drop>"
   # The replay: the dead-chain loop refuses every from: human item and the #requested one.
   for s in mkt-17 mkt-18 mkt-19 mkt-20 asked; do
     CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel "$s" --why "dead chain"
@@ -325,14 +379,39 @@ load 'agent_queue/common'
   run "$AQ" cancel mkt-17 --ask "h1=a"
   assert_failure; assert_output --partial "--ask takes an ask id"
   # An answer about other work is not about this item.
-  ask h0 answered a human
+  ask h0 answered drop human
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h0
   assert_failure; assert_output --partial "ask h0 does not name mkt-17"
+  # A sibling slug is other work: grep -w read mkt-17 in mkt-17-2, and a period ends a sentence, not mkt-17.2 (ar-2717).
+  ask s1 answered drop human
+  echo "question: drop mkt-17-2 and mkt-17.2? they wait on mkt-16" >> "$AGENT_ASK_ROOT/game/s1.md"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask s1
+  assert_failure; assert_output --partial "ask s1 does not name mkt-17"
+  # Only cancel or drop authorizes it, whatever the caller says: "keep" on an ask naming the item does not.
+  ask k1 answered keep human
+  echo "question: drop mkt-17? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/k1.md"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask k1
+  assert_failure; assert_output --partial "ask k1 is answered keep, not cancel or drop"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask k1=keep
+  assert_failure; assert_output --partial "--ask takes an ask id"
+  # A free-text ask, or one whose options do not cancel, has no answer the guard reads as a cancel.
+  printf 'id: f1\nstatus: answered\nanswer: sure, drop it\nanswered_by: human\nquestion: drop mkt-17?\n' > "$AGENT_ASK_ROOT/game/f1.md"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask f1
+  assert_failure; assert_output --partial "ask f1 offers no cancel or drop option"
+  printf 'id: y1\nstatus: answered\noptions: yes|no\nanswer: yes\nanswered_by: human\nquestion: drop mkt-17?\n' > "$AGENT_ASK_ROOT/game/y1.md"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask y1
+  assert_failure; assert_output --partial "ask y1 offers no cancel or drop option"
+  # A free-text answer on an ask with a drop option names none of them.
+  ask t1 answered whatever human
+  echo "question: drop mkt-17? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/t1.md"
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask t1
+  assert_failure; assert_output --partial "ask t1 is answered whatever, not cancel or drop"
+  [ -n "$(item queued mkt-17)" ]
   # A conditional move that no longer applies is left alone (exit 3) before the guard reads it.
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" move mkt-17 done --status cancelled --why "x" --if running
   [ "$status" -eq 3 ]
   # The human's answer to an ask naming the items lets them go, and the item names the ask.
-  ask h1 answered a human
+  ask h1 answered drop human
   echo "question: drop mkt-17, mkt-18? both wait on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/h1.md"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-17 --why "dead chain" --ask h1
   assert_success
@@ -343,13 +422,13 @@ load 'agent_queue/common'
   assert_success
   [ "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-mkt-18.md)" cancel_why)" = "dead chain (ask h1)" ]
   # A session's own answer is no ruling, even on an ask naming the item.
-  ask a1 answered a agent
+  ask a1 answered drop agent
   echo "question: drop mkt-19? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/a1.md"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-19 --why "dead chain" --ask a1
   assert_failure; assert_output --partial "ask a1 is answered by agent"
   [ -n "$(item queued mkt-19)" ]
   # The judge's answer to an ask naming the item lets it go the same way (ar-4765).
-  ask j1 answered a judge
+  ask j1 answered drop judge
   echo "question: drop mkt-19? it waits on mkt-16, which you cancelled" >> "$AGENT_ASK_ROOT/game/j1.md"
   CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" cancel mkt-19 --why "dead chain" --ask j1
   assert_success
@@ -364,6 +443,43 @@ load 'agent_queue/common'
   # The human at a terminal is never held.
   run "$AQ" cancel asked
   assert_success
+}
+
+@test "human-work names the human's items an ask could take off the queue, and no other (ar-5962)" {
+  export AGENT_ASK_ROOT="$SANDBOX/asks"; mkdir -p "$AGENT_ASK_ROOT/game"
+  # ask <id> <options> <resume> [<question>]
+  ask() { printf 'id: %s\nstatus: pending\noptions: %s\nresume: %s\nquestion: %s\n' "$1" "$2" "$3" "${4:-}" > "$AGENT_ASK_ROOT/game/$1.md"; }
+  hw() { run "$AQ" human-work "$1"; assert_success; assert_output "$2"; }
+  "$AQ" add --project game --slug mine "the human's own add" >/dev/null
+  "$AQ" add --project game --from board:game:g2-9 --tags requested --slug asked "row the human asked for" >/dev/null
+  "$AQ" add --project game --from shepherd --slug chore "chore" >/dev/null
+  # A resume that cancels the human's work, its words read as a shell reads them.
+  ask r1 'a|b' "run: agent-queue cancel mine --why \"it's moot\" --ask <id>"
+  hw r1 mine
+  ask r2 'a|b' 'run: agent-queue cancel chore --why moot'
+  hw r2 ''
+  ask r3 'a|b' 'run: ~/.local/bin/agent-queue return asked --why moot --drop && agent-queue cancel chore'
+  hw r3 asked
+  ask r4 'a|b' 'run: agent-queue move mine done --status cancelled --why moot'
+  hw r4 mine
+  # A plain return puts an item with a board row back on it, so only the one with no row counts.
+  ask r5 'a|b' 'run: agent-queue return asked --why later; agent-queue return mine --why later'
+  hw r5 mine
+  # A later command's --drop is not this one's.
+  ask r6 'a|b' 'run: agent-queue return asked --why later && agent-queue return chore --why x --drop'
+  hw r6 ''
+  # A flag before the slug, a command quoted for bash -c, and ; with no spaces are read too.
+  ask r7 'a|b' 'run: agent-queue return --drop asked --why moot'
+  hw r7 asked
+  ask r8 'a|b' "run: bash -c 'cd /tmp;agent-queue cancel mine --why moot'"
+  hw r8 mine
+  # A cancel or drop option on an ask naming the item, the answer cancel_guard reads; a sibling slug is other work.
+  ask o1 'drop|keep' '' 'drop asked and chore, not mine-2?'
+  hw o1 asked
+  ask o2 'a|b' '' 'drop asked?'
+  hw o2 ''
+  run "$AQ" human-work nope
+  assert_failure; assert_output --partial "no such ask"
 }
 
 @test "cancel keeps a backslash in --why as typed, refuses a multi-line one before touching the item, and carries why to a record-only cancel" {
@@ -559,6 +675,32 @@ EOF
   assert_output --partial "project: app 1 (0 PR), game 1 (1 PR)"
 }
 
+@test "a queued file gone between the listing and the read is no item, and one with no queued: stamp is named (ar-1405)" {
+  "$AQ" add --project game --slug a "a"
+  # The listing names a queued file that is gone when the read reaches it: an item moved or
+  # finished in between. sort is items_in's last step, so a sort that adds the path stands in for the race.
+  real="$(command -v sort)"
+  gone="$AGENT_QUEUE_DIR/queued/20261110-074700-gone.md"
+  printf '#!/usr/bin/env bash\nout="$(%q "$@")"; [ -z "$out" ] || printf "%%s\\n" "$out"\ncase "$out" in *%q*) printf "%%s\\n" %q ;; esac\n' "$real" "$AGENT_QUEUE_DIR/queued/" "$gone" > "$SANDBOX/bin/sort"
+  chmod +x "$SANDBOX/bin/sort"
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  assert_success
+  assert_output a
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  [ "$(jq -c '.sitting | [.queued, .runnable]' <<<"$output")" = '[1,1]' ]
+  # With the real sort the listing has no gone path, and the queue reads the same.
+  rm "$SANDBOX/bin/sort"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_success
+  [ "$(jq -c '.sitting | [.queued, .runnable]' <<<"$output")" = '[1,1]' ]
+  # A real item with no queued: stamp fails stats by its name, not as "strptime/1 requires string inputs".
+  sed -i '/^queued:/d' "$(item queued a)"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_failure
+  assert_output --partial "queued item a has no queued: stamp"
+}
+
 @test "stats wait for an after: item runs from its predecessor's finish, not from when it was queued" {
   "$AQ" add --project game --slug p "p"
   legacy f "after: p" --project game "f"
@@ -604,21 +746,39 @@ EOF
 }
 
 # ar-4436: a return to the queue clears `started`, so the restart read as the wait since the predecessor
-# finished (a week, for an item that blocked on a login). It is ready again from the return.
-@test "stats chain: an item returned to the queue and restarted waits from its return, not from its predecessor's finish (ar-4436)" {
-  "$AQ" add --project game --slug p --priority urgent "p"
-  legacy f "after: p" --project game --priority urgent "f"
+# finished (a week, for an item that blocked on a login). It is ready again from its return, and the
+# restart is no handoff: its first start is. Read as one, a land retry's 78m wait tripped chain-lag
+# (2026-11-25). high, as that item was; chain-lag bounds urgent and high alike.
+@test "stats chain: a restarted item's handoff is its first start, and its wait since the return is not one (ar-4436)" {
+  "$AQ" add --project game --slug p --priority high "p"
+  legacy f "after: p" --project game --priority high "f"
   "$AQ" move p running; "$AQ" move p done --status ok
   now=$(date +%s)
-  "$AQ" set p finished="$(date -u -d "@$((now - 259200))" +%FT%TZ)"
-  f="$(item queued f)"; sed -i "s/^queued: .*/queued: $(date -u -d "@$((now - 259300))" +%FT%TZ)/" "$f"
-  "$AQ" move f running; "$AQ" set f started="$(date -u -d "@$((now - 258600))" +%FT%TZ)"
+  "$AQ" set p finished="$(date -u -d "@$((now - 7200))" +%FT%TZ)"
+  f="$(item queued f)"; sed -i "s/^queued: .*/queued: $(date -u -d "@$((now - 10000))" +%FT%TZ)/" "$f"
+  first="$(date -u -d "@$((now - 6600))" +%FT%TZ)"
+  "$AQ" move f running; "$AQ" set f started="$first"
   "$AQ" move f queued
+  # the real requeue keeps the first start, once
   [ -n "$(sed -n 's/^requeued: //p' "$(item queued f)")" ]
-  "$AQ" move f running
+  assert_equal "$(sed -n 's/^first_started: //p' "$(item queued f)")" "$first"
+  # timed like that land retry: back 90m ago, restarted 12m ago
+  back="$(date -u -d "@$((now - 5400))" +%FT%TZ)"
+  "$AQ" move f running; "$AQ" set f started="$(date -u -d "@$((now - 720))" +%FT%TZ)"
+  "$AQ" move f queued; "$AQ" move f running
+  # a second requeue leaves the first start as it was
+  assert_equal "$(sed -n 's/^first_started: //p' "$(item running f)")" "$first"
+  sed -i "s/^requeued: .*/requeued: $back/" "$(item running f)"
+  "$AQ" set f started="$(date -u -d "@$((now - 720))" +%FT%TZ)"
   run "$AQ" stats --json --since 2000-01-01
   assert_success
-  assert_equal "$(jq -c '.chain.h24.urgent.p90 < 5' <<<"$output")" 'true'
+  # one handoff, the 10 min from p's finish to f's first start, not the 78 min since its return
+  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{"high":{"n":1,"p50":10,"p90":10}}'
+  assert_equal "$(jq -c '.wait_minutes_median' <<<"$output")" '78'
+  # negative control: a restart with no first start kept (requeued before it was) is left out
+  sed -i "/^first_started:/d" "$(item running f)"
+  run "$AQ" stats --json --since 2000-01-01
+  assert_equal "$(jq -c '.chain.h24' <<<"$output")" '{}'
 }
 
 # ar-617: the Queue table shows each item's wait, so list carries the same ready stats medians.
@@ -946,6 +1106,16 @@ EOF
   assert_output --partial "skipped open sub-phase(s) 1b"
   assert_line --regexp '^would queue sub-p2	phases 2	after -$'
   refute_output --partial "sub-p1b"
+  # A `P3a` / `P3b` label is a sub-phase too (ar-4970): by position the open P3b was 4, the same as
+  # the P4 after it, and the add refused the whole plan with "two phases carry the same number".
+  # NEGATIVE CONTROL: before the fix this list read [1,2,3,4,4] and the add below failed.
+  printf '## Phases\n\n- [x] P1 One (#1)\n- [ ] P2 Two\n- [x] P3a Three A (#2)\n- [ ] P3b Three B\n- [ ] P4 Four\n' > "$SANDBOX/letter.md"
+  [ "$(plan_phase_list "$SANDBOX/letter.md" | jq -c 'map(.n)')" = '[1,2,"3a","3b",4]' ]
+  run "$AQ" add --plan "$SANDBOX/letter.md" --project game --slug letter --dry-run
+  assert_success
+  assert_output --partial "skipped open sub-phase(s) 3b"
+  assert_line --regexp '^would queue letter-p2	phases 2	after -$'
+  assert_line --regexp '^would queue letter-p4	phases 4	after letter-p2$'
   # A stub's phase N is the line numbered N, not the Nth line.
   printf 'Phase 2 of %s/my-plan.md\n' "$SANDBOX" > "$SANDBOX/stub.md"
   [ "$(plan_session_phases "$SANDBOX/stub.md" | jq -c 'map(.name)')" = '["2. Second thing: details"]' ]
@@ -1182,6 +1352,53 @@ notes --profile bnb ptask level --agent start lv-9'
 notes --profile bnb ptask level --agent start lv-4'
 }
 
+# ar-5938: `notes ptask move --project` calls rehome; the row keeps its id, so the item's row: followed
+# it to the new board, and nothing is un-started or re-marked (the row carried its started mark).
+@test "rehome re-points every active item working the row id to the new board, and touches no other" {
+  story_notes
+  "$AQ" add --project game --epic lv-3 --slug mover "feat(menu): mover" >/dev/null
+  "$AQ" add --project game --epic lv-3 --slug bystander "feat(menu): bystander" >/dev/null
+  "$AQ" set bystander row=level:lv-5 >/dev/null
+  [ "$(field "$(item queued mover)" row)" = level:lv-9 ]
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" rehome lv-9 --from level --board arena --profile work --lane human
+  assert_success; assert_output --partial "mover: row arena:lv-9"
+  f="$(item queued mover)"
+  [ "$(field "$f" row)" = arena:lv-9 ]
+  [ "$(field "$f" profile)" = work ]
+  [ "$(field "$f" lane)" = human ]
+  [ "$(field "$(item queued bystander)" row)" = level:lv-5 ]
+  run grep -c ' ptask ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # Run again, or with no item on the row: nothing to do, and no error.
+  run "$AQ" rehome lv-9 --from level --board arena
+  assert_success; assert_output ""
+  run "$AQ" rehome lv-77 --from level --board arena
+  assert_success; assert_output ""
+  # An item on another board that carries the same id is not the moved row's: left alone.
+  run "$AQ" rehome lv-5 --from arena --board trader
+  assert_success; assert_output ""
+  [ "$(field "$(item queued bystander)" row)" = level:lv-5 ]
+  # A started item re-points the same way.
+  "$AQ" move mover running >/dev/null
+  run "$AQ" rehome lv-9 --from arena --board level
+  assert_success; assert_output --partial "mover: row level:lv-9"
+  [ "$(field "$(item running mover)" row)" = level:lv-9 ]
+  # A board-promoted item (no row:, only from: board:) follows its row, from: included.
+  "$AQ" add --project game --from board:level:lv-4 --slug promoted "fix(menu): promoted" >/dev/null
+  run "$AQ" rehome lv-4 --from level --board arena
+  assert_success; assert_output --partial "promoted: row arena:lv-4"
+  [ "$(field "$(item queued promoted)" row)" = arena:lv-4 ]
+  [ "$(field "$(item queued promoted)" from)" = board:arena:lv-4 ]
+  # Refusals.
+  run "$AQ" rehome lv-9 --board arena
+  assert_failure; assert_output --partial "needs --from"
+  run "$AQ" rehome nope --from level --board arena
+  assert_failure; assert_output --partial "usage: agent-queue rehome"
+  run "$AQ" rehome lv-9 --from level --board arena --lane both
+  assert_failure; assert_output --partial "agent or human"
+}
+
 # ar-1597: an item re-pointed with set row= left its first row started with no item, which read as
 # board_orphan_started until the orphan pass.
 @test "set row= or from=board: un-starts the row the item leaves and marks the one it works now" {
@@ -1265,6 +1482,31 @@ notes --profile work ptask level run lv-8'
   run "$AQ" move lost done --status failed
   run grep -c ' ptask .* done ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+}
+
+@test "a row two active items name closes with the last of them, not under the other (ar-6417)" {
+  story_notes
+  "$AQ" add --project game --from board:game:gm-8 --running --slug first-apply "chore(x): apply one" >/dev/null
+  "$AQ" add --project game --from board:game:gm-8 --running --slug second-apply "chore(x): apply two" >/dev/null
+  "$AQ" add --project game --from board:game:gm-8 --running --slug third-apply "chore(x): apply three" >/dev/null
+  "$AQ" move third-apply waiting >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move first-apply done --status ok
+  assert_success
+  assert_line 'first-apply: board row gm-8 left open, second-apply still works it'
+  run grep -c ' ptask .* done ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # an item waiting on the human still works the row
+  run "$AQ" move second-apply done --status ok
+  assert_success
+  assert_line 'second-apply: board row gm-8 left open, third-apply still works it'
+  # NEGATIVE CONTROL: the last one closes it
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move third-apply done --status ok
+  assert_success
+  assert_line 'third-apply: board row gm-8 closed'
+  run grep ' ptask .* done ' "$NOTES_FIXTURE/calls.log"
+  assert_output 'notes ptask game --agent done gm-8 --proof item:third-apply'
 }
 
 @test "a row already closed stays quiet on an ok close; one the close missed, or a board that cannot be read, is named on stderr" {
@@ -1381,6 +1623,102 @@ notes --profile work ptask level run lv-8'
   assert_output 0
 }
 
+@test "a --repeat add that links an open twin brings its brief, priority and tags up to date; without --repeat it is left as it was (ar-5138)" {
+  story_notes
+  echo 3 > "$NOTES_FIXTURE/story.rc"
+  echo 'already open on /x/agent/README.md: - [ ] feat(menu): nightly pass <!-- id:lv-4 -->' > "$NOTES_FIXTURE/story.out"
+  "$AQ" add --project level --slug pass --repeat --priority high --tags "cleanup cause:menu" -- $'feat(menu): nightly pass\ntonight: area docs' >/dev/null
+  [ "$(field "$(item queued pass)" row)" = level:lv-4 ]
+  run cat "$NOTES_FIXTURE/calls.log"
+  assert_output --partial '--agent edit lv-4 --brief=tonight: area docs'
+  assert_output --partial '--agent tag --add high --add cleanup lv-4'
+  # a tag a hashtag cannot carry stays on the item alone
+  refute_output --partial 'cause:menu'
+  # NEGATIVE CONTROL: the same add without --repeat links its twin and leaves its brief and tags
+  : > "$NOTES_FIXTURE/calls.log"
+  echo 'already open on /x/agent/README.md: - [ ] feat(menu): nightly pass <!-- id:lv-5 -->' > "$NOTES_FIXTURE/story.out"
+  "$AQ" add --project level --slug pass2 --priority high --tags cleanup -- $'feat(menu): nightly pass\ntonight: area skills' >/dev/null
+  [ "$(field "$(item queued pass2)" row)" = level:lv-5 ]
+  run grep -c -e '--agent edit' -e '--agent tag' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # NEGATIVE CONTROL: a twin an item already started keeps its brief, since its session has it
+  : > "$NOTES_FIXTURE/calls.log"
+  echo 'already open on /x/agent/README.md: - [/] feat(menu): nightly pass <!-- id:lv-6 -->' > "$NOTES_FIXTURE/story.out"
+  "$AQ" add --project level --slug pass3 --repeat --priority high --tags cleanup -- $'feat(menu): nightly pass\ntonight: area dups' >/dev/null
+  [ "$(field "$(item queued pass3)" row)" = level:lv-6 ]
+  run grep -c -e '--agent edit' -e '--agent tag' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # NEGATIVE CONTROL: a session's --repeat add leaves an untouched twin as it is, so its "low" never
+  # demotes the human's row and its words never replace the human's brief (ar-2943)
+  : > "$NOTES_FIXTURE/calls.log"
+  echo 'already open on /x/agent/README.md: - [ ] feat(menu): nightly pass <!-- id:lv-7 -->' > "$NOTES_FIXTURE/story.out"
+  CLAUDE_CODE_SESSION_ID=hand-sess "$AQ" add --project level --slug pass4 --repeat --priority low --tags cleanup -- $'feat(menu): nightly pass\ntonight: area chains' >/dev/null
+  [ "$(field "$(item queued pass4)" row)" = level:lv-7 ]
+  run grep -c -e '--agent edit' -e '--agent tag' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "add writes its story row with the queue lock free, and a slug or a cause owner queued meanwhile stops it (ar-5606)" {
+  story_notes
+  notes_lock_probe
+  # A race file makes the stub's row write queue the slug first.
+  sed -i '3i case " $* " in *" add "*) [ ! -e "$NOTES_FIXTURE/race" ] || { mkdir -p "$AGENT_QUEUE_DIR/queued"; printf "slug: raced\\nproject: level\\ntags: red cause:abc12345\\n---\\nx\\n" > "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"; } ;; esac' "$SANDBOX/bin/notes"
+  run "$AQ" add --project level --slug free "feat(menu): free"
+  assert_success
+  assert_line "story lv-9 on the level agent board"
+  run "$AQ" add --running --project level --slug linked "feat(menu): linked"
+  assert_success
+  grep -q -- '--agent add' "$NOTES_FIXTURE/calls.log"
+  grep -q -- '--agent run lv-9' "$NOTES_FIXTURE/calls.log"
+  [ ! -s "$NOTES_FIXTURE/underlock.log" ] || fail "notes ran with the queue lock held: $(cat "$NOTES_FIXTURE/underlock.log")"
+  # Back under the lock, the add finds the slug the other add queued and writes no second item.
+  touch "$NOTES_FIXTURE/race"
+  run "$AQ" add --project level --slug raced "feat(menu): raced"
+  assert_failure
+  assert_output --partial "already in the queue: raced (added while its row was written; row lv-"
+  [ "$(find "$AGENT_QUEUE_DIR" -name '*-raced.md' | wc -l)" = 1 ]
+  # The same goes for a cause: the item queued meanwhile owns cause:abc12345, so this add writes nothing.
+  rm "$AGENT_QUEUE_DIR/queued/20260101-000000-raced.md"
+  run "$AQ" add --project level --slug owner2 --tags "red cause:abc12345" "feat(menu): owner2"
+  assert_failure
+  assert_output --partial "cause:abc12345 is already owned by raced"
+  [ -z "$(find "$AGENT_QUEUE_DIR" -name '*-owner2.md')" ]
+  # NEGATIVE CONTROL: the stub does see a held lock.
+  flock -x "$AGENT_QUEUE_DIR/.lock" "$SANDBOX/bin/notes" ptask level --agent board >/dev/null
+  [ "$(grep -c '^locked ' "$NOTES_FIXTURE/underlock.log")" = 1 ]
+}
+
+@test "move, set and claim write the board row with the queue lock free, so a notes waiting on its ptask.lock holds no queue writer (ar-3025)" {
+  story_notes
+  notes_lock_probe
+  "$AQ" add --project level --slug moved "feat(menu): moved" >/dev/null
+  [ "$(field "$(item queued moved)" row)" = level:lv-9 ]
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" set moved priority=normal
+  assert_success
+  grep -q -- '--agent tag --add normal lv-9' "$NOTES_FIXTURE/calls.log"
+  # A session's claim of a queued item moves it under its own hold of the lock, and marks the row after.
+  CLAUDE_CODE_SESSION_ID=claim-sess run "$AQ" claim moved
+  assert_success
+  grep -q -- '--agent run lv-9' "$NOTES_FIXTURE/calls.log"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move moved queued
+  assert_success
+  grep -q -- '--agent start lv-9' "$NOTES_FIXTURE/calls.log"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move moved running
+  assert_success
+  grep -q -- '--agent run lv-9' "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move moved done --status ok
+  assert_success
+  assert_line "moved: board row lv-9 closed"
+  grep -q -- '--agent done lv-9' "$NOTES_FIXTURE/calls.log"
+  [ ! -s "$NOTES_FIXTURE/underlock.log" ] || fail "notes ran with the queue lock held: $(cat "$NOTES_FIXTURE/underlock.log")"
+  # NEGATIVE CONTROL: the stub does see a held lock.
+  flock -x "$AGENT_QUEUE_DIR/.lock" "$SANDBOX/bin/notes" ptask level --agent run lv-9 >/dev/null
+  [ "$(grep -c '^locked ' "$NOTES_FIXTURE/underlock.log")" = 1 ]
+}
+
 @test "a re-queue links its last item's open row by id, whatever its words; a closed one gets a new row" {
   story_notes
   "$AQ" add --project level --slug again "feat(menu): first words" >/dev/null
@@ -1471,6 +1809,50 @@ notes --profile work ptask level run lv-8'
   assert_output "$(printf '%s\n' 'notes --profile bnb ptask level --agent start lv-2' 'notes --profile bnb ptask level --agent run lv-2')"
 }
 
+@test "a --running add with no --priority records its row's priority, and a session's new story files at normal (ar-4374)" {
+  story_notes
+  jq -n '{rows: [{project: "level", id: "lv-2", state: "doing", text: "feat(menu): w", priority: "normal"},
+                 {project: "level", id: "lv-2", state: "done", text: "feat(menu): old", priority: "urgent"}]}' > "$NOTES_FIXTURE/board.json"
+  "$AQ" add --running --project game --row lv-2 --slug linked "feat(menu): w" >/dev/null
+  [ "$(field "$(item running linked)" priority)" = normal ]
+  rm -f "$(item running linked)"
+  # A priority the add names wins over the row's.
+  "$AQ" add --running --project game --row lv-2 --priority low --slug named "feat(menu): w" >/dev/null
+  [ "$(field "$(item running named)" priority)" = low ]
+  rm -f "$(item running named)"
+  # A session's add that files its own story: normal, on the item and the new row.
+  : > "$NOTES_FIXTURE/calls.log"
+  CLAUDE_CODE_SESSION_ID=s1 "$AQ" add --running --project level --slug own "chore(x): its own work" >/dev/null
+  [ "$(field "$(item running own)" priority)" = normal ]
+  grep -q ' --agent add .*#normal' "$NOTES_FIXTURE/calls.log"
+  # NEGATIVE CONTROL: the human's --running add by hand, no session, keeps high.
+  "$AQ" add --running --project level --slug mine "chore(x): the human's" >/dev/null
+  [ "$(field "$(item running mine)" priority)" = high ]
+}
+
+@test "--row carries the item's longer task onto the row as detail lines the row lacks, so a plain return keeps it (ar-3159)" {
+  story_notes
+  jq -n '{rows: [{project: "level", id: "lv-2", state: "doing", text: "feat(menu): the row'\''s work", details: ["already on the row"]},
+                 {project: "level", id: "lv-2", state: "done", text: "feat(menu): an old copy", details: []}]}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" add --running --project game --row lv-2 --slug longer "$(printf '%s\n' "feat(menu): the row's work" 'the step the row lacks' 'already on the row')"
+  assert_success
+  run grep ' edit ' "$NOTES_FIXTURE/calls.log"
+  assert_output "notes --profile bnb ptask level --agent edit lv-2 --detail=the step the row lacks"
+  # NEGATIVE CONTROL: a task that is only the row's own words writes nothing to it.
+  rm -f "$(item running longer)"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --running --project game --row lv-2 --slug same "feat(menu): the row's work"
+  assert_success
+  run grep -c ' edit ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  # A row the board read does not find warns, and the add still links it.
+  rm -f "$(item running same)"; echo '{"rows": []}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" add --running --project game --row lv-2 --slug unread "$(printf '%s\n' x 'more')"
+  assert_success
+  assert_output --partial "row lv-2 on level was not read, so the item's task is not on it"
+  [ "$(field "$(item running unread)" row)" = level:lv-2 ]
+}
+
 @test "--row refuses an id that is not an open row, a row a live item names and a project with no board, writing nothing" {
   story_notes
   touch "$NOTES_FIXTURE/closed.lv-7"
@@ -1529,6 +1911,13 @@ notes --profile work ptask level run lv-8'
   [ "$(field "$(item queued epic)" row)" = level:lv-9 ]
   run grep -c ' start lv-3' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+  # A bracketed id mid-title only mentions its row; one that ends the title is its subject (ar-5461).
+  "$AQ" add --project level --slug mid "fix(menu): move (lv-6) aside and redo the layout"
+  [ "$(field "$(item queued mid)" row)" = level:lv-9 ]
+  run grep -c ' start lv-6' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  "$AQ" add --project level --slug end "fix(menu): redo the layout [lv-6]."
+  [ "$(field "$(item queued end)" row)" = level:lv-6 ]
 }
 
 @test "--row takes one row id, on one item, with no story options" {
@@ -1664,9 +2053,20 @@ second line of the brief
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" add --project level --row lv-2 --slug named "feat(menu): named"
   assert_failure 5
-  assert_output --partial "row lv-2 is left un-started where it is"
+  assert_output --partial "row level:lv-2 is left un-started where it is"
+  assert_line "held named -> level:lv-2"
   run grep -c ' ptask level --agent add ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
+  # So does dispatch's pull of a board row: the row it came from is the row (ar-3407).
+  AGENT_QUEUE_PULL=dispatch run "$AQ" add --project level --from board:level:lv-7 --slug lv-7 "feat(menu): pulled"
+  assert_failure 5
+  assert_output --partial "row level:lv-7 is left un-started where it is"
+  assert_line "held lv-7 -> level:lv-7"
+  run grep -c ' ptask level --agent add ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/*/*-named.md "$AGENT_QUEUE_DIR"/*/*-lv-7.md 2>/dev/null)" ] || fail "a held add wrote an item"
+  run jq -r 'select(.slug == "lv-7") | .from' "$AGENT_QUEUE_DIR/admission.jsonl"
+  assert_output "board:level:lv-7"
   run "$AQ" add --project level --slug titled --title "feat(menu): the title" "the real wording of the task"
   assert_failure 5
   assert_called "--detail=the real wording of the task -- "
@@ -1687,7 +2087,7 @@ second line of the brief
     "check(alert): HomelabCronJobFailed trader-markets-history-bars firing, alertmanager-fleet tripped since 2026-11-25, expected: no fleet=fix alert"; do
     run "$AQ" add --project level --priority high --from "board:level:lv-$n" --slug "lv-$n" --tags "red alert cause:c$n" --title "$t" -- "$t"
     assert_failure 5
-    assert_output --partial "row lv-$n is left un-started where it is"
+    assert_output --partial "row level:lv-$n is left un-started where it is"
     n=$((n + 1))
   done
   # The next pass pulls the same row again and is held again, still filing nothing.
@@ -1815,6 +2215,28 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   assert_output "p2,p3,u1"
 }
 
+@test "at the cap an urgent or red add never returns an item with an open PR, a recorded PR, pushed work or a handoff; the plain item goes" {
+  # 2026-11-25 (ar-6119): a red low add returned an item with open_pr .dotfiles#3611 and a handoff
+  # to its row, and the return dropped the handoff.
+  "$AQ" add --project game --from shepherd --slug a "a" >/dev/null
+  legacy op "open_pr: Org/game#8" --project game --from shepherd --priority low "open pr"
+  legacy rp "pr: Org/game#9" --project game --from shepherd --priority low "recorded pr"
+  legacy sv "salvage: agent-7-261125-101500" --project game --from shepherd --priority low "salvaged"
+  legacy ho "handoff: pushed to the branch, the tests are next" --project game --from shepherd --priority low "handed off"
+  for s in a op rp sv ho; do "$AQ" set "$s" row="game:gm-$s" >/dev/null; done
+  export AGENT_QUEUE_CAP=5
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority low --tags red --slug r1 "red one"
+  assert_success
+  assert_output --partial "returned a to its board row to make room for low r1 under the cap of 5"
+  # Negative control: what is left is the four with a PR, pushed work or a handoff and the red add, so the next is held.
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority urgent --slug u1 "urgent one"
+  assert_failure 5
+  refute_output --partial "returned"
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "ho,op,r1,rp,sv"
+  [ "$(field "$(ls "$AGENT_QUEUE_DIR"/queued/*-ho.md)" handoff)" = "pushed to the branch, the tests are next" ]
+}
+
 @test "make_room returns an item held to a clock time, moves nothing for an add the lock refuses, and never returns an item that started" {
   "$AQ" add --project game --priority low --slug h "the human's" >/dev/null
   legacy n "tags: at:23:59" --project game --from shepherd --priority low "tonight"
@@ -1861,6 +2283,20 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
   assert_output "canary,gm-3,mine,one,verify-e-1"
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 5 ]
+}
+
+# ar-5865: agent-land's after-merge apply, added from a dispatched session as item:<landed>, went board-only to
+# the outbox 17 times and never ran, so ConvergenceDrift fired on 8 hosts.
+@test "agent-land's merge-owed step (AGENT_QUEUE_PULL=land) goes in past the cap from an item's session; without the pull it is board-only" {
+  export AGENT_QUEUE_CAP=1
+  "$AQ" add --project game --slug one "one" >/dev/null
+  # NEGATIVE CONTROL: the same add with no pull is an item's follow-up, and the queue does not take it
+  run env -u AGENT_QUEUE_PULL AGENT_QUEUE_ITEM='' "$AQ" add --project game --priority high --from item:ship --slug after-merge-a-1-game "chore(after-merge): apply (left by o/game#1)"
+  assert_failure
+  assert_output --partial "only the board fills the queue"
+  run env AGENT_QUEUE_PULL=land AGENT_QUEUE_ITEM='' "$AQ" add --project game --priority high --from item:ship --slug after-merge-a-2-game "chore(after-merge): apply (left by o/game#2)"
+  assert_success
+  [ "$(field "$(item queued after-merge-a-2-game)" from)" = item:ship ]
 }
 
 @test "the cap passes dispatch's pull of a plan phase filed on its board row, as it passes the --plan; another board pull it holds" {
@@ -1960,6 +2396,54 @@ Phase 2 of the plan $SANDBOX/plan.md: the doors." >/dev/null
   # The human's approved plan still queues its phases.
   run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --priority low
   assert_success
+}
+
+@test "add --plan from a session whose own plan is another file turns that file into a pointer at the queued plan (ar-5445)" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  source "$BATS_TEST_DIRNAME/../../.local/lib/plan-phases.sh"
+  printf '# P\n\n## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/proj-plan.md"
+  local own="$HOME/.claude/plans/sess-1.md" canon
+  canon="$(realpath "$SANDBOX/proj-plan.md")"
+  mkdir -p "${own%/*}"
+  printf '# mine\n\n## Phases\n- [ ] do it all\n' > "$own"
+  # The session's item names the plan it queues (one-shot step 1a); one that queues some other plan keeps its own.
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  for s in sess-1 sess-3; do printf 'slug: %s\nproject: level\n---\nqueue the plan proj-plan.md as a chain\n' "$s" > "$AGENT_QUEUE_DIR/running/20260101-000000-$s.md"; done
+  printf 'slug: sess-4\nproject: level\nstarted: 2099-01-01T00:00:00Z\n---\nfix the menu, then queue a follow-up plan\n' > "$AGENT_QUEUE_DIR/running/20260101-000000-sess-4.md"
+  # The board path: a dispatched session files the plan as one row.
+  AGENT_QUEUE_ITEM=sess-1 run "$AQ" add --plan "$SANDBOX/proj-plan.md" --project level --from auto:plans
+  assert_failure 5
+  assert_output --partial "$own now points at phase 2 of $canon"
+  assert_equal "$(plan_pointer "$own")" "$canon	2"
+  grep -qxF -- '- [ ] do it all' "$own.queued"
+  # NEGATIVE CONTROL: a stub already is left as it is, and so is a session whose own plan is the one queued.
+  cp "$own" "$SANDBOX/stub-before"
+  AGENT_QUEUE_ITEM=sess-1 run "$AQ" add --plan "$SANDBOX/proj-plan.md" --project level --from auto:plans
+  cmp -s "$own" "$SANDBOX/stub-before"
+  cp "$SANDBOX/proj-plan.md" "$HOME/.claude/plans/sess-2.md"
+  AGENT_QUEUE_ITEM=sess-2 run "$AQ" add --plan "$HOME/.claude/plans/sess-2.md" --project level --from auto:plans
+  [ ! -e "$HOME/.claude/plans/sess-2.md.queued" ]
+  refute_output --partial 'now points at'
+  # The queue path (the human's plan, queued as items) writes it too.
+  printf '# mine\n\n## Phases\n- [ ] do it all\n' > "$HOME/.claude/plans/sess-3.md"
+  AGENT_QUEUE_PULL=1 AGENT_QUEUE_ITEM=sess-3 run "$AQ" add --plan "$SANDBOX/proj-plan.md" --project level --priority low
+  assert_success
+  assert_equal "$(plan_pointer "$HOME/.claude/plans/sess-3.md")" "$canon	2"
+  # NEGATIVE CONTROL: a session whose task does not name the plan it queues keeps its own plan.
+  printf '# O\n\n## Phases\n\n- [ ] alpha\n- [ ] beta\n' > "$SANDBOX/other-plan.md"
+  printf '# mine\n\n## Phases\n- [ ] fix the menu\n' > "$HOME/.claude/plans/sess-4.md"
+  AGENT_QUEUE_ITEM=sess-4 run "$AQ" add --plan "$SANDBOX/other-plan.md" --project level --from auto:plans
+  refute_output --partial 'now points at'
+  [ ! -e "$HOME/.claude/plans/sess-4.md.queued" ]
+  grep -qxF -- '- [ ] fix the menu' "$HOME/.claude/plans/sess-4.md"
+  # A plan the session wrote after its item started is its task, named in the task or not.
+  printf 'slug: sess-5\nproject: level\nstarted: 2001-01-01T00:00:00Z\n---\nwrite and queue a plan for the menu rework\n' > "$AGENT_QUEUE_DIR/running/20260101-000000-sess-5.md"
+  printf '# mine\n\n## Phases\n- [ ] write the plan\n' > "$HOME/.claude/plans/sess-5.md"
+  printf '# N\n\n## Phases\n\n- [ ] alpha\n- [ ] beta\n' > "$SANDBOX/new-plan.md"
+  AGENT_QUEUE_ITEM=sess-5 run "$AQ" add --plan "$SANDBOX/new-plan.md" --project level --from auto:plans
+  assert_output --partial 'now points at phase 1'
+  [ -e "$HOME/.claude/plans/sess-5.md.queued" ]
 }
 
 # fleet-dispatch promote turns that row into the chain (ar-3262). NEGATIVE CONTROL: before it, --from
@@ -2213,6 +2697,21 @@ already"
   [ "$(wc -l < "$log")" = 1 ]
 }
 
+@test "a lock-miss line names the holder by inode, since on btrfs /proc/locks gives a device stat does not report (ar-3025, ar-5560)" {
+  "$AQ" add --project game "one item" >/dev/null
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  # A btrfs subvolume: /proc/locks says 00:24, stat says the subvolume device. The second line has the same device as stat and the next inode: it must not match.
+  ino=$(stat -c %i "$AGENT_QUEUE_DIR/.lock")
+  printf '1: FLOCK  ADVISORY  WRITE 4242 00:24:%s 0 EOF\n2: FLOCK  ADVISORY  WRITE 4343 %02x:%02x:%s 0 EOF\n' \
+    "$ino" "$(stat -c %Hd "$AGENT_QUEUE_DIR/.lock")" "$(stat -c %Ld "$AGENT_QUEUE_DIR/.lock")" "$((ino + 1))" > "$BATS_TEST_TMPDIR/locks"
+  AQ_PROC_LOCKS="$BATS_TEST_TMPDIR/locks" AGENT_QUEUE_LOCK_WAIT=1 run "$AQ" show one-item --json 9>&-
+  exec 9>&-
+  assert_failure 75
+  run jq -c '.locks' "$AGENT_QUEUE_DIR/lock-miss.jsonl"
+  assert_output '[".lock holds WRITE 4242"]'
+}
+
 # The row is the task's record (ar-2927), against the real notes and a sandbox vault: an item's body
 # is its row's brief, so a return loses nothing, the next promote briefs the new item from the row,
 # and a retask rewrites the row first. NEGATIVE CONTROL: before ar-2927 the re-promoted body was the
@@ -2358,6 +2857,30 @@ already"
   assert_output 0
 }
 
+# ar-4657: the item's own story row refused with a shortlist (exit 5) queues nothing: a rowless item lands a
+# PR no board row records (release-links). The session joins a row, or reruns with --checked, which notes takes.
+@test "an add whose own story row notes answers with a shortlist (exit 5) queues nothing; --checked files it" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  echo 5 > "$NOTES_FIXTURE/story.rc"
+  printf 'dm-4\t62\tagent\tfix(menu): the work already filed\n' > "$NOTES_FIXTURE/story.out"
+  rc=0; "$AQ" add --project level --running --want human --slug mine "fix(menu): the session's own work" 2>"$SANDBOX/err" || rc=$?
+  assert_equal "$rc" 7
+  grep -qF "dm-4" "$SANDBOX/err"
+  grep -qF "mine is not queued" "$SANDBOX/err"
+  grep -qF -- "--checked" "$SANDBOX/err"
+  run "$AQ" show mine
+  assert_failure
+  rm "$NOTES_FIXTURE/story.rc"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --running --want human --checked dm-4 --slug mine "fix(menu): the session's own work"
+  assert_success
+  run grep -F -- "--agent add" "$NOTES_FIXTURE/calls.log"
+  assert_output --partial " --checked=dm-4 -- "
+  run grep -x 'row: level:lv-9' "$(item running mine)"
+  assert_success
+}
+
 @test "the item's own story row and a plan's rows name their origin, a want names none" {
   story_notes
   unset AGENT_QUEUE_PULL
@@ -2430,6 +2953,24 @@ already"
   run "$AQ" gate --json after/ar-2
   assert_failure 3
   assert_equal "$(st)" "pending|after ar-2 (open)|"
+}
+
+@test "a plan phase is not stacked on an open PR in another project's repo: its worktree has no such commit, so it holds for the close (ar-5124)" {
+  stack_gh
+  printf '# P\n' > "$SANDBOX/p.md"
+  "$AQ" add --project game --slug base --running "a"
+  "$AQ" set base open_pr=Org/app#7
+  legacy second "after: base" --project game "Phase 2 of the plan $SANDBOX/p.md: b"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
+  assert_output "after base none"
+  # The add under way has no file yet: the same rule holds it.
+  run "$AQ" add --project game --slug third --running --after base "Phase 3 of the plan $SANDBOX/p.md: c"
+  assert_failure
+  assert_output --partial "waits on after base"
+  # NEGATIVE CONTROL: the same PR number in the project's own repo stacks.
+  "$AQ" set base open_pr=Org/game#7
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"[\\(.hold // \"\")] \\(.stacked_on)\"'"
+  assert_output "[] base=Org/game#7"
 }
 
 @test "an after: on two items that each have an open PR stays held: one worktree has one base (ar-3852)" {
@@ -2645,4 +3186,120 @@ already"
   rm -f "$wake"
   "$AQ" cancel w3 --why "not wanted"
   grep -q 'w3' "$wake" || fail "a cancel wrote no wake"
+}
+
+# watch_fixture <slug> <tags> <title>: a running item, and a watch-companion-loop stub that logs each call,
+# in watch.log (calls.log is the fleet-dispatch stub), whether the queue lock was free then, and exits NOTES_FIXTURE/watch.rc.
+watch_fixture() {
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  printf 'slug: %s\nproject: game\npriority: urgent\nfrom: fleet-bench\ntags: %s\nqueued: 2026-11-24T10:00:00Z\nstarted: 2026-11-24T10:00:00Z\n---\n%s\n' \
+    "$1" "$2" "$3" > "$AGENT_QUEUE_DIR/running/20261124-100000-$1.md"
+  cat > "$SANDBOX/bin/watch-companion-loop" <<'EOS'
+#!/usr/bin/env bash
+# `quarantined` is a read of the quarantines in force, answered from NOTES_FIXTURE/quarantined and not logged
+[ "$1" != quarantined ] || { cat "$NOTES_FIXTURE/quarantined" 2>/dev/null; exit 0; }
+held=free; flock -n "$AGENT_QUEUE_DIR/.lock" true 2>/dev/null || held=held
+printf 'watch-companion-loop %s lock=%s\n' "$*" "$held" >> "$NOTES_FIXTURE/watch.log"
+rc=$(cat "$NOTES_FIXTURE/watch.rc" 2>/dev/null || echo 0)
+case "$rc" in 0) ;; 2) echo "no watch named $2" ;; 75) echo "lock busy" ;; *) echo "TRIP: board-chain 12 KPIs over" ;; esac
+exit "$rc"
+EOS
+  # fleet-bench triage --route answers the route in NOTES_FIXTURE/route (an agent route, -, by default)
+  cat > "$SANDBOX/bin/fleet-bench" <<'EOS'
+#!/usr/bin/env bash
+[ "$1 $2" = "triage --route" ] || exit 2
+printf '%s\t%s\t-\t\n' "$3" "$(cat "$NOTES_FIXTURE/route" 2>/dev/null || echo -)"
+EOS
+  chmod +x "$SANDBOX/bin/watch-companion-loop" "$SANDBOX/bin/fleet-bench"
+}
+
+@test "move done ok refuses a red check(watch) item while its watch trips, outside the lock; it closes once the watch reads OK (ar-5414)" {
+  watch_fixture red-chain 'red watch' 'check(watch): board-chain tripped since 2026-11-20, expected: chain OK'
+  printf '1\n' > "$NOTES_FIXTURE/watch.rc"
+  run "$AQ" move red-chain done --status ok
+  assert_failure 6
+  assert_output --partial 'red-chain is a red item for watch board-chain, and done ok would say that red is gone: watch board-chain did not read OK on recheck (exit 1): TRIP: board-chain 12 KPIs over'
+  assert_output --partial 'agent-land <N>'
+  assert_output --partial 'agent-queue move red-chain review'
+  [ -f "$(item running red-chain)" ]
+  assert_equal "$(cat "$NOTES_FIXTURE/watch.log")" 'watch-companion-loop recheck board-chain lock=free'
+  # A failed or cancelled close says nothing about the red, so it reads no probe.
+  : > "$NOTES_FIXTURE/watch.log"
+  run "$AQ" move red-chain review
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/watch.log" ]
+  # A close whose --if no longer holds reads 3 before any probe: reap gets the move, not the watch.
+  run "$AQ" move red-chain done --status ok --if running
+  assert_failure 3
+  assert_output --partial 'red-chain is review, not running'
+  [ ! -s "$NOTES_FIXTURE/watch.log" ]
+  # Once the watch reads OK, the same close goes through.
+  printf '0\n' > "$NOTES_FIXTURE/watch.rc"
+  run "$AQ" move red-chain done --status ok
+  assert_success
+  assert_equal "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-red-chain.md)" status)" ok
+  assert_equal "$(cat "$NOTES_FIXTURE/watch.log")" 'watch-companion-loop recheck board-chain lock=free'
+}
+
+@test "move done ok on a red watch item closes while the watch trips under a quarantine with an owner, and refuses once none holds (ar-5973)" {
+  bats_require_minimum_version 1.5.0
+  watch_fixture red-quar 'red watch' 'check(watch): board-chain tripped'
+  printf '1\n' > "$NOTES_FIXTURE/watch.rc"
+  # An owner of `-` or another watch's quarantine is no quarantine of this watch's.
+  printf 'other-watch\t2026-12-02T00:00:00-08:00\tar-9\twaits\nboard-chain\t2026-12-02T00:00:00-08:00\t-\twaits\n' > "$NOTES_FIXTURE/quarantined"
+  run "$AQ" move red-quar done --status ok
+  assert_failure 6
+  [ -f "$(item running red-quar)" ]
+  printf 'other-watch\t2026-12-02T00:00:00-08:00\tar-9\twaits\nboard-chain\t2026-12-02T00:00:00-08:00\task:aRMp2v\twaits on the human\n' > "$NOTES_FIXTURE/quarantined"
+  run --separate-stderr "$AQ" move red-quar done --status ok
+  assert_success
+  [[ "$stderr" == *'watch: board-chain still trips on recheck, quarantined under ask:aRMp2v until 2026-12-02T00:00:00-08:00, so its close is not probed'* ]]
+  assert_equal "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-red-quar.md)" status)" ok
+}
+
+@test "move done reads no probe for a non-red item, a red item for no watch, or a failed close (ar-5414)" {
+  watch_fixture plain 'infra' 'check(watch): board-chain tripped'
+  printf '1\n' > "$NOTES_FIXTURE/watch.rc"
+  run "$AQ" move plain done --status ok
+  assert_success
+  watch_fixture red-alert 'red' 'check(alert): disk full on razer'
+  run "$AQ" move red-alert done --status ok
+  assert_success
+  watch_fixture red-fail 'red watch' 'check(watch): board-chain tripped'
+  run "$AQ" move red-fail done --status failed
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/watch.log" ]
+  # A watch routed to alert or owned: closes ok while it trips: its job was the ask or the owner.
+  watch_fixture red-owned 'red watch' 'check(watch): board-chain tripped'
+  printf 'owned:ar-1\n' > "$NOTES_FIXTURE/route"
+  run "$AQ" move red-owned done --status ok
+  assert_success
+  assert_output --partial 'watch board-chain routes to owned:ar-1, so its close is not probed'
+  watch_fixture red-asked 'red watch' 'check(watch): board-chain tripped'
+  printf 'alert\n' > "$NOTES_FIXTURE/route"
+  run "$AQ" move red-asked done --status ok
+  assert_success
+  assert_output --partial 'routes to alert'
+  [ ! -s "$NOTES_FIXTURE/watch.log" ]
+  # A route fleet-bench cannot read (the routes file gone, exit 2) leaves the close to the probe.
+  watch_fixture red-unrouted 'red watch' 'check(watch): board-chain tripped'
+  printf '#!/usr/bin/env bash\nexit 2\n' > "$SANDBOX/bin/fleet-bench"
+  run "$AQ" move red-unrouted done --status ok
+  assert_failure 6
+  assert_equal "$(cat "$NOTES_FIXTURE/watch.log")" 'watch-companion-loop recheck board-chain lock=free'
+}
+
+@test "move done ok on a red watch item: a watch not known here closes and says so, a busy loop lock exits 75 for a retry (ar-5414)" {
+  bats_require_minimum_version 1.5.0
+  watch_fixture red-gone 'red watch' 'check(watch): board-chain tripped'
+  printf '2\n' > "$NOTES_FIXTURE/watch.rc"
+  run --separate-stderr "$AQ" move red-gone done --status ok
+  assert_success
+  [[ "$stderr" == *'watch: board-chain not known here (exit 2), skipping probe check'* ]]
+  watch_fixture red-busy 'red watch' 'check(watch): board-chain tripped'
+  printf '75\n' > "$NOTES_FIXTURE/watch.rc"
+  run --separate-stderr "$AQ" move red-busy done --status ok
+  assert_failure 75
+  [[ "$stderr" == *'could not take the lock (exit 75); re-run'* ]]
+  [ -f "$(item running red-busy)" ]
 }

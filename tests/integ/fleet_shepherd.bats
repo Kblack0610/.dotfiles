@@ -16,7 +16,8 @@ setup() {
   # every run may start a pass; the debounce has its own test
   export FLEET_SHEPHERD_DEBOUNCE_MIN=0
   mkdir -p "$FLEET_SHEPHERD_DIR"
-  stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
+  # `nudged` (fleet-shepherd say's ledger check) answers STUB_NUDGED: unset is a fact not yet nudged
+  stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"; [ "$1" != nudged ] || [ -n "${STUB_NUDGED:-}" ]'
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
   stub agent-hold 'case "$*" in *--expired*) printf "%s" "${STUB_EXPIRED:-}" ;; *) printf "%s" "${STUB_HOLDS:-}" ;; esac'
   # a pass's measured cost (pass_cost); unset is a session with none
@@ -122,6 +123,21 @@ aged() {
   awk -F'\t' -v t="$(date +%s)" -v m="$1" -v c="${3:-2}" 'BEGIN { OFS = FS } { $c = int(t - m * 60); print }' "$f" > "$HOME/p" && mv "$HOME/p" "$f"
 }
 ago() { echo $(( $(date +%s) - $1 * 60 )); }
+
+@test "due: the run ledger row of a rate limit waits for its wait_until, one line past it; a real red is due all along (ar-230)" {
+  local main='{"repo":"run ledger","id":"main-run-ledger","reason":"CI run ledger unreadable: GitHub API rate limit hit, resets 13:47 (main CI of a, b, c waits on it)","escalated":false,"owners":[],"wait_until":'
+  doc "[]" "[${main}$(( $(date +%s) + 600 ))},{\"repo\":\"r1\",\"reason\":\"r1 red: Tests\",\"escalated\":false}]"
+  run "$SH" due
+  assert_success
+  assert_line 'nightly red: r1 (r1 red: Tests)'
+  refute_output --partial 'run ledger'
+  # past its reset and grace, the one row is due as an ownerless nightly red: one line, not one a repo
+  doc "[]" "[${main}$(( $(date +%s) - 60 ))}]"
+  run "$SH" due
+  assert_success
+  [ "$(grep -c '^nightly red: ' <<<"$output")" -eq 1 ]
+  assert_line 'nightly red: run ledger (CI run ledger unreadable: GitHub API rate limit hit, resets 13:47 (main CI of a, b, c waits on it))'
+}
 
 @test "due lists unnudged DONE/LANDED/STALLED, unescalated NEEDS rows for the human, and nightly red; no other bucket escalates" {
   doc "[$(row a DONE false false), $(row b LANDED true false), $(row c NEEDS false false), $(row d WORKING false false), $(row e STALLED true true)]" \
@@ -699,6 +715,16 @@ crow() { jq -c -n --arg s "$1" --arg b "$2" --arg v "$3" --argjson x "${4:-{\}}"
 IDLE=$'text above\n───────────── name ─\n\xe2\x9d\xaf\xc2\xa0\n─────────────\n  bypass permissions on (shift+tab to cycle)'
 # typed: what close_sample typed, as agent-panel send's arguments (the one typer, with its pane lock)
 typed() { cat "$HOME/panel.calls" 2>/dev/null; }
+# worker_ssh: a fleet_host_run stand-in that logs the host and runs the command here; a call matching
+# STUB_SSH_FAIL exits 255 as ssh does.
+worker_ssh() {
+  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
+    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
+  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+}
+# wrow <sid> <bucket> [extra-json]: a row on worker razer-laptop's lab server
+wrow() { crow "$1" "$2" keep "$(jq -c -n --arg s "$1" --argjson x "${3:-{\}}" \
+  '{target:"razer-laptop@lab/dotfiles-agent-\($s):1", host:"razer-laptop"} + $x')"; }
 
 @test "check types /wind-down auto into a DONE or CLOSE session on a close-now verdict, /wind-down into a CHAT one, then refreshes the document" {
   doc "[$(crow 1 DONE now), $(crow 2 CHAT now), $(crow 3 NEEDS now '{"own_asks":1}')]"
@@ -779,10 +805,7 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
 }
 
 @test "a fleet worker's close-now row is read and typed over ssh, and a worker that does not answer gives its claim back (ar-3924)" {
-  # fleet_host_run stand-in: logs the host, runs the command here; a call matching STUB_SSH_FAIL exits 255 as ssh does.
-  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
-    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
-  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+  worker_ssh
   doc "[$(crow 7 DONE now '{"target":"razer@lab/7:1","host":"razer"}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
@@ -804,9 +827,7 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
 }
 
 @test "a fleet worker's window is closed by its own wind-down.sh over ssh, and an ssh failure retries instead of failing the close (ar-3924)" {
-  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
-    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
-  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+  worker_ssh
   # The worker's stowed wind-down.sh, at its path under the worker's HOME (this HOME here).
   mkdir -p "$HOME/.local/src/tmux"
   printf '#!/usr/bin/env bash\necho "worker $*" >> "$HOME/wind-down.calls"\n' > "$HOME/.local/src/tmux/wind-down.sh"
@@ -821,6 +842,74 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run closes
   assert_output 'worker close --server lab --pane %7 --sid 7'
+}
+
+@test "a fleet worker's nudge line ends in the say call that delivers it; this machine's keeps no tail (ar-3987)" {
+  doc "[$(wrow 12 STALLED), $(crow 13 STALLED keep),
+        $(wrow 14 NEEDS '{"own_asks":1,"activity":"idle","idle_min":300,"escalated":true}')]"
+  run "$SH" due
+  assert_success
+  assert_line 'nudge STALLED: razer-laptop@lab/dotfiles-agent-12:1 [%12] STALLED f-12; then: fleet-shepherd say razer-laptop@lab/%12 "<the nudge>"'
+  assert_line 'nudge STALLED: lab/13:1 [%13] STALLED f-13'
+  assert_line 'nudge NEEDS: razer-laptop@lab/dotfiles-agent-14:1 [%14] NEEDS f-14; then: fleet-shepherd say razer-laptop@lab/%14 "<the nudge>"'
+  # The tail is no part of the line's key, so a skip copied with it holds the line.
+  "$SH" check >/dev/null || true
+  run "$SH" skip 'nudge STALLED: razer-laptop@lab/dotfiles-agent-12:1 [%12] STALLED f-12; then: fleet-shepherd say razer-laptop@lab/%12 "<the nudge>"' 'w'
+  assert_success
+}
+
+@test "say types the nudge into a worker's pane over ssh and marks it only once sent; an unreachable worker is left unmarked (ar-3987)" {
+  worker_ssh
+  doc "[$(wrow 12 STALLED)]"
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR, then carry on with your plan."
+  assert_success
+  assert_output 'said: razer-laptop@lab/dotfiles-agent-12:1'
+  grep -qx 'razer-laptop agent-panel send --wait 0 --pane lab/%12 Open the PR, then carry on with your plan.' "$HOME/ssh.calls"
+  grep -qx 'mark 12 STALLED f-12' "$HOME/sessions.calls"
+  # The target names the same row.
+  : > "$HOME/sessions.calls"
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/dotfiles-agent-12:1 "again"
+  assert_success
+  # ssh's 255, on the probe or on the send: nothing marked, so the next pass sends it.
+  for fail in tmux agent-panel; do
+    : > "$HOME/sessions.calls"; : > "$HOME/panel.calls"
+    STUB_SSH_FAIL=$fail STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+    assert_equal "$status" 75
+    assert_output 'unreachable: razer-laptop'
+    run grep -q '^mark' "$HOME/sessions.calls"; assert_failure
+  done
+  [ ! -s "$HOME/panel.calls" ]
+  # Sent, but the mark not recorded: an exit of its own, so a pass never reads it as unsent and types it again.
+  stub fleet-sessions '[ "$1" != mark ] && [ "$1" != nudged ]'
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  assert_equal "$status" 4
+}
+
+@test "say sends nothing and marks nothing to a prompt that takes no keys, a held pane, a nudged row or the placeholder (ar-3987)" {
+  worker_ssh
+  doc "[$(wrow 12 STALLED)]"
+  # a draft in the box
+  STUB_PANE="${IDLE/$'\xe2\x9d\xaf\xc2\xa0'/$'\xe2\x9d\xaf half typed'}" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  assert_equal "$status" 75
+  assert_output --partial 'busy: razer-laptop@lab/dotfiles-agent-12:1'
+  [ ! -s "$HOME/panel.calls" ]
+  # another send holds the pane
+  STUB_PANEL_RC=75 STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  assert_equal "$status" 75
+  # the Enter not taken: unmarked, exit 3
+  STUB_PANEL_RC=3 STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  assert_equal "$status" 3
+  run grep -q '^mark' "$HOME/sessions.calls"; assert_failure
+  : > "$HOME/panel.calls"
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "<the nudge>"
+  assert_equal "$status" 2
+  # already in the ledger for this fact (a retry before the document refreshed)
+  STUB_NUDGED=1 STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%12 "Open the PR."
+  assert_failure 1
+  STUB_PANE="$IDLE" run "$SH" say razer-laptop@lab/%99 "Open the PR."
+  assert_failure 2
+  [ ! -s "$HOME/panel.calls" ]
+  run grep -q '^mark' "$HOME/sessions.calls"; assert_failure
 }
 
 @test "check types /wind-down auto into a close-now row whose bucket nudge was held unseen (2026-11-18: hub/dotfiles:4 and :8)" {
@@ -916,7 +1005,7 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
 @test "check closes the window of a NEEDS row that turned down its close, setting its own asks to reopen it first" {
   stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"; [ -z "${STUB_ASK_FAIL:-}" ]'
   nudged_ago 30 3
-  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12","open ask Cd34"]}')]"
+  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"asks":2,"idle_min":2000,"blockers":["open ask Ab12","open ask Cd34"]}')]"
   # Negative control: an ask that cannot be set to reopen it keeps the window, logged once.
   STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
@@ -935,11 +1024,24 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
 @test "check keeps the window of a row whose blockers name fewer asks than it holds" {
   stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"'
   nudged_ago 30 3
-  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12"]}')]"
+  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"asks":2,"idle_min":2000,"blockers":["open ask Ab12"]}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
   [ ! -s "$HOME/ask.calls" ]
   grep -q 'close: lab/3:1: its asks (Ab12) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "check closes the window of a row whose only ask a queue item holds, setting no reopen (ar-4271)" {
+  # lab/dotfiles-agent-4 (2026-11-26): item ar-3447 held ask poGHJB, so the row read own_asks 1, asks 0,
+  # no ask blocker, and every check refused its close with "its asks (-) could not be set to reopen it".
+  stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"'
+  nudged_ago 30 3
+  doc "[$(crow 3 DONE now '{"nudged":true,"close_sent":true,"own_asks":1,"asks":0,"idle_min":2000,"blockers":[]}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ ! -s "$HOME/ask.calls" ]
+  run grep -q 'could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md"; assert_failure 1
+  run closes
+  assert_line 'close --server lab --pane %3 --sid 3'
 }
 
 @test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, not now, shown or mid-turn" {
@@ -1101,10 +1203,7 @@ nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$
 }
 
 @test "takeover reaches a fleet worker's STALLED row over ssh, closing it with the worker's wind-down.sh, and an ssh failure neither closes nor pages (ar-4973)" {
-  # fleet_host_run stand-in: logs the host, runs the command here; a call matching STUB_SSH_FAIL exits 255 as ssh does.
-  printf '%s\n' 'fleet_hosts() { :; }' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
-    '  [ -n "${STUB_SSH_FAIL:-}" ] && [[ "$*" =~ $STUB_SSH_FAIL ]] && return 255; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
-  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+  worker_ssh
   mkdir -p "$HOME/.local/src/tmux"
   printf '#!/usr/bin/env bash\necho "worker $*" >> "$HOME/wind-down.calls"\n' > "$HOME/.local/src/tmux/wind-down.sh"
   chmod +x "$HOME/.local/src/tmux/wind-down.sh"
@@ -1628,7 +1727,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_success
 }
 
-@test "a finished pass is scored by its log: WORKED when it logged a move, STALLED when not or when it planned" {
+@test "a finished pass is scored by its log: WORKED when it logged a move, STALLED when not or when it planned (ar-646)" {
   doc "[$(row a STALLED false false)]"
   "$SH" run
   local id; id="$(pass_id)"
@@ -1650,6 +1749,37 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run "$SH" run
   assert_failure
   assert_equal "$(cut -f3 "$FLEET_SHEPHERD_DIR/passes.tsv" | paste -sd' ')" 'WORKED STALLED STALLED'
+  # A pass that logged its move and reported a session's plan waiting on the human did work: the
+  # plan phrases describe the session, not the pass (ar-646, pass 5416cf0e).
+  id="$(pass_id)"
+  echo "- 11:00 UTC 11-04: escalated a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  said "$id" assistant "$(date +%s)" "Escalated: hub/dotfiles:1, plan awaiting your approval. The plan above is ready for your approval."
+  run "$SH" run
+  assert_success
+  # A report line that is only the tool's name is prose, not the call.
+  id="$(pass_id)"
+  echo "- 11:30 UTC 11-04: escalated a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  said "$id" assistant "$(date +%s)" $'The session is stuck at:\nExitPlanMode'
+  run "$SH" run
+  assert_success
+  # A report quoting another session's ask is not the pass asking: only its last text block is.
+  id="$(pass_id)"
+  echo "- 11:45 UTC 11-04: nudged a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  said "$id" assistant "$(date +%s)" 'hub/dotfiles:2 sits on "Would you like me to proceed?"'
+  said "$id" assistant "$(date +%s)" "Nudged hub/dotfiles:2."
+  run "$SH" run
+  assert_success
+  # Negative controls: the same report with no move logged, and a move then the pass asking leave.
+  id="$(pass_id)"
+  said "$id" assistant "$(date +%s)" "hub/dotfiles:1 has a plan awaiting your approval."
+  run "$SH" run
+  assert_failure
+  id="$(pass_id)"
+  echo "- 12:00 UTC 11-04: nudged a" >> "$FLEET_SHEPHERD_DIR/log.md"
+  said "$id" assistant "$(date +%s)" "I drafted a change to the brief. Would you like me to proceed?"
+  run "$SH" run
+  assert_failure
+  assert_equal "$(cut -f3 "$FLEET_SHEPHERD_DIR/passes.tsv" | paste -sd' ')" 'WORKED STALLED STALLED WORKED WORKED WORKED STALLED STALLED'
 }
 
 @test "the human talking to a pass: no new pass while it answers or is young; then the next takes its pane, with the conversation" {
@@ -1757,6 +1887,23 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   grep -qxF 'export BUDGET_DAY_USD=100' "$FLEET_SHEPHERD_DIR/.pass.sh"
   grep -qxF 'export BUDGET_CALL_USD=5' "$FLEET_SHEPHERD_DIR/.pass.sh"
   grep -qxF 'export MAX_CALLS_HOUR=8' "$FLEET_SHEPHERD_DIR/.pass.sh"
+}
+
+@test "the pass launcher carries the runner's live ssh agent, so a pass reaches a fleet worker whatever the hub session's environment holds" {
+  doc "[$(row a STALLED false false)]"
+  local sock="$BATS_TEST_TMPDIR/agent.sock"
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$sock"
+  SSH_AUTH_SOCK="$sock" run "$SH" run
+  assert_success
+  grep -qxF "export SSH_AUTH_SOCK=$(printf %q "$sock")" "$FLEET_SHEPHERD_DIR/.pass.sh"
+  # negative controls: no agent, or a dead one, writes no export over the pane's own
+  local dead
+  for dead in "" "$BATS_TEST_TMPDIR/gone.sock"; do
+    rm -f "$FLEET_SHEPHERD_DIR/.pass.sh" "$FLEET_SHEPHERD_DIR/.pass"
+    SSH_AUTH_SOCK="$dead" "$SH" run
+    [ -f "$FLEET_SHEPHERD_DIR/.pass.sh" ]
+    ! grep -q 'SSH_AUTH_SOCK' "$FLEET_SHEPHERD_DIR/.pass.sh" || fail "a ${dead:-missing} agent was exported"
+  done
 }
 
 @test "a pass starts on the account claude-acct room names; with none it starts on the best one and pages once, at normal, naming it" {
@@ -2007,6 +2154,15 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   assert_output --partial 'watch: queue-starved tripped (high)'
 }
 
+@test "an ERROR watch raises no tripped line; a TRIP one in the same three-column output still does (ar-3570)" {
+  doc "[$(row a STALLED false false)]"
+  stub agent-queue 'true'
+  export STUB_TRIPPED='probe-broken\turgent\tERROR\nqueue-starved\thigh\tTRIP\n' STUB_K3S='[]'
+  run "$SH" run
+  refute_output --partial 'watch: probe-broken'
+  assert_output --partial 'watch: queue-starved tripped (high)'
+}
+
 @test "a normal or low trip raises no line (its triage item or the human sheet owns it); a held red item owns nothing" {
   doc "[$(row a STALLED false false)]"
   stub agent-queue 'printf "%s\n" "{\"tags\":\"red watch cause:ab\",\"state\":\"queued\",\"hold\":\"after x\",\"task\":\"check(watch): home-k3s-node-disk tripped since x\"}"'
@@ -2218,6 +2374,15 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; verdicts; }
   refute_output --partial t-s3
   refute_output --partial t-s4
   refute_output --partial t-s5
+}
+
+@test "an overdue phase on a fleet worker's session ends in the say call that marks its phase key (ar-3987)" {
+  phase s1 shell 40 81
+  phases_doc
+  jq '.sessions[0] += {target:"razer-laptop@lab/t-s1:1", host:"razer-laptop", pane:"%5"}' "$FLEET_STATE_FILE" > "$HOME/d" && mv "$HOME/d" "$FLEET_STATE_FILE"
+  run "$SH" due
+  assert_success
+  assert_line "overdue: razer-laptop@lab/t-s1:1 [%5] phase 2/4 'P2 the thing' open 81m, expected 40m (b); then: fleet-shepherd say razer-laptop@lab/%5 --fact \"overdue phase 2/4\" \"<the nudge>\""
 }
 
 @test "an overdue line names the session running the open phase's item, once, not every session on the plan (ar-1497)" {
@@ -2902,7 +3067,10 @@ STUB
 # and 3 (queued 48h, one job) as stuck, run 1 under two job names. gh answers a run and its jobs from
 # those facts and records every call. STUB_CANCEL_REFUSED refuses /cancel with HTTP 409 (not
 # cancellable), STUB_CANCEL_DENIED with 403 and refuses force-cancel too, STUB_FORCE_REFUSED refuses
-# force-cancel with HTTP 409, and STUB_GH_DOWN fails every run read.
+# force-cancel with HTTP 409 and STUB_FORCE_DENIED with 403, STUB_DELETE_FAILED refuses the run's DELETE
+# with 403 "Could not delete the workflow run", STUB_DELETE_ERROR with a plain 403 Forbidden (a token
+# fault), STUB_AFTER_FORCE=job gives run 1 a job and =down fails its read once force-cancel was
+# called on it, and STUB_GH_DOWN fails every run read.
 ghost_setup() {
   cat > "$PROM_LIB" <<'STUB'
 prom_q() {
@@ -2916,21 +3084,29 @@ STUB
   gh_script 'echo "$*" >> "$HOME/gh.calls"
 old="$(date -u -d "48 hours ago" +%FT%TZ)" new="$(date -u -d "1 hour ago" +%FT%TZ)"
 [ -z "${STUB_GH_DOWN:-}" ] || { echo "gh: HTTP 502" >&2; exit 1; }
+after=""
+[ -z "${STUB_AFTER_FORCE:-}" ] || ! grep -q "runs/1/force-cancel" "$HOME/gh.calls" || after="$STUB_AFTER_FORCE"
 case "$*" in
-  "api repos/o/r/actions/runs/1 "*|"api repos/o/r/actions/runs/3 "*) printf "queued\t%s\n" "$old" ;;
+  "api repos/o/r/actions/runs/1 "*) [ "$after" != down ] || { echo "gh: HTTP 502" >&2; exit 1; }
+                                    printf "queued\t%s\n" "$old" ;;
+  "api repos/o/r/actions/runs/3 "*) printf "queued\t%s\n" "$old" ;;
   "api repos/o/r/actions/runs/2 "*) printf "queued\t%s\n" "$new" ;;
-  "api repos/o/r/actions/runs/1/jobs "*|"api repos/o/r/actions/runs/2/jobs "*) echo 0 ;;
+  "api repos/o/r/actions/runs/1/jobs "*) if [ "$after" = job ]; then echo 1; else echo 0; fi ;;
+  "api repos/o/r/actions/runs/2/jobs "*) echo 0 ;;
   "api repos/o/r/actions/runs/3/jobs "*) echo 1 ;;
   *"/cancel") [ -z "${STUB_CANCEL_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
               [ -z "${STUB_CANCEL_REFUSED:-}" ] || { echo "gh: Cannot cancel a workflow run that is completed. (HTTP 409)" >&2; exit 1; } ;;
   *"/force-cancel") [ -z "${STUB_FORCE_REFUSED:-}" ] || { echo "gh: Cannot force cancel this run (HTTP 409)" >&2; exit 1; }
+                    [ -z "${STUB_FORCE_DENIED:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; }
                     [ -z "${STUB_CANCEL_DENIED:-}" ] ;;
+  "api -X DELETE "*) [ -z "${STUB_DELETE_FAILED:-}" ] || { echo "gh: Could not delete the workflow run (HTTP 403)" >&2; exit 1; }
+                     [ -z "${STUB_DELETE_ERROR:-}" ] || { echo "gh: Forbidden (HTTP 403)" >&2; exit 1; } ;;
 esac'
 }
 
 @test "ghost-runs: a dry run logs the ghost it would cancel, keeps a young run and one with a job, and asks once" {
   ghost_setup
-  run "$SH" ghost-runs
+  STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 run "$SH" ghost-runs
   assert_success
   assert_line 'ghost-runs: would-cancel https://github.com/o/r/actions/runs/1 (48h)'
   # Negative controls: queued an hour, and queued two days with a job, are no ghosts.
@@ -2939,7 +3115,7 @@ esac'
   assert_equal "$(grep -c . <<<"$output")" 3
   run grep -c 'stuck="true",forge="github"} >= 86400' "$HOME/prom.calls"
   assert_output 1
-  run grep -c 'cancel' "$HOME/gh.calls"
+  run grep -cE 'cancel|DELETE' "$HOME/gh.calls"
   assert_output 0
   # A verdict is no act: the rundown gets nothing from a dry run.
   [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ] || ! grep -q 'ghost run' "$FLEET_SHEPHERD_DIR/log.md"
@@ -2975,6 +3151,94 @@ esac'
   assert_success
   run grep -c 'runs/[23]/.*cancel' "$HOME/gh.calls"
   assert_output 0
+  # Negative control: a cancel or force-cancel that works deletes nothing.
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 0
+}
+
+@test "ghost-runs: a ghost GitHub refuses both cancels on is read again and deleted; a refused delete is cancel-failed and tried again (ask 44Ljyz)" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1
+  run "$SH" ghost-runs
+  assert_success
+  assert_line 'ghost-runs: deleted https://github.com/o/r/actions/runs/1 (48h)'
+  # cancel, force-cancel, then GitHub's second read of the run and its jobs, then the DELETE.
+  assert_equal "$(grep 'runs/1' "$HOME/gh.calls" | sed 's/ --jq.*//' | tr '\n' '|')" \
+    'api repos/o/r/actions/runs/1|api repos/o/r/actions/runs/1/jobs|api -X POST repos/o/r/actions/runs/1/cancel|api -X POST repos/o/r/actions/runs/1/force-cancel|api repos/o/r/actions/runs/1|api repos/o/r/actions/runs/1/jobs|api -X DELETE repos/o/r/actions/runs/1|'
+  # Only the ghost: a young run and one with a job are never deleted.
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 1
+  run grep -cF 'ghost run https://github.com/o/r/actions/runs/1: deleted, queued 48h with no jobs; cancel and force-cancel answered HTTP 409' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  assert_equal "$(grep runs/1 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | cut -f2)" deleted
+  # A deleted run is judged: the next run inside the age asks GitHub nothing about it.
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_output ''
+  [ ! -e "$HOME/gh.calls" ]
+  # A DELETE GitHub refuses is cancel-failed with its answer, logged once, and tried again each run.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$FLEET_SHEPHERD_DIR/log.md" "$HOME/gh.calls"
+  local refused='delete: gh: Forbidden (HTTP 403)'
+  STUB_DELETE_ERROR=1 run "$SH" ghost-runs
+  assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  STUB_DELETE_ERROR=1 run "$SH" ghost-runs
+  assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 2
+  run grep -cF "ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs ($refused); tried again each run" "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: deleted https://github.com/o/r/actions/runs/1 (48h)'
+}
+
+@test "ghost-runs: a delete GitHub answers 403 is undeletable, logged once and not asked about again inside the age (ask VBMlNu: hold)" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 STUB_DELETE_FAILED=1
+  local refused='delete: gh: Could not delete the workflow run (HTTP 403)'
+  run "$SH" ghost-runs
+  assert_line "ghost-runs: undeletable https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  run grep -cF "ghost run https://github.com/o/r/actions/runs/1: undeletable, queued 48h with no jobs ($refused)" "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  # Judged: the next run inside the age makes no GitHub call about it.
+  rm -f "$HOME/gh.calls"
+  run "$SH" ghost-runs
+  assert_output ''
+  [ ! -e "$HOME/gh.calls" ]
+  # A day on, it is asked again once, and the rundown line is not repeated.
+  local day=$(( $(date +%s) - 25 * 3600 ))
+  sed -i "s/^[0-9]*\t/$day\t/" "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  run "$SH" ghost-runs
+  assert_line "ghost-runs: undeletable https://github.com/o/r/actions/runs/1 (48h; $refused)"
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 1
+  run grep -c 'ghost run .*undeletable' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 1
+  # A GitHub that lets the delete through ends it.
+  unset STUB_DELETE_FAILED
+  sed -i "s/^[0-9]*\t/$(( day - 90000 ))\t/" "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  run "$SH" ghost-runs
+  assert_line 'ghost-runs: deleted https://github.com/o/r/actions/runs/1 (48h)'
+}
+
+@test "ghost-runs: a ghost that takes a job before the delete is kept, and one GitHub stops answering about is asked again; neither is deleted" {
+  ghost_setup
+  export FLEET_SHEPHERD_GHOST_CANCEL=1 STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1
+  STUB_AFTER_FORCE=job run "$SH" ghost-runs
+  assert_success
+  assert_line 'ghost-runs: kept https://github.com/o/r/actions/runs/1 (1 jobs)'
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 0
+  assert_equal "$(grep runs/1 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | cut -f2)" kept
+  [ ! -e "$FLEET_SHEPHERD_DIR/log.md" ] || ! grep -q 'ghost run' "$FLEET_SHEPHERD_DIR/log.md"
+  # The second read failing judges nothing: no delete, no verdict, asked again next run.
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$HOME/gh.calls"
+  STUB_AFTER_FORCE=down run "$SH" ghost-runs
+  assert_success
+  assert_line 'ghost-runs: GitHub did not answer, asked again next run: https://github.com/o/r/actions/runs/1 (run unreadable)'
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 0
+  run grep -c 'runs/1' "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"
+  assert_output 0
 }
 
 @test "ghost-runs: a cancel refused for another reason is cancel-failed, logged once and tried again; GitHub down judges nothing" {
@@ -2992,15 +3256,18 @@ esac'
   assert_line 'ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; gh: Forbidden (HTTP 403))'
   run grep -c 'ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs (gh: Forbidden (HTTP 403))' "$FLEET_SHEPHERD_DIR/log.md"
   assert_output 1
-  # A run cancel calls not cancellable and force-cancel refuses too names the force-cancel answer.
+  # A run cancel calls not cancellable and force-cancel refuses for another reason names the
+  # force-cancel answer, and is never deleted: only a 409 on both cancels is.
   unset STUB_CANCEL_DENIED
-  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$FLEET_SHEPHERD_DIR/log.md"
-  STUB_CANCEL_REFUSED=1 STUB_FORCE_REFUSED=1 run "$SH" ghost-runs
-  local refused='force-cancel: gh: Cannot force cancel this run (HTTP 409)'
+  rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" "$FLEET_SHEPHERD_DIR/log.md" "$HOME/gh.calls"
+  STUB_CANCEL_REFUSED=1 STUB_FORCE_DENIED=1 run "$SH" ghost-runs
+  local refused='force-cancel: gh: Forbidden (HTTP 403)'
   assert_line "ghost-runs: cancel-failed https://github.com/o/r/actions/runs/1 (48h; $refused)"
   assert_equal "$(grep runs/1 "$FLEET_SHEPHERD_DIR/ghost-runs.tsv" | cut -f4)" "48h; $refused"
   run grep -cF "ghost run https://github.com/o/r/actions/runs/1: cancel-failed, queued 48h with no jobs ($refused)" "$FLEET_SHEPHERD_DIR/log.md"
   assert_output 1
+  run grep -c 'DELETE' "$HOME/gh.calls"
+  assert_output 0
   export STUB_CANCEL_DENIED=1
   # GitHub not answering writes no verdict, and one line names every run asked again.
   rm -f "$FLEET_SHEPHERD_DIR/ghost-runs.tsv"

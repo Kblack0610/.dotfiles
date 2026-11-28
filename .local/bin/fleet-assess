@@ -4,7 +4,7 @@
 #   fleet-assess                 headroom, GitHub API budget, holds, verdict, one row per heavy process
 #   fleet-assess --watch-probe   one line; exit 1 on HOLD (fleet-dispatch's load gate)
 #   fleet-assess --thermal-probe the same, and a tripped `fleet-thermal` counts as a hold (that watch's probe); a HOLD adds a
-#                                `page:` line, urgent at FLEET_EXTREME_LOAD_X
+#                                `page:` line, urgent at FLEET_EXTREME_LOAD_X or at FLEET_CRIT_TCTL
 #   fleet-assess --github        one line: the GitHub budget, with LOW when it is
 #   fleet-assess --gh-callers [SINCE_EPOCH] gh call log: user:deferred rows by caller, reserve-granted reads by granting ancestor
 #   fleet-assess --gate          one line: slots busy and queued, recent results, branches the gate keeps re-running unmerged
@@ -15,8 +15,9 @@
 #
 # Verdicts: HOLD (over the high mark, or between the marks while a hold is set), CLEAR
 # (under the low mark while a hold is set: safe to send GO), OK (nothing to do).
-# Load is the primary signal. Tctl alone is not: a Zen 4 part boosts until it reads 95 C,
-# so 90s under one busy thread is by design. Thresholds are the FLEET_* block below.
+# Load is the primary signal. Tctl up to the boost ceiling is not: a Zen 4 part boosts until it reads
+# 95 C, so 90s under one busy thread is by design. Past it, at FLEET_CRIT_TCTL, Tctl alone holds.
+# Thresholds are the FLEET_* block below.
 
 set -uo pipefail
 
@@ -30,7 +31,7 @@ set -uo pipefail
                                  # Provisional: revisit if fleet-thermal pages on a stall HOLD with no swap-in activity.
 : "${FLEET_CLEAR_STALL_PCT:=5}"  # stall under this -> may CLEAR
 # FLEET_HOT_TCTL, Tctl at the throttle point ..., is set in .local/lib/cpu-temp.sh, shared with boot-cause
-: "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD
+: "${FLEET_HOT_LOAD_X:=1.5}"     # ... with load at least this -> HOLD. FLEET_CRIT_TCTL (same file) holds at any load.
 : "${FLEET_EXTREME_LOAD_X:=3}"   # 5-min load / cores at or above this on a HOLD -> the thermal probe pages urgent: the human
                                  # asked to hear of extreme load (2026-11-19, ar-3424); 2026-10-23 sat at 4x. The 5-min
                                  # average is the "stays extreme" part: a mid-trip rise pages at once, with no confirm.
@@ -61,6 +62,8 @@ _fa_lib="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 . "$_fa_lib/agent-merge-proof.sh"   # merge_proof_ref, the base branch_merged reads
 # shellcheck source=../lib/cpu-temp.sh
 . "$_fa_lib/cpu-temp.sh"            # read_tctl
+# shellcheck source=../lib/agent-units.sh
+. "$_fa_lib/agent-units.sh"         # AGENT_PANE_SCOPES, for CAP_PROBE
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> [<mem_stall_pct>] -> "VERDICT reason"
@@ -69,14 +72,20 @@ fleet_verdict() {
       -v hs="$FLEET_HOLD_STALL_PCT" -v cs="$FLEET_CLEAR_STALL_PCT" \
       -v hx="$FLEET_HOLD_LOAD_X" -v cx="$FLEET_CLEAR_LOAD_X" \
       -v hm="$FLEET_HOLD_MEM_PCT" -v cm="$FLEET_CLEAR_MEM_PCT" \
-      -v ht="$FLEET_HOT_TCTL" -v htx="$FLEET_HOT_LOAD_X" 'BEGIN {
+      -v ht="$FLEET_HOT_TCTL" -v htx="$FLEET_HOT_LOAD_X" -v ct="$FLEET_CRIT_TCTL" 'BEGIN {
     x = (c > 0) ? l / c : 0
     hot = (t != "-" && t + 0 >= ht && x >= htx)
+    # fleet-dispatch assess_why matches "HOLD tctl ... critical" so no floor goes past it: keep the wording.
+    if (t != "-" && t + 0 >= ct) { printf "HOLD tctl %s C >= %s C critical\n", t, ct; exit }
     if (x >= hx)  { printf "HOLD load %.1fx cores >= %sx\n", x, hx; exit }
     if (m < hm)   { printf "HOLD memory %d%% free < %d%%\n", m, hm; exit }
     if (s >= hs)  { printf "HOLD memory stall %.1f%% >= %s%% (swapping)\n", s, hs; exit }
     if (hot)      { printf "HOLD tctl %s C at %.1fx cores\n", t, x; exit }
-    low = (x < cx && m >= cm && s < cs)
+    # A held machine clears only back under the throttle point, so a host hovering at the critical mark
+    # does not trip and clear on every sample.
+    warm = (t != "-" && t + 0 >= ht)
+    low = (x < cx && m >= cm && s < cs && !warm)
+    if (held && warm) { printf "HOLD held, tctl %s C not yet under %s C\n", t, ht; exit }
     if (held && low)  { printf "CLEAR load %.1fx < %sx, memory %d%% free, stall %.1f%%\n", x, cx, m, s; exit }
     if (held && s >= cs) { printf "HOLD held, memory stall %.1f%% not yet under %s%%\n", s, cs; exit }
     if (held)         { printf "HOLD held, load %.1fx not yet under %sx\n", x, cx; exit }
@@ -84,13 +93,15 @@ fleet_verdict() {
   }'
 }
 
-# thermal_page <load5> <cores> -> the `page:` line of a fleet-thermal trip (SENTINEL.md, "A trip's
-# level"): urgent with a `reason:` at FLEET_EXTREME_LOAD_X, else low, which brings a trip that was
-# extreme back to the watch's own level so its reminders and the shepherd stop reading urgent.
+# thermal_page <load5> <cores> [<tctl|->] -> the `page:` line of a fleet-thermal trip (SENTINEL.md, "A trip's
+# level"): urgent with a `reason:` at FLEET_CRIT_TCTL (a host near its thermal shutdown, at any load) or at
+# FLEET_EXTREME_LOAD_X, else low, which brings a trip that was urgent back to the watch's own level so its
+# reminders and the shepherd stop reading urgent.
 thermal_page() {
-  awk -v l="$1" -v c="$2" -v ex="$FLEET_EXTREME_LOAD_X" 'BEGIN {
+  awk -v l="$1" -v c="$2" -v t="${3:--}" -v ex="$FLEET_EXTREME_LOAD_X" -v ct="$FLEET_CRIT_TCTL" -v h="$FLEET_HOST" 'BEGIN {
     x = (c > 0) ? l / c : 0
-    if (x >= ex) printf "page: urgent\nreason: 5-min load %.1fx cores, past the %sx extreme mark\n", x, ex
+    if (t != "-" && t + 0 >= ct) printf "page: urgent\nreason: %s CPU at %s C, at or over the %s C critical mark (near its thermal shutdown)\n", h, t, ct
+    else if (x >= ex) printf "page: urgent\nreason: 5-min load %.1fx cores, past the %sx extreme mark\n", x, ex
     else print "page: low"
   }'
 }
@@ -288,12 +299,11 @@ gate_rows() {
     print $2 "\t" proj "\t" plat "\t" $1 }'
 }
 
-# The playground's run seats (its scripts/test/slots.sh): a local run leases a seat from the CI
-# governor, so how many seats there are, held and waited on is the governor's (governor_seats);
-# N.lock is flocked while a seat's run goes, which is how its editors are told from a hand-started
-# one. Its run ledger has one line per finished run: end, start, result, platform, worktree,
-# branch, repo.
-GOVERNOR_HOST="${GOVERNOR_HOST:-$(uname -n)}"
+# The playground's run seats (its scripts/test/slots.sh): a local run flocks the host lock,
+# $RUN_SLOT_DIR/N.lock (one seat, 1.lock, today), and the rest block on it, so the seats, the one
+# held and the runs queued are all read from /proc/locks (seat_counts), and a held seat is how its
+# editors are told from a hand-started one. Its run ledger has one line per finished run: end,
+# start, result, platform, worktree, branch, repo.
 SLOT_DIR="${UNITY_SLOT_DIR:-${XDG_RUNTIME_DIR:-/tmp}/unity-test-slots}"
 RUN_LEDGER="${UNITY_RUN_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 PROC_LOCKS="${PROC_LOCKS:-/proc/locks}"
@@ -322,17 +332,20 @@ slot_holders() {
     END { print (pids == "" ? "-" : pids) }' "$PROC_LOCKS" 2>/dev/null || echo '-'
 }
 
-# governor_seats -> "<units> <busy> <waiting>": this host's capacity and busy units from the
-# governor (runner slots plus local seats: it has no local-only series), and the local runs
-# waiting for a seat, cluster-wide (the backlog has no host label; no series: nobody waits).
-# rc 1 when Prometheus does not answer (3 s, so a dead endpoint cannot stall the pass) or the
-# governor has no row for this host. GOVERNOR_HOST is `uname -n`, the name the governor uses.
-governor_seats() {
-  local raw
-  raw="$(PROM_TIMEOUT=3 prom_q "{__name__=~\"ci_governor_(capacity|busy)_units\",host=\"$GOVERNOR_HOST\"} or label_replace(ci_governor_backlog_units{kind=\"local\"}, \"__name__\", \"waiting\", \"\", \"\")")" || return 1
-  jq -r 'reduce .data.result[] as $r ({}; .[$r.metric.__name__] += ($r.value[1] | tonumber | round))
-    | select(.ci_governor_capacity_units != null)
-    | "\(.ci_governor_capacity_units) \(.ci_governor_busy_units // 0) \(.waiting // 0)"' <<< "$raw" 2>/dev/null | grep .
+# seat_counts -> "<seats> <busy> <queued>": slots.sh's N.lock files, the seats held, and the runs
+# blocked on one, from /proc/locks like slot_holders (no lock taken). rc 1 with no seat file, so
+# a machine where slots.sh never ran has no gate line.
+seat_counts() {
+  local ids n
+  ids="$(lock_ids "$SLOT_DIR"/[0-9]*.lock | paste -sd' ')"
+  [ -n "$ids" ] || return 1
+  n="$(wc -w <<< "$ids")"
+  awk -v ids=" $ids " -v n="$n" '
+    { id = ($2 == "->") ? $7 : $6 }
+    !index(ids, " " id " ") { next }
+    $2 == "->" { queued++; next }
+    !(id in held) { held[id] = 1; busy++ }
+    END { print n, busy + 0, queued + 0 }' "$PROC_LOCKS" 2>/dev/null || echo "$n 0 0"
 }
 
 # parent_of <pid> -> its parent pid, nothing when the process is gone. Read with builtins (no
@@ -365,16 +378,14 @@ unslotted_editors() {
   echo "$n"
 }
 
-# slot_counts -> "<units> <busy> <queued> <unslotted>" for the gate line: the governor's figures
-# for this host (busy already counts the pool-runner jobs and local seats it holds), and the
+# slot_counts -> "<seats> <busy> <queued> <unslotted>" for the gate line: slots.sh's seats, and the
 # editors running outside any seat, shown beside them and never added, so a job is counted once.
-# Fails when slots.sh never ran here (no SLOT_DIR) or the governor gives no row for this host, so
-# there is no gate line rather than a guessed count.
+# Fails when slots.sh never ran here (no seat file), so there is no gate line rather than a
+# guessed count.
 slot_counts() {
-  local units busy queued
-  [ -d "$SLOT_DIR" ] || return 1
-  read -r units busy queued < <(governor_seats) || return 1
-  echo "$units $busy $queued $(unslotted_editors "$(slot_holders)")"
+  local seats busy queued
+  read -r seats busy queued < <(seat_counts) || return 1
+  echo "$seats $busy $queued $(unslotted_editors "$(slot_holders)")"
 }
 
 # ledger_stats [<window s>] -> "<result> <count>" for each result, over runs that ended in the
@@ -457,7 +468,7 @@ busy_line() {
 # worker. EffectiveCPUs is the kernel's cpuset; AllowedCPUs is recorded even where the user
 # manager has no cpuset controller and nothing is pinned (razer-laptop, 2026-11-18). A user
 # manager it cannot reach (no user bus over ssh) exits 1, so the host reads unconfirmed.
-CAP_PROBE='set -o pipefail; units=$(systemctl --user list-units --no-legend --plain --state=active "tmux-spawn-*.scope" "agent-*.scope" app-agentctl.slice "fleet-*.service" "agent-*.service" "claude-acct-*.service" schedules-sync.service store-sync.service | awk "{print \$1}") || exit 1; for u in $units; do printf "%s %s\n" "$u" "$(systemctl --user show "$u" -p EffectiveCPUs --value)"; done'
+CAP_PROBE='set -o pipefail; units=$(systemctl --user list-units --no-legend --plain --state=active '"$(printf '"%s" ' "${AGENT_PANE_SCOPES[@]}")"'app-agentctl.slice "fleet-*.service" "agent-*.service" "claude-acct-*.service" schedules-sync.service store-sync.service | awk "{print \$1}") || exit 1; for u in $units; do printf "%s %s\n" "$u" "$(systemctl --user show "$u" -p EffectiveCPUs --value)"; done'
 
 # cap_units <cap host line> -> that host's CAP_PROBE lines; rc non-zero when it cannot be read.
 # This machine is the host named FLEET_HOST, or one the inventory reaches with ansible_connection local.
@@ -512,14 +523,14 @@ fleet_lines() {
   return "$rc"
 }
 
-# gate_line -> one line: the governor's units busy and runs queued (and any editor outside a
-# seat), the last GATE_WINDOW_SECS of results, and the branches the gate re-ran GATE_REPEAT_MIN
-# or more times with no merge. Nothing when slots.sh never ran here or the governor has no row
-# for this host, so a machine with no gate prints no gate line.
+# gate_line -> one line: slots.sh's seats busy and runs queued (and any editor outside a seat),
+# the last GATE_WINDOW_SECS of results, and the branches the gate re-ran GATE_REPEAT_MIN or more
+# times with no merge. Nothing when slots.sh never ran here, so a machine with no gate prints no
+# gate line.
 gate_line() {
-  local units busy queued unslotted line stats res n rest="" runs wt br branches=""
-  read -r units busy queued unslotted < <(slot_counts) || return 0
-  line="gate: $busy/$units units busy, $queued queued"
+  local seats busy queued unslotted line stats res n rest="" runs wt br branches=""
+  read -r seats busy queued unslotted < <(slot_counts) || return 0
+  line="gate: $busy/$seats seats busy, $queued queued"
   [ "$unslotted" = 0 ] || line="$line, $unslotted outside a seat"
   line="$line, $((GATE_WINDOW_SECS / 3600))h:"
   stats="$(ledger_stats "$GATE_WINDOW_SECS")"
@@ -571,7 +582,7 @@ _label() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\n'/ 
 # write_textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
 # Two runs with the same labels (two PlayMode runs in one worktree) collapse to the older.
 write_textfile() {
-  local dir="$1" tmp secs proj plat pid wt branch repo stats hours sessions units max
+  local dir="$1" tmp secs proj plat pid wt branch repo stats hours sessions units max tctl
   [ -d "$dir" ] || { echo "fleet-assess: $dir is not a directory" >&2; return 1; }
   tmp="$(mktemp "$dir/.fleet_local.prom.XXXXXX")" || return 1
   {
@@ -590,6 +601,13 @@ write_textfile() {
     echo '# TYPE fleet_agent_sessions gauge'
     sessions="$(agent_count)"
     echo "fleet_agent_sessions $sessions"
+    # read_tctl, the reader the verdict uses; no series when the host has no sensor, never a 0.
+    tctl="$(read_tctl)"
+    if [ "$tctl" != - ]; then
+      echo "# HELP fleet_cpu_tctl_celsius CPU temperature as fleet-assess reads it (k10temp Tctl, else the hottest thermal zone); holds at $FLEET_CRIT_TCTL C."
+      echo '# TYPE fleet_cpu_tctl_celsius gauge'
+      echo "fleet_cpu_tctl_celsius $tctl"
+    fi
     if read -r units max < <(run_units "$sessions"); then
       echo '# HELP fleet_run_units Run units the agent sessions here hold (heavy 2, light 1); a worker: its live sessions, the dispatching machine: as of the last pass.'
       echo '# TYPE fleet_run_units gauge'
@@ -652,7 +670,7 @@ main() {
   if [ "${1:-}" = --watch-probe ] || [ "${1:-}" = --thermal-probe ]; then
     echo "$verdict (load $load/$cores, tctl ${tctl} C, mem ${mem}% free, stall ${stall}%)"
     case "$verdict" in HOLD*) ;; *) return 0 ;; esac
-    [ "${1:-}" != --thermal-probe ] || thermal_page "$(read_load5)" "$cores"
+    [ "${1:-}" != --thermal-probe ] || thermal_page "$(read_load5)" "$cores" "$tctl"
     return 1
   fi
 

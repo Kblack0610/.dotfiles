@@ -1412,8 +1412,14 @@ pub(crate) const WANT_CHANNELS: &[&str] = &[
 ];
 
 /// The [`WANT_CHANNELS`] a machine writes by, not the human: `outbox` (a session's follow-up)
-/// and `ask` (an ask sweep's row). A release window's interrupt lane takes every other one.
+/// and `ask` (an ask sweep's row).
 pub(crate) const MACHINE_WANTS: &[&str] = &["outbox", "ask"];
+
+/// Is `want` (`--want`'s channel) the human's own ask? `#requested` rides on every want, so it
+/// cannot be the signal. A human's want that joins an open twin marks that row (ar-6060).
+pub(crate) fn human_channel(want: &str) -> bool {
+    !MACHINE_WANTS.contains(&want)
+}
 
 /// `--want`'s value, or the channels there are.
 pub(crate) fn want_channel(s: &str) -> anyhow::Result<&'static str> {
@@ -2266,6 +2272,28 @@ pub(crate) fn project_dir(p: &Profile, name: &str) -> Result<PathBuf> {
         })
         .collect();
     choose_project_dir(name, with_sheet)
+}
+
+/// The org (profile) whose project `name` resolves to, as [`project_dir`] picks it; None when it
+/// resolves nowhere or the org is not a configured profile. The queue item working a moved row
+/// records it (`agent-queue rehome --profile`).
+pub(crate) fn project_org(p: &Profile, name: &str) -> Option<String> {
+    let dir = project_dir(p, name).ok()?;
+    let want = project_map::canonical(name.trim()).to_lowercase();
+    if project_dir_in(p, &want).as_ref() == Some(&dir) {
+        return Some(p.name.clone());
+    }
+    config::all_profile_names()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|org| *org != p.name)
+        .find(|org| {
+            config::resolve(Some(org))
+                .ok()
+                .and_then(|op| project_dir_in(&op, &want))
+                .as_ref()
+                == Some(&dir)
+        })
 }
 
 /// Pick between orgs that all hold the same project name. Split out from the directory walk so
@@ -4096,15 +4124,8 @@ fn last_cut(dir: &Path) -> Option<chrono::NaiveDate> {
     let stamped = notes
         .iter()
         .filter_map(|(_, path)| {
-            let text = fs::read_to_string(path).ok()?;
-            text.match_indices("<!-- rolled:")
-                .filter_map(|(i, m)| {
-                    let rest = text[i + m.len()..].trim_start();
-                    let end = rest
-                        .find(|c: char| !c.is_ascii_digit())
-                        .unwrap_or(rest.len());
-                    rest[..end].parse::<i64>().ok()
-                })
+            rolled_stamps(&fs::read_to_string(path).ok()?)
+                .into_iter()
                 .max()
         })
         .max();
@@ -4118,6 +4139,24 @@ fn last_cut(dir: &Path) -> Option<chrono::NaiveDate> {
             })
             .max()
     })?;
+    epoch_day(epoch)
+}
+
+/// Every `<!-- rolled:EPOCH -->` stamp in a version note.
+fn rolled_stamps(text: &str) -> Vec<i64> {
+    text.match_indices("<!-- rolled:")
+        .filter_map(|(i, m)| {
+            let rest = text[i + m.len()..].trim_start();
+            let end = rest
+                .find(|c: char| !c.is_ascii_digit())
+                .unwrap_or(rest.len());
+            rest[..end].parse::<i64>().ok()
+        })
+        .collect()
+}
+
+/// The local calendar day of a unix epoch.
+fn epoch_day(epoch: i64) -> Option<chrono::NaiveDate> {
     chrono::DateTime::from_timestamp(epoch, 0).map(|t| t.with_timezone(&chrono::Local).date_naive())
 }
 
@@ -4696,6 +4735,73 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     }
 }
 
+/// The days of `dir`'s cuts, oldest first: each `versions/` note's `<!-- rolled:EPOCH -->` stamp.
+/// A note with no stamp (frozen before stamps) has no date here, since its mtime moves on a
+/// rewrite.
+fn cut_days(dir: &Path) -> Vec<chrono::NaiveDate> {
+    let mut days: Vec<chrono::NaiveDate> = version_notes(&dir.join("versions"))
+        .iter()
+        .filter_map(|(_, path)| {
+            let stamp = rolled_stamps(&fs::read_to_string(path).ok()?)
+                .into_iter()
+                .max()?;
+            epoch_day(stamp)
+        })
+        .collect();
+    days.sort();
+    days.dedup();
+    days
+}
+
+/// Median days between the last `window` cuts; None with fewer than two dated cuts.
+fn measured_cadence(days: &[chrono::NaiveDate], window: usize) -> Option<i64> {
+    let tail = &days[days.len().saturating_sub(window + 1)..];
+    let mut gaps: Vec<i64> = tail.windows(2).map(|w| (w[1] - w[0]).num_days()).collect();
+    if gaps.is_empty() {
+        return None;
+    }
+    gaps.sort_unstable();
+    Some(gaps[gaps.len() / 2])
+}
+
+/// The cuts counted for the measured cadence: the newest few, so an old burst does not set it.
+const CADENCE_WINDOW: usize = 8;
+
+/// What `notes projects <name> --json` takes from the sheet and the notes layer: the stage,
+/// version, STATUS line, waves (the roadmap) and the cadence target against what the cuts
+/// measured. [`crate::project_space`] adds the files and joins the rest.
+pub(crate) fn space_head(profile: &str, name: &str, dir: &Path) -> serde_json::Value {
+    let s = project_stats(profile, name, dir);
+    let today = chrono::Local::now().date_naive();
+    let cuts = cut_days(dir);
+    serde_json::json!({
+        "stage": s.stage,
+        "version": s.version,
+        "goal": s.goal,
+        "prio": s.prio,
+        "target_version": s.target_version,
+        "target_on": s.target_on,
+        "counts": {
+            "open": s.open, "done": s.done, "urgent": s.urgent, "high": s.high,
+            "normal": s.normal, "low": s.low, "planned": s.planned, "agent": s.agent,
+        },
+        "status": {
+            "headline": s.status,
+            "date": s.status_date,
+            "parts": s.status_parts,
+        },
+        "waves": roadmap(dir, today),
+        "cadence": {
+            "target_days": s.release.cadence_days,
+            "measured_days": measured_cadence(&cuts, CADENCE_WINDOW),
+            "cuts": cuts.len(),
+            "last_cut": s.release.last_cut,
+            "due_on": s.release.due_on,
+            "due": s.release.due,
+        },
+    })
+}
+
 /// One `--stats` TSV row.
 fn stats_row(s: &ProjectStats) -> String {
     format!(
@@ -4717,8 +4823,7 @@ fn stats_row(s: &ProjectStats) -> String {
 /// `notes projects --stats` — every profile's indexed projects with their open work, as
 /// TSV: `profile<TAB>name<TAB>stage<TAB>version<TAB>open<TAB>urgent<TAB>high<TAB>low<TAB>
 /// planned<TAB>agent<TAB>sheet`. With `json`, one JSON array of [`ProjectStats`], which
-/// adds the dir, done count, STATUS line and its date, and summary path
-/// (what `regen-anchor.sh` renders as an anchor's Lab section).
+/// adds the dir, done count, STATUS line and its date, and summary path.
 ///
 /// One call for the whole projects popup, across every profile like `focus --all`, so the
 /// switcher opens without a process per project. A profile that does not resolve is

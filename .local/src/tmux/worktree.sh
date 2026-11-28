@@ -96,6 +96,8 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/../../lib/session-outcomes.sh" || exit 1
 # shellcheck source=../../lib/agent-merge-proof.sh
 . "${SELF%/*}/../../lib/agent-merge-proof.sh" || exit 1   # merge_proof_branch, for wt_default_branch
+# shellcheck source=../../lib/agent-units.sh
+. "${SELF%/*}/../../lib/agent-units.sh" || exit 1         # AGENT_PANE_SCOPES, for wt_closed_pane_scopes
 # shellcheck source=../../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-${SELF%/*}/../../../.config/shared-hooks/project-name.sh}" || exit 1
 
@@ -2041,7 +2043,7 @@ wt_live_panes() {
 wt_closed_pane_scopes() {
   local proc="${WT_PROC_ROOT:-/proc}" scopes live own unit pane spid cg
   command -v "$WT_SYSTEMCTL" >/dev/null 2>&1 || return 0
-  scopes=$("$WT_SYSTEMCTL" --user show --property=Id,Description,ControlGroup "tmux-spawn-*.scope" "agent-*.scope" 2>/dev/null |
+  scopes=$("$WT_SYSTEMCTL" --user show --property=Id,Description,ControlGroup "${AGENT_PANE_SCOPES[@]}" 2>/dev/null |
     awk -F= '$1 == "Id" { id = $2 } $1 == "ControlGroup" { cg = $2 }
       $1 == "Description" { n = split($2, w, " "); if (w[1] == "tmux" && w[3] == "pane") { pane = w[4]; spid = w[n] } }
       /^$/ { if (pane != "") print id, pane, spid, cg; id = cg = pane = spid = "" }

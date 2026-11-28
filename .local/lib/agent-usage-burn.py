@@ -69,7 +69,8 @@ WRITE_RE = re.compile(r"\bgit\s+(commit|push|merge)\b|\bgh\s+pr\s+(create|merge|
 # quoted string emptied; then where a command starts, past assignments, wrappers with their options,
 # `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path before the text, and a boundary after
 # it. session-outcomes.sh matches the same way, and tests/fixtures/time-use-commands.tsv holds
-# the three readers to it.
+# the three readers to it. A command that names no line but runs a session-written script is read by
+# the script's text (`wrapper_class`, as time_use.rs `wrapper_wait` and session-outcomes.sh do).
 TIME_USE_CONF = os.environ.get("TIME_USE_CONF") or os.path.join(
     os.path.dirname(os.path.realpath(__file__)), "..", "..", ".config", "agent-panel", "time-use.conf")
 # A quoted string: '...', or "..." with backslash escapes (a command in "$(...)" is missed).
@@ -80,9 +81,12 @@ TIME_USE_QUOTED = re.compile(TIME_USE_QUOTE)
 # A heredoc, `<<[-] WORD` (WORD may be quoted), through its end line: cut to what follows WORD.
 TIME_USE_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\1"
                               r"([^\n]*)(?:\n[^\n]*)*?\n[ \t]*\2[ \t]*(?![^\n])")
-TIME_USE_START = (r"(^|[;&|(\n`])\s*((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)"
-                  r"(\s+-n\s+[0-9]+|\s+-\S+)*|timeout(\s+-\S+)*\s+[0-9]\S*|flock(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*"
-                  r"(\S*/)?")
+TIME_USE_COMMAND = (r"(^|[;&|(\n`])\s*((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)"
+                    r"(\s+-n\s+[0-9]+|\s+-\S+)*|timeout(\s+-\S+)*\s+[0-9]\S*|flock(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*")
+TIME_USE_START = TIME_USE_COMMAND + r"(\S*/)?"
+# The command word of a segment, for a session-written script (time_use.rs `wrapper_wait`).
+TIME_USE_WORD = re.compile(TIME_USE_COMMAND + r"(?P<word>[^\s;&|(`-][^\s;&|(`]*)")
+SCRIPT_READ_LIMIT = 64 * 1024  # time_use.rs reads the same limit
 TIME_USE_END = r"($|[^\w.])"
 MIX = ("investigate", "wait", "write", "reply")
 IDLE_LONG = 3600     # the prompt cache TTL these sessions request ("1h")
@@ -328,7 +332,44 @@ def time_use_class(command, patterns):
     return "jobs"
 
 
-def call_class(name, inp, patterns):
+_WRAPPER_TEXT = {}  # (path, mtime_ns, size) -> class, so a rewritten script is read again
+_WRAPPER_RANK = {"gate": 3, "test": 2, "build": 1}
+
+
+def wrapper_class(command, cwd, patterns):
+    """What a session-written script counts as, read by what it runs (time_use.rs `wrapper_wait`):
+    for each command word of `command` that names a file (a path or `*.sh`, joined to `cwd`), the
+    strongest `time_use_class` of those files' text. One level; a script gone from disk, over
+    SCRIPT_READ_LIMIT or not UTF-8 is jobs, and the class is the file's text now."""
+    if not cwd or not patterns:
+        return "jobs"
+    best = "jobs"
+    for m in TIME_USE_WORD.finditer(unquoted(command)):
+        word = m["word"]
+        if "/" not in word and not word.endswith(".sh"):
+            continue
+        path = os.path.join(cwd, word)
+        try:
+            st = os.stat(path)
+            stamp = (path, st.st_mtime_ns, st.st_size)
+        except OSError:
+            continue
+        if stamp not in _WRAPPER_TEXT:
+            text = None
+            if os.path.isfile(path) and st.st_size <= SCRIPT_READ_LIMIT:
+                try:
+                    with open(path, encoding="utf-8") as fh:
+                        text = fh.read()
+                except (OSError, ValueError):
+                    pass
+            _WRAPPER_TEXT[stamp] = time_use_class(text, patterns) if text is not None else "jobs"
+        kind = _WRAPPER_TEXT[stamp]
+        if _WRAPPER_RANK.get(kind, 0) > _WRAPPER_RANK.get(best, 0):
+            best = kind
+    return best
+
+
+def call_class(name, inp, patterns, cwd=""):
     """One tool call's turn class: wait for a plain wait, write for an edit or a write command,
     wait for a time-use.conf gate, else investigate. Write comes before the gate, so agent-land,
     a gate line that also merges, stays write."""
@@ -340,7 +381,10 @@ def call_class(name, inp, patterns):
         return "wait"
     if name in WRITE_TOOLS or (name == "Bash" and WRITE_RE.search(probe)):
         return "write"
-    if time_use_class(command, patterns) == "gate":
+    kind = time_use_class(command, patterns)
+    if kind == "jobs":
+        kind = wrapper_class(command, cwd, patterns)
+    if kind == "gate":
         return "wait"
     return "investigate"
 
@@ -406,7 +450,7 @@ def scan(path, start, end, acc):
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
                     tmid = msg.get("id") or d.get("requestId")
-                    c = call_class(b.get("name"), b.get("input") or {}, acc["time_use"])
+                    c = call_class(b.get("name"), b.get("input") or {}, acc["time_use"], d.get("cwd") or "")
                     if c == "wait":
                         acc["wait_calls"] += 1
                         wait_mids.add(tmid)
@@ -634,6 +678,7 @@ FIT_MIN_MTOK = 5.0
 FIT_MAX_ERROR_PCT = 5.0   # a fit that misses its held-out sessions by more prices nothing
 GATEWAY_PROVIDERS = ("litellm", "go", "gateway")  # opencode providers that reach the gateway
 HELPER_MIN_BILLED = 5.0   # an origin billed less than this says nothing about its helper share
+BASELINE_LOOKBACK = 35 * 86400   # an outcomes file older than the window this much holds no row a session booked from
 PROM_LOOKBACK = "7d"      # how far back a session's pre-window total is looked for
 CARRY_SNAPSHOTS = 14      # newest token snapshots read for carried rates; each one keeps the rows it carried
 
@@ -797,25 +842,33 @@ def session_row(sid, measured, estimated, origin, harness, agent, account, proje
             **({"provider": provider} if provider else {})}
 
 
-def outcome_models(r):
+def outcome_models(r, usd=None):
     """An outcomes row's dollars by model: its own split, else its whole cost on its models joined
-    (`a+b`), since there is nothing to split them by. A `<synthetic>` or other `<...>` name is no model."""
+    (`a+b`), since there is nothing to split them by. A `<synthetic>` or other `<...>` name is no model.
+    `usd` books only that part of the row's cost, split in the row's proportions."""
     real = lambda m: m and not m.startswith("<")
     split = {m: v for m, v in (r.get("cost_by_model") or {}).items() if real(m) and (v or 0) > 0}
-    if split:
+    if not split:
+        names = sorted({m for m in r.get("models") or [] if real(m)})
+        split = {"+".join(names): r["cost_usd"]} if names else {}
+    if usd is None or not split:
         return split
-    names = sorted({m for m in r.get("models") or [] if real(m)})
-    return {"+".join(names): r["cost_usd"]} if names else {}
+    whole = sum(split.values())
+    return {m: v * usd / whole for m, v in split.items()}
 
 
 def other_harnesses(start, end, root):
-    """Every non-Claude harness from its session outcomes: newest row per session, tagged by its price source.
-    Sessions that went through the gateway are left out: its metered line already has their dollars. A session
-    with tokens and no price gets no row (never a $0 one) and is listed as unpriced instead."""
-    newest = {}
+    """Every non-Claude harness from its session outcomes, tagged by its price source. An outcomes row is
+    its session's running total, so a session books what it spent in [start, end): its newest row in the
+    window less its newest row before it, never the whole total again on each day it updates. Sessions that
+    went through the gateway are left out: its metered line already has their dollars. A session with tokens
+    and no price gets no row (never a $0 one) and is listed as unpriced instead; a session with no new spend
+    gets no row either. A session's per-model split is the row's proportions scaled to the delta: approximate when
+    the delta went to a model the earlier rows did not. A baseline is read from files up to BASELINE_LOOKBACK old."""
+    newest, before = {}, {}
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
         try:
-            if os.path.getmtime(f) < start:
+            if os.path.getmtime(f) < start - BASELINE_LOOKBACK:
                 continue
         except OSError:
             continue
@@ -825,23 +878,32 @@ def other_harnesses(start, end, root):
             except ValueError:
                 continue
             at = r.get("updated_epoch") or 0
-            if (not (r.get("harness") or "claude").startswith("claude") and r.get("provider") not in GATEWAY_PROVIDERS
-                    and start <= at < end and at >= (newest.get(r.get("session_id")) or {}).get("updated_epoch", 0)):
-                newest[r.get("session_id")] = r
+            if (r.get("harness") or "claude").startswith("claude") or r.get("provider") in GATEWAY_PROVIDERS or at >= end:
+                continue
+            seen = newest if at >= start else before
+            if at >= (seen.get(r.get("session_id")) or {}).get("updated_epoch", 0):
+                seen[r.get("session_id")] = r
     out = defaultdict(lambda: {"usd": 0.0, "sessions": 0, "priced": 0, "sources": set()})
     rows, unpriced = [], []
     for sid, r in newest.items():
+        base = (before.get(sid) or {}).get("cost_usd") or 0.0
+        delta = max(0.0, r["cost_usd"] - base) if r.get("cost_usd") is not None else None
+        if base > 0 and not delta:   # priced before the window and no new spend (or no price now): booked already
+            continue
         b = out[r["harness"]]
         b["sessions"] += 1
-        if r.get("cost_usd") is not None:
-            b["usd"] += r["cost_usd"]
+        if delta is not None:
+            b["usd"] += delta
             b["priced"] += 1
             b["sources"].add(r.get("cost_src") or "harness")
-        if sid and (r.get("cost_usd") or 0) > 0:   # priced from a table or the harness's own sum: estimated, as in total
-            rows.append(session_row(sid, 0.0, r["cost_usd"], "runner" if r.get("runner") else "interactive",
+        if sid and (delta or 0) > 0:   # priced from a table or the harness's own sum: estimated, as in total
+            rows.append(session_row(sid, 0.0, delta, "runner" if r.get("runner") else "interactive",
                                     r["harness"], r.get("agent"), None, r.get("project"), r.get("title"), None,
-                                    models=outcome_models(r), tokens=r.get("tokens_total"), provider=r.get("provider")))
-        elif sid and (r.get("tokens_total") or 0) > 0:
+                                    models=outcome_models(r, delta),
+                                    tokens=None if r.get("tokens_total") is None
+                                    else max(0, r["tokens_total"] - ((before.get(sid) or {}).get("tokens_total") or 0)),
+                                    provider=r.get("provider")))
+        elif sid and base <= 0 and (r.get("cost_usd") or 0) <= 0 and (r.get("tokens_total") or 0) > 0:
             unpriced.append({"sid": sid, "harness": r["harness"], "provider": r.get("provider"), "tokens": r["tokens_total"]})
     return out, rows, unpriced
 
