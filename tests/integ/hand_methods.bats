@@ -216,6 +216,20 @@ allowed() { assert_success; assert_output ""; }
   allowed
   run run_guard 'gh run cancel 1 -R o/other # own: #2' /tmp
   allowed
+  run run_guard 'GH_REPO=org/unity-core-playground gh run cancel 1 # own: #2' /tmp
+  denied
+  run run_guard 'cd ~/dev/unity-core-playground && gh run cancel 1 # own: x' /tmp
+  denied
+  run run_guard 'gh run cancel 1 -Rorg/unity-core-playground # own: #2' /tmp
+  denied
+  run run_guard 'gh --repo=org/unity-core-playground run cancel 1' /tmp
+  denied
+  run run_guard 'gh api -X POST repos/{owner}/{repo}/actions/runs/1/force-cancel' /x/unity-core-playground
+  denied
+  run run_guard 'gh run cancel 1 # own: #2' /home/u/.worktrees/other
+  allowed
+  run run_guard 'gh run cancel 9 -R o/other # own: #1' /x/unity-core-playground
+  allowed
 }
 
 @test "unless lets a named exception through" {
