@@ -30,3 +30,4 @@ What lives in this repo's `docs/` tree. Cross-repo rules (CI, plans, skills, UI,
 - [operations/release-state.md](operations/release-state.md): what is pinned and live on each deploy channel.
 - [operations/store-reviews.md](operations/store-reviews.md): store reviews, playtest feedback and Sentry issues.
 - [operations/store-sales.md](operations/store-sales.md): yesterday's store and Steam sales.
+- [operations/test-ledger.md](operations/test-ledger.md): the per-case test ledger `hub-cases` writes, its back-fill and troubleshooting.

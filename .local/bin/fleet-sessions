@@ -166,6 +166,10 @@ EDIT_TOOLS_RE="$(edit_tools_re)"
 # names no PR in its range as suspect (main_health; ar-3072: platform #1602 was nudged for a red that
 # predated it). The red still reads as the repo's NIGHTLY row. Empty: off.
 : "${FLEET_DEPLOY_PROBES=Production Smoke}"
+# Minutes past a GitHub REST reset the run ledger row waits before it is the shepherd's (wait_until):
+# schedules-sync.timer syncs every 10 minutes, so the first pass after the reset needs up to that
+# long to make the ledger fresh again, and a limit that clears itself must not page (ar-230).
+: "${FLEET_LEDGER_GRACE_MIN:=15}"
 # The gates' per-test failures, one line each: epoch, worktree, branch (- when detached), test. The
 # local gate writes the first; pool-test-failures sync writes the runner pool's from its artifacts.
 TEST_FAILURES="${UNITY_TEST_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/test-failures.tsv}"
@@ -1753,8 +1757,11 @@ ledger_repo() {
 # branch_runs <dir> <branch> -> <branch>'s main_runs in the repo <dir> lands on (ledger_repo): gate_ci, main_health
 # and activity_line all read it, from one ledger read per repo per pass ($CACHE). A repo the ledger
 # does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1
-# with the row blind on every read. Read off origin, a Forgejo-canonical clone's mirror had no runs, so its
-# main read green and its gates read none (ar-2727, follow-up of ar-2587).
+# with the row blind on every read. One it cannot answer for a cause every repo shares (main_runs rc 4:
+# a GitHub rate limit, no sync pass) is rc 4 on every read, its cause kept once a pass in
+# $CACHE/ledger_down and named unreadable once, as "run ledger: <cause>", so a rate-limited pass shows
+# one outage (ar-230). Read off origin, a Forgejo-canonical clone's mirror had no runs, so its main
+# read green and its gates read none (ar-2727, follow-up of ar-2587).
 branch_runs() {
   local d="$1" b="$2" all one rc=0 repo slug
   slug="$(repo_slug "$d")" || return 1
@@ -1762,19 +1769,26 @@ branch_runs() {
   one="${all}_${b//\//%2F}" # %2F: feat/x and feat_x are two branches
   if [ ! -f "$one" ]; then
     if [ ! -f "$all" ]; then
-      if repo="$(ledger_repo "$d")"; then main_runs "$repo" > "$all" || rc=$?; else rc=1; fi
+      if repo="$(ledger_repo "$d")"; then main_runs "$repo" > "$all" 2> "$all.why" || rc=$?; else rc=1; fi
       case $rc in
         0) ;;
         3) echo '[]' > "$all" ;;
+        4) : > "$all"; : > "$all.down"
+           if [ ! -s "$CACHE/ledger_down" ]; then
+             head -n1 "$all.why" > "$CACHE/ledger_down"
+             [ -s "$CACHE/ledger_down" ] || echo "ledger down: no cause given" > "$CACHE/ledger_down"
+             unreadable "run ledger: $(sed 's/^ledger down: //' "$CACHE/ledger_down")"
+           fi ;;
         *) : > "$all"; unreadable "run ledger ($(basename "$d"))" ;;
       esac
+      rm -f "$all.why"
     fi
     if [ -s "$all" ]; then
       jq -c --arg b "$b" 'map(select(.headBranch == $b))' "$all" > "$one" 2>/dev/null \
         || { : > "$one"; unreadable "run ledger ($(basename "$d"))"; }
     else : > "$one"; fi
   fi
-  [ -s "$one" ] || { blind_row; return 1; }
+  [ -s "$one" ] || { blind_row; [ -e "$all.down" ] && return 4; return 1; }
   cat "$one"
 }
 
@@ -2095,11 +2109,13 @@ prs_cell() {
 }
 
 # main_health <dir> -> "RED \t <detail> \t <red sha>", "OK" or "UNKNOWN", cached per repo per
-# pass. A red workflow's range is last-green..red on this clone, and its (#N) squash subjects are
+# pass. The cache line adds the repo name, and for an UNKNOWN whose ledger is down for a shared cause
+# (branch_runs rc 4) a fifth field `ledger`: main_rows folds those repos into one run ledger row.
+# A red workflow's range is last-green..red on this clone, and its (#N) squash subjects are
 # its suspects only when there are FLEET_SUSPECTS_MAX or fewer, kept per workflow for main_blame.
 # No green in the window, a range the clone lacks, or a FLEET_DEPLOY_PROBES workflow names nobody.
 main_health() {
-  local dir="$1" url key blame base b runs st wf red green wfs="" sha="" range one named p
+  local dir="$1" url key blame base b runs st wf red green wfs="" sha="" range one named p rc=0
   url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || { echo OK; return; }
   key="$CACHE/main_$(repo_slug "$dir")"
   blame="$CACHE/blame_$(repo_slug "$dir")"
@@ -2109,7 +2125,12 @@ main_health() {
     b="${base#*/}"
     # Could not look is not green: say so, so the shepherd never reads a dead gh, or runs main_state
     # cannot read, as healthy.
-    if ! runs="$(branch_runs "$dir" "$b")" || ! st="$(main_state <<<"$runs")"; then
+    runs="$(branch_runs "$dir" "$b")" || rc=$?
+    if [ "$rc" -eq 4 ]; then
+      printf 'UNKNOWN\t-\t-\t%s\tledger\n' "$(basename "$url" .git)" > "$key"
+      cut -f1-3 "$key"; return
+    fi
+    if [ "$rc" -ne 0 ] || ! st="$(main_state <<<"$runs")"; then
       printf 'UNKNOWN\t-\t-\t%s\n' "$(basename "$url" .git)" > "$key"
       cut -f1-3 "$key"; return
     fi
@@ -3175,24 +3196,49 @@ nightly_item_owners() {
 # escalates a nightly red once per fact; owners are the live sessions whose merge is a suspect, nudged
 # on their own STALLED rows, and the sessions running a nightly item for that repo (nightly_item_owners).
 # Its nudged and escalated cells read that ledger, as every row's do.
+# A repo whose run ledger is down for a cause every repo shares (main_health's `ledger`: a GitHub rate
+# limit, no sync pass) has no row of its own (its sessions' rows keep their last cells, branch_runs'
+# blind_row): the pass has one row instead, id main-run-ledger, naming the cause, a rate limit's
+# reset, and the repos it hides. Its fact leaves the repos out, so a repo joining is not a new fact. Its wait_until is the
+# reset plus FLEET_LEDGER_GRACE_MIN, before which the shepherd has nothing due for it (a limit clears
+# itself); past that, or with no reset known, it is due as an ownerless NIGHTLY row is (ar-230: on
+# 2026-10-26 13:32 one rate limit was a CI unreadable row per repo, each one a high page).
 main_rows() {
-  local f slug st wfs sha repo sid reason owners nu e
+  local f slug st wfs sha repo kind sid reason owners down="" cause reset until=-
   nightly_item_owners >> "$CACHE/owners"
   for f in "$CACHE"/main_*; do
     [ -f "$f" ] || continue
-    IFS=$'\t' read -r st wfs sha repo < "$f"
+    kind=""
+    IFS=$'\t' read -r st wfs sha repo kind < "$f"
     slug="${f##*/main_}"; sid="main-$slug"
     case "$st" in
       RED) reason="$repo red: $wfs" ;;
-      UNKNOWN) reason="$repo main CI unreadable (the run ledger has no fresh sync of it)" ;;
+      UNKNOWN) if [ "$kind" = ledger ]; then down="${down:+$down, }$repo"; continue; fi
+               reason="$repo main CI unreadable (the run ledger has no fresh sync of it)" ;;
       *) continue ;;
     esac
     owners="$(awk -F'\t' -v s="$slug" '$1 == s && !seen[$2]++ { print $2 }' "$CACHE/owners" 2>/dev/null | paste -sd, -)"
-    # A failed queue read lost the item owners: the row keeps its last cells (keep_blind).
-    [ -z "${qblind:-}" ] || echo "$sid" >> "$CACHE/blind"
-    nu=0; nudged "$sid" "NIGHTLY $reason" && nu=1; e=0; escalated "$sid" "NIGHTLY $reason" && e=1
-    printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t%s\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\tNIGHTLY %s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\n' "$repo" "$sid" "$nu" "$reason" "$e" "${owners:--}" "$reason"
+    nightly_row "$repo" "$sid" "$reason" "NIGHTLY $reason" "${owners:--}" -
   done
+  [ -n "$down" ] || return 0
+  cause="$(sed -n '1s/^ledger down: //p' "$CACHE/ledger_down" 2>/dev/null)"
+  if [[ "$cause" =~ ^(.*),\ resets\ ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z)$ ]] && reset="$(date -d "${BASH_REMATCH[2]}" +%s 2>/dev/null)"; then
+    cause="${BASH_REMATCH[1]}, resets $(date -d "@$reset" +%H:%M)"
+    until=$((reset + FLEET_LEDGER_GRACE_MIN * 60))
+  fi
+  reason="CI run ledger unreadable: ${cause:-no cause given}"
+  nightly_row "run ledger" main-run-ledger "$reason (main CI of $down waits on it)" "NIGHTLY $reason" - "$until"
+}
+
+# nightly_row <repo> <sid> <reason> <fact> <owners> <wait_until epoch or -> -> one NIGHTLY row, its nudged
+# and escalated cells read from the shepherd ledger for <fact>. A failed queue read lost the item owners:
+# the row keeps its last cells (keep_blind).
+nightly_row() {
+  local nu=0 e=0
+  [ -z "${qblind:-}" ] || echo "$2" >> "$CACHE/blind"
+  nudged "$2" "$4" && nu=1; escalated "$2" "$4" && e=1
+  # column 43, a session's main_red, is a NIGHTLY row's wait_until (json_rows)
+  printf 'NIGHTLY\t%s\t%s\t-\t-\t-\t0\t0\t-\t%s\t%s\t-\t%s\t%s\t-\t-\t-\t-\t0\t-\t-\t-\t-\t-\t-\t-\t-\t-\t0\t%s\t-\t[]\t-\t0\t0\t0\t0\t0\t-\t-\t-\t0\t0\t%s\n' "$1" "$2" "$nu" "$3" "$e" "$5" "$4" "$6"
 }
 
 # checkout_rows <checkouts, one per line>: one CHECKOUT row each. The reflog says where to and when,
@@ -3777,7 +3823,9 @@ json_rows() {
       # A run whose log names no model has none: hub-core takes the model of its queue item, and shortens either (costs::alias).
       model: (if (.[69] // "-") == "-" then null else .[69] end),
       # The harness agent-panel found running (claude, codex, opencode, agy); hub-core prefers the one of the queue item.
-      harness: (if (.[70] // "-") == "-" then null else .[70] end)} | '"$CLOSE_JQ"
+      harness: (if (.[70] // "-") == "-" then null else .[70] end),
+      # A NIGHTLY row the shepherd leaves until then (epoch), in its column 43: the run ledger row of a rate limit (main_rows).
+      wait_until: (if .[0] != "NIGHTLY" or (.[43] // "-") == "-" then null else .[43] | tonumber end)} | '"$CLOSE_JQ"
 }
 
 # overdue_of <now epoch> <rows file> <eta file> -> {session_id: verdict}: the one overdue rule, which
@@ -3860,7 +3908,7 @@ write_state() {
                      | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end
                      | .overdue = ($od[0][.session_id] // null))),
          main: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT"))
-                     | {repo: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
+                     | {repo: .target, id: .session_id, reason, fact, nudged, escalated, owners, wait_until})),
          shared: ($r | map(select(.bucket == "SHARED")
                      | {test: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
          asks: [$asks | split("\n")[] | select(length > 0) | split("\t") | . as $c
