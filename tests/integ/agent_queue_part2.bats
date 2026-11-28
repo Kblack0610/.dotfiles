@@ -2930,6 +2930,24 @@ already"
   assert_equal "$(st)" "pending|after ar-2 (open)|"
 }
 
+@test "a plan phase is not stacked on an open PR in another project's repo: its worktree has no such commit, so it holds for the close (ar-5124)" {
+  stack_gh
+  printf '# P\n' > "$SANDBOX/p.md"
+  "$AQ" add --project game --slug base --running "a"
+  "$AQ" set base open_pr=Org/app#7
+  legacy second "after: base" --project game "Phase 2 of the plan $SANDBOX/p.md: b"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
+  assert_output "after base none"
+  # The add under way has no file yet: the same rule holds it.
+  run "$AQ" add --project game --slug third --running --after base "Phase 3 of the plan $SANDBOX/p.md: c"
+  assert_failure
+  assert_output --partial "waits on after base"
+  # NEGATIVE CONTROL: the same PR number in the project's own repo stacks.
+  "$AQ" set base open_pr=Org/game#7
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"[\\(.hold // \"\")] \\(.stacked_on)\"'"
+  assert_output "[] base=Org/game#7"
+}
+
 @test "an after: on two items that each have an open PR stays held: one worktree has one base (ar-3852)" {
   stack_gh
   echo OPEN > "$SANDBOX/pr-8"
