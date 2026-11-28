@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use super::SessionRow;
 use crate::boards::{self, Phases};
+use crate::display::Shown;
 use crate::home::{NeedKind, NeedTag};
 use crate::queue::Item;
 use crate::session_actions::{self as actions, Session, System};
@@ -198,7 +199,7 @@ impl Live {
                 project: a.project.clone(),
                 repo: a.repo_full.clone(),
                 status: a.status.clone(),
-                summary: a.summary.clone(),
+                summary: Shown::sub(&a.summary),
                 session: a.session_id.clone(),
                 tags: a.tags.clone(),
                 host: None,
@@ -218,7 +219,7 @@ pub struct Sidebar {
     pub project: String,
     pub repo: String,
     pub status: String,
-    pub summary: String,
+    pub summary: Shown,
     pub session: String,
     pub tags: String,
     /// The Claude account it runs on (claude-acct's name for its `CLAUDE_CONFIG_DIR`).
@@ -270,7 +271,7 @@ impl Sidebar {
             project: s("project"),
             repo: String::new(),
             status: s("status"),
-            summary: s("summary"),
+            summary: Shown::sub(&s("summary")),
             // The UI keys seen-state on this, so a row with no id is keyed by its target, never "".
             session: Some(s("session_id"))
                 .filter(|id| !id.is_empty())

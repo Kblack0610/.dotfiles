@@ -672,7 +672,7 @@ impl Controls {
             Line::styled(
                 format!(
                     "{} {}? It will {}.{to}  y/Enter yes  n/Esc no",
-                    c.action.label(),
+                    cap(c.action.name()),
                     c.target,
                     c.action.describe()
                 ),
@@ -714,6 +714,13 @@ pub(crate) fn page_field(part: &PagePart, p: Palette, w: usize) -> Line<'static>
         ]),
         w,
     )
+}
+
+fn cap(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+        .unwrap_or_default()
 }
 
 fn status_style(s: &str, p: Palette) -> ratatui::style::Style {

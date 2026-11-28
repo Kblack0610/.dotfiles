@@ -31,7 +31,7 @@ const ctx = vm.createContext({
 });
 for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "charts.js", "app.js", "watch.js", "table.js", "actions.js", "shepherd.js", "sessions.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
-const agent = (target, o) => ({ target, session: target + "-id", status: "idle", summary: "", project: "dotfiles", ...o });
+const agent = (target, o) => ({ target, session: target + "-id", status: "idle", summary: { text: "" }, project: "dotfiles", ...o });
 const state = (target, bucket, o) => ({ target, session_id: target + "-id", bucket, topic: `task of ${target}`, idle_min: 5, ...o });
 
 // st, wst and shst are top-level consts of the page's scripts: the vm sees them, ctx does not.
@@ -59,7 +59,7 @@ function setup() {
     cap: CAP,
     agents: [agent("hub/a:1"), agent("hub/b:1", { parked: true }), agent("hub/shep:1"), agent("hub/c:1")],
     watch: { state: { sessions: [state("hub/a:1", "WORKING", { pr: "12", ci: "PASS", eta: "14:05" }), state("hub/b:1", "NEEDS"), state("lab/x:1", "STALLED")] }, transitions: [],
-      lanes: { t0: 0, until: 86400000, lanes: [{ target: "a:1", gone: false, segs: [{ a: 0, b: 86400000, key: "WORKING", title: "WORKING 00:00-00:00" }] }, { target: "old:2", gone: true, segs: [] }] } },
+      lanes: { t0: 0, until: 86400000, lanes: [{ target: "a:1", gone: false, segs: [{ a: 0, b: 86400000, key: "WORKING", span: "00:00-00:00" }] }, { target: "old:2", gone: true, segs: [] }] } },
     shep: { target: "hub/shep:1", status: "idle", pass: { flags: [], why: "", now: "pass 0123abcd running, 4m:", attach: "tmux attach -t sh", last: "no verdict on record", totals: "last 24h: 1 passes, 0 nudges, 0 escalations, 0 skips; 2 due, 0 skipped, 0 paged" }, ledger: { due: [{}, {}] }, rundowns: [] },
   });
 }
@@ -214,7 +214,7 @@ test("a page draws hub-core's parts: links, amber, errors, the open outcome card
   assert.doesNotMatch(html, /data-transcript/, "the conversation is the default view, so Details has no Load row");
   assert.doesNotMatch(html, /page-state/, "a session out of the state document has no state fold");
   assert.equal(run("st.sel.name"), "ucp-394");
-  assert.equal(run("st.sel.summary"), "the <task>");
+  assert.equal(run("st.sel.summary.text"), "the <task>");
   ctx.PAGE_STUB = { ...PAGE, session_id: "hub/a:1-id", target: "hub/a:1", outcome: "" };
   run(`st.sel = { target: "hub/a:1", session: "hub/a:1-id", actions: [] }`);
   await run(`loadPage()`);

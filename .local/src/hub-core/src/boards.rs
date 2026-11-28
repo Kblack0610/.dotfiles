@@ -1021,8 +1021,8 @@ pub struct LaneSeg {
     pub a: i64,
     pub b: i64,
     pub key: String,
-    /// `WORKING 09:12-10:40`, in the host's clock.
-    pub title: String,
+    /// `09:12-10:40`, in the host's clock.
+    pub span: String,
 }
 
 /// One session's last day: its buckets in order. A lane of a session that ended is `gone`.
@@ -1096,12 +1096,12 @@ pub fn lanes<Tz: chrono::TimeZone>(
     };
     let close = |l: &mut Building, at: i64| {
         if let Some(key) = l.cur.take() {
-            let title = format!("{key} {}-{}", clock(l.since), clock(at));
+            let span = format!("{}-{}", clock(l.since), clock(at));
             l.lane.segs.push(LaneSeg {
                 a: l.since,
                 b: at,
                 key,
-                title,
+                span,
             });
         }
     };
@@ -1963,14 +1963,11 @@ mod tests {
         let keys: Vec<_> = a
             .segs
             .iter()
-            .map(|g| (g.key.as_str(), g.title.as_str()))
+            .map(|g| (g.key.as_str(), g.span.as_str()))
             .collect();
         assert_eq!(
             keys,
-            [
-                ("WAITING", "WAITING 09:00-10:00"),
-                ("WORKING", "WORKING 10:00-12:00")
-            ]
+            [("WAITING", "09:00-10:00"), ("WORKING", "10:00-12:00")]
         );
         assert_eq!(a.segs[1].b, NOON);
         // b has no transition: its lane starts where its age says.

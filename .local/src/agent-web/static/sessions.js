@@ -152,7 +152,7 @@ async function openSession(id) {
   }
   // An item's link names its session by the item (hub_core::queue Item::links), as session_page::find resolves it.
   const a = st.agents.find((x) => x.session === id || x.target === id) || st.agents.find((x) => (x.items || []).includes(id));
-  select(a || { target: id, session: id, paneless: true, status: "", summary: "", actions: [] });
+  select(a || { target: id, session: id, paneless: true, status: "", summary: { text: "" }, actions: [] });
   sideShow(true);
 }
 
@@ -220,7 +220,7 @@ const loadPage = coalesce(async () => {
   try {
     const p = await api(`/api/sessions/page?t=${encodeURIComponent(id)}`);
     if (still() && st.sel.paneless) {
-      Object.assign(st.sel, { name: p.name, summary: p.task, target: p.session_id || st.sel.target });
+      Object.assign(st.sel, { name: p.name, summary: { text: p.task }, target: p.session_id || st.sel.target });
       renderHead();
     }
     html = pageHtml(p);

@@ -133,7 +133,7 @@ $("acts").addEventListener("click", async (e) => {
 function renderHead() {
   $("v-seg").hidden = $("d-dot").hidden = false;
   $("d-dot").className = "dot " + st.sel.status;
-  $("d-name").textContent = `${st.sel.name || st.sel.target}  ${st.sel.summary || ""}`;
+  $("d-name").textContent = `${st.sel.name || st.sel.target}  ${st.sel.summary?.text || ""}`;
   // A parked session has no claude to type into or screen to show: only its transcript.
   const noPane = !!(st.sel.parked || st.sel.paneless);
   $("compose").hidden = noPane;

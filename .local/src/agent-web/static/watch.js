@@ -131,7 +131,7 @@ function overviewFolds() {
     // The unread warn stays outside the shut fold, so it is seen.
     html += unread + ovFold("lanes", `Last ${Math.round((until - t0) / 3600e3)}h`, `<div class="ovbar">${legend(BUCKETS.map((b) => [b, bucketColor(b)]))}<label class="tog"><input type="checkbox" data-ended${wst.ended ? " checked" : ""}> ended sessions (${ended})</label>` +
       `<span class="muted"><b>state</b> ${age == null ? "?" : dur(age) + " old"}</span></div>` +
-      `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs })), t0, until, bucketColor)}</div>`, keep.length, true);
+      `<div class="panel">${swimlanes(keep.map((l) => ({ label: l.target, sub: l.gone ? "gone" : "", dim: !!l.gone, segs: l.segs.map((g) => ({ ...g, title: `${g.key} ${g.span}` })) })), t0, until, bucketColor)}</div>`, keep.length, true);
   }
   return html;
 }
