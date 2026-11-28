@@ -28,6 +28,7 @@
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #                                    (nothing when it is missing or stale): fleet-sessions wakes a kick when the count drops
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items, and each open sprint's size, rows in and out, days left
+#   fleet-dispatch stats --room      only room_max_live, the pace target the last pass published ({} when stale): the slots fleet-bench places queue items on
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
 #   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
@@ -8278,11 +8279,25 @@ last_run_start() {
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
 # recomputing it here made stats take 18s of the publisher's lock (ar-2310).
+# headroom_last -> the last pass's headroom, while it is younger than three passes: an old one is no answer
+# (null then).
+headroom_last() {
+  local hr
+  [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
+  printf '%s\n' "$hr"
+}
+
+# stats --room -> only room_max_live, the pace target the last pass published ({} when stale), read from the
+# headroom file alone: fleet-bench epics wants the slot count, not the queue, board and log reads behind the
+# rest, which took 2.4s of its read (ar-1737).
 cmd_stats() {
   local now q aq since started pass=null hr=null board held_since
+  if [ "${1:-}" = --room ]; then
+    headroom_last | jq -c 'if . == null then {} else {room_max_live: .max_live} end'
+    return
+  fi
   now=$(date +%s); since=$(date -d "@$(( now - 3600 ))" '+%Y-%m-%d %H:%M')
-  # The last pass's headroom, while it is younger than three passes: an old one is no answer.
-  [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
+  hr=$(headroom_last)
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
   board=$(notes board --json 2>/dev/null | jq -c 'select(.totals.open != null)
@@ -10211,7 +10226,7 @@ main() {
     reap) cmd_reap ;;
     starved) cmd_starved ;;
     sprint-stalled) cmd_sprint_stalled ;;
-    stats) cmd_stats ;;
+    stats) shift; cmd_stats "$@" ;;
     stopped) shift; cmd_stopped "$@" ;;
     start) shift; PULL=$(start_pull) cmd_start "$@" ;;
     record) shift; cmd_record "$@" ;;

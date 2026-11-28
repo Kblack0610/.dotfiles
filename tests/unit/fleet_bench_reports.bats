@@ -3198,6 +3198,37 @@ epics_fixture() {
   assert_line --partial 'epics: the agent queue could not be read'
 }
 
+@test "progress_pace keeps each session's first row and each move of its phases, and a row it cannot split whole (ar-1737)" {
+  mkdir -p "$FLEET_BENCH_DIR"
+  r() { jq -cn --arg s "$1" --argjson e "$2" --argjson d "$3" --argjson t "$4" --arg p "$5" \
+      '{epoch: $e, session_id: $s, project: "game", phases_done: $d, phases_total: $t, finished: false, plan_file: $p}'; }
+  { r a 60 0 4 pa; r a 120 0 4 pa; r b 120 1 3 pb; r a 180 1 4 pa; r a 240 1 4 pa; r b 240 1 3 pb; r c 300 1 4 pc; r c 360 1 5 pc
+    echo '{"epoch": 400, "session_id": "x", "project": "game", "phases_done": 2}'
+    r a 600 2 4 pa; r a 1200 3 4 pa; r a 1300 3 4 pa; } > "$FLEET_BENCH_DIR/progress.jsonl"
+  run bash -c '. "$1"; progress_pace | jq -r "[.epoch, .session_id] | @tsv" | tr "\t\n" " "' _ "$SUBJECT"
+  # each session's first row, each move of done or total (a:180, c:360, a:600, a:1200), and the odd row whole;
+  # the rows that repeat the one before (a:120, a:240, b:240, a:1300) are left out
+  assert_output "60 a 120 b 180 a 300 c 360 c 400 x 600 a 1200 a "
+  # the pace and plan size are the full history's: the same forecast items from the pace rows and from every row
+  run bash -c '. "$1"; export BENCH_QUEUE_SLOTS=1 BENCH_BASIS_MIN_N=2; i=$(printf "%s\n" "{\"slug\":\"q1\",\"project\":\"game\",\"state\":\"queued\",\"mode\":\"plan\"}")
+    a=$(forecast_json 100 "" "$i" items | jq -cS .items)
+    progress_pace() { cat "$PROGRESS"; }
+    b=$(forecast_json 100 "" "$i" items | jq -cS .items)
+    jq -e ".pace.fleet.basis | test(\"fleet-median\")" <<<"$a" >/dev/null && [ "$a" = "$b" ] && echo same' _ "$SUBJECT"
+  assert_output same
+}
+
+@test "epic_plans reads the plans side by side and prints them in the serial order: the first file of a name wins, a plan with no epic is skipped (ar-1737)" {
+  mkdir -p "$SANDBOX/p1" "$SANDBOX/p2"
+  for i in 1 2 3 4 5 6 7; do printf '# plan %s\n\nepic: gm-%s\n\n## Phases\n\n- [x] P1 one\n- [ ] P2 two\n' "$i" "$i" > "$SANDBOX/p1/plan$i.md"; done
+  printf '# loose\n\nepic:\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/p1/loose.md"
+  printf '# dup\n\nepic: gm-99\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/p2/plan3.md"
+  printf '# extra\n\nepic: gm-8\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/p2/extra.md"
+  run bash -c '. "$1"; PLAN_DIRS="$2/p1:$2/p2" PLAN_JOBS=3 epic_plans > "$2/par"; PLAN_DIRS="$2/p1:$2/p2" PLAN_JOBS=1 epic_plans > "$2/ser"
+    cmp "$2/par" "$2/ser" && jq -r "[.epic, (.phases | map(.state) | join(\"\"))] | @tsv" "$2/par" | tr "\t\n" " "' _ "$SUBJECT" "$SANDBOX"
+  assert_output "gm-1 doneopen gm-2 doneopen gm-3 doneopen gm-4 doneopen gm-5 doneopen gm-6 doneopen gm-7 doneopen gm-8 open "
+}
+
 @test "a sample freezes an epic's ETA when first seen and on a scope change, and scores it once when its rows land" {
   epics_fixture
   row a lab/game-agent-1:1 0 1 > "$SNAP"
