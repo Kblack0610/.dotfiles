@@ -87,6 +87,16 @@ pub struct ProjView {
     /// scored, `pickable`), and the window's page once Enter opened it.
     pub ssel: usize,
     pub sprint: Option<SprintOpen>,
+    /// The opened project's By area across sprints table, read once per opening in a worker.
+    pub across: Option<AcrossRead>,
+}
+
+/// A project's By area across sprints read (`hub_core::sprint_page::read_across`): asked for
+/// `scope` (`<profile>/<project>`), its table `None` until the worker answers.
+#[derive(Debug, Default)]
+pub struct AcrossRead {
+    pub scope: String,
+    pub table: Option<sprint_page::Across>,
 }
 
 /// One sprint's page as the tab holds it (`hub_core::sprint_page`): read in a worker, so it is
@@ -124,6 +134,7 @@ impl Default for ProjView {
             rv: DataTable::default(),
             ssel: 0,
             sprint: None,
+            across: None,
         }
     }
 }
@@ -160,6 +171,7 @@ impl ProjView {
         self.bv = DataTable::default();
         self.ssel = 0;
         self.sprint = None;
+        self.across = None;
     }
 
     /// The opened project's inner tabs: the work, then Departments when it has a chip.
@@ -1330,6 +1342,7 @@ fn sprint(
     ));
     if pg.sprint_past.is_empty() {
         out.push(none("No window has been cut with a score yet."));
+        out.extend(across_section(pv, p, w));
         return (out, at);
     }
     let dash = opt_dash;
@@ -1379,7 +1392,62 @@ fn sprint(
         from,
         pg.sprint_past.iter().map(|s| s.version.as_str()).collect(),
     );
+    out.extend(across_section(pv, p, w));
     (out, at)
+}
+
+/// The Sprint tab's last section, By area across sprints, once its worker read lands.
+fn across_section(pv: &ProjView, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let across = pv.across.as_ref().and_then(|r| r.table.as_ref());
+    let mut out = vec![sec_head(
+        "BY AREA ACROSS SPRINTS",
+        &across.map_or(String::new(), |a| a.lines.len().to_string()),
+        "  points delivered of the area's, per window",
+        p,
+        w,
+    )];
+    match across {
+        None => out.push(Line::styled("  reading the sprints...", p.dim())),
+        Some(a) => out.extend(across_lines(a, p, w)),
+    }
+    out
+}
+
+/// By area across sprints: one line per area group, one column per window, oldest first, each
+/// cell the PTS of that window's own By area table. The heads are versions, so they are the
+/// table's first row and its fixed header line is dropped; the oldest windows drop first.
+fn across_lines(a: &sprint_page::Across, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = a
+        .errors
+        .iter()
+        .flat_map(|e| wrapped("  ", e, p.warn(), p, w))
+        .collect();
+    if a.lines.is_empty() {
+        out.push(Line::styled("  No window has a row yet.", p.dim()));
+        return out;
+    }
+    let n = a.heads.len();
+    let head: Vec<Cell> = std::iter::once("AREA")
+        .chain(a.heads.iter().map(|h| h.version.as_str()))
+        .map(|h| cell(h, p.head()))
+        .collect();
+    let rows = a.lines.iter().map(|l| {
+        std::iter::once(Cell::from(l.group.clone()))
+            .chain(l.cells.iter().map(|c| match c {
+                Some(pts) => pts.clone().into(),
+                None => cell("-", p.dim()),
+            }))
+            .collect()
+    });
+    let t = Table {
+        header: vec![""; n + 1],
+        rows: std::iter::once(head).chain(rows).collect(),
+        keep: std::iter::once(0).chain((1..=n).rev()).collect(),
+        right: (1..=n).collect(),
+        ..Default::default()
+    };
+    out.extend(t.fit(w, p.head()).into_iter().skip(1));
+    out
 }
 
 /// How many of a sprint's rows show at once; the rest scroll under the selection.
@@ -3184,6 +3252,67 @@ pub(crate) mod tests {
         );
         let t = lines(&open_lines(&pr.cards[0], Some(&pg), None, None, &pv, p, 120).0);
         assert!(t.iter().any(|l| l.contains("reading the board")), "{t:#?}");
+    }
+
+    #[test]
+    fn the_sprint_tab_ends_on_by_area_across_sprints_oldest_first() {
+        let pr = fixture();
+        let pg = past_pg();
+        let mut pv = ProjView {
+            inner: SPRINT,
+            across: Some(AcrossRead {
+                scope: "home/garden".into(),
+                table: None,
+            }),
+            ..Default::default()
+        };
+        let p = Palette { no_color: true };
+        let f = windowed();
+        let draw = |pv: &ProjView| {
+            lines(&open_lines(&pr.cards[0], Some(&pg), None, Some(&f), pv, p, 120).0)
+        };
+        let t = draw(&pv);
+        let at = t
+            .iter()
+            .position(|l| l.starts_with("BY AREA ACROSS SPRINTS"))
+            .unwrap_or_else(|| panic!("{t:#?}"));
+        assert!(t[at + 1].contains("reading the sprints"), "{t:#?}");
+        let page = |v: &str, area: &str| {
+            let json = format!(
+                r#"{{"version":"{v}","state":"closed","opened":"2026-01-01","rows":[
+                {{"id":"g-1","type":"fix","area":"{area}","title":"x","pts":3,"state":"done","outcome":"delivered","interrupt":false}}]}}"#
+            );
+            let areas =
+                hub_core::areas::Areas::parse("ci  Tests, CI and benches\ngameplay  Engine\n");
+            sprint_page::build(&json, &areas, "personal", "garden", vec![]).unwrap()
+        };
+        let mut a = sprint_page::across(
+            &[page("v0.1.0", "ci"), page("v0.2.0", "gameplay")],
+            "personal",
+            "garden",
+        );
+        a.errors.push("v0.0.9: no sprints/v0.0.9.md".into());
+        pv.across.as_mut().unwrap().table = Some(a);
+        let t = draw(&pv);
+        let at = t
+            .iter()
+            .position(|l| l.starts_with("BY AREA ACROSS SPRINTS  2"))
+            .unwrap_or_else(|| panic!("{t:#?}"));
+        let body: Vec<String> = t[at + 1..]
+            .iter()
+            .take(4)
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect();
+        assert_eq!(
+            body,
+            [
+                "v0.0.9: no sprints/v0.0.9.md",
+                "AREA v0.1.0 v0.2.0",
+                "Engine - 3/3",
+                "Tests, CI and benches 3/3 -",
+            ],
+            "a lost window is said, the heads are the versions oldest first, a window with no row of the area says -"
+        );
     }
 
     fn built_sprint() -> sprint_page::Page {
