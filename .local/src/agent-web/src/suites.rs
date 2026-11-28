@@ -222,7 +222,7 @@ fn choose<'a>(runs: &'a [PickRun], repo: &str, id: &str) -> (Option<&'a PickRun>
         None => (
             newest,
             Some(format!(
-                "run {want} is not among the last {} finished runs of its workflow; showing the default",
+                "run {want} is not among the last {} finished runs of its repo; showing the default",
                 junit::PICK_RUNS
             )),
         ),
@@ -244,7 +244,7 @@ async fn loaded(run: &PickRun, runs: &[PickRun]) -> Result<Arc<Loaded>, String> 
         .await
 }
 
-/// Read the run the tab opens on (the newest) into the kept read, so the first visitor after a
+/// Read the run the tab opens on (the default) into the kept read, so the first visitor after a
 /// run lands is not the one who waits on its `gh` download. Nothing is shown and a failure is
 /// not kept: the tab reads again and shows it.
 pub async fn keep_newest(items: (Vec<Item>, Option<String>)) {
