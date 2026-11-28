@@ -27,7 +27,7 @@ enum Unit {
 const WORDS: [(&str, &str, Unit); 7] = [
     ("rework_candidate_7d", "Rework {}", Unit::Share),
     ("first_pass_share", "first pass {}", Unit::Share),
-    ("human_answered_per_day", "{} answers a day", Unit::Plain),
+    ("human_answered_per_day", "{} decisions a day", Unit::Plain),
     ("buzzes_per_day", "{} buzzes a day", Unit::Plain),
     ("cost_per_merged_item", "{} per merged item", Unit::Usd),
     ("requested_unstarted_h", "Oldest request {}", Unit::Hours),
@@ -328,7 +328,7 @@ mod tests {
         assert_eq!(
             said,
             [
-                "You ! 35.9 answers a day, limit 5; 61.3 buzzes a day, limit 15",
+                "You ! 35.9 decisions a day, limit 5; 61.3 buzzes a day, limit 15",
                 "Outcome ! Oldest request 340h, limit 72h; 12 unverified, limit 0",
                 "Quality ! Rework 25.4%; first pass 43.8%, limit 70%",
                 "Cost   $12.54 per merged item",
