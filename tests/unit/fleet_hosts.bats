@@ -116,6 +116,41 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
   done
 }
 
+@test "worker commands inherit session and item identity literally in each login shell" {
+  stub ssh 'exec env -u CLAUDE_CODE_SESSION_ID -u AGENT_QUEUE_ITEM "$LOGIN_SH" -c "${*: -2}"'
+  export CLAUDE_CODE_SESSION_ID="session's identity"
+  export AGENT_QUEUE_ITEM='item; $(exit 91) *'
+  local sh
+  for sh in zsh bash sh; do
+    command -v "$sh" >/dev/null || continue
+    LOGIN_SH=$sh run fleet_host_run hp-victus sh -c 'printf "[%s][%s]" "$CLAUDE_CODE_SESSION_ID" "$AGENT_QUEUE_ITEM"'
+    assert_success
+    assert_output "[$CLAUDE_CODE_SESSION_ID][$AGENT_QUEUE_ITEM]"
+  done
+}
+
+@test "remote running queue records belong to the caller with either identity variable" {
+  stub ssh 'exec env -u CLAUDE_CODE_SESSION_ID -u AGENT_QUEUE_ITEM sh -c "${*: -2}"'
+  local identity slug
+  for identity in CLAUDE_CODE_SESSION_ID AGENT_QUEUE_ITEM; do
+    slug=remote-session
+    [ "$identity" != AGENT_QUEUE_ITEM ] || slug=remote-item
+    export "$identity=remote-owner"
+    run fleet_host_run hp-victus "$REPO_ROOT/.local/bin/agent-queue" add --running --project game --slug "$slug" 'Fix the remote probe'
+    assert_success
+    run "$REPO_ROOT/.local/bin/agent-queue" show "$slug"
+    assert_success
+    if [ "$identity" = CLAUDE_CODE_SESSION_ID ]; then
+      assert_line 'from: session'
+    else
+      assert_line 'from: item:remote-owner'
+    fi
+    run "$REPO_ROOT/.local/bin/agent-queue" cancel "$slug" --why "Probe complete"
+    assert_success
+    unset "$identity"
+  done
+}
+
 @test "a worker command gets a UTF-8 LANG when the worker's ssh shell set none, and keeps one it set" {
   # A tmux client with no UTF-8 locale prints a -F format's tabs as `_`: agent-panel on razer-laptop
   # then parsed no pane, and worker-panel.json listed none of its 8 sessions (2026-11-18).
