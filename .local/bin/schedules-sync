@@ -96,7 +96,9 @@ takes passes; a 429 or 5xx ends the pass's reads and is recorded as the repo's `
                           than the ledger's 30 days, 3 when the list does not sync the repo (a
                           caller tells "unknown" from "no runs"), 4 when a past --until is
                           after the last sync: that window is not yet complete, and the next
-                          pass completes it
+                          pass completes it, 5 when the repo is stale for a cause every repo
+                          of the pass shares (no pass in 30 minutes, the GitHub REST budget, the
+                          exporter feed), its reason `ledger down: <cause>[, resets <ISO>]`
 
   schedules-sync run-tags <repo> <workflow path>...
                           backfill: for each finished dispatched run of those workflows whose name
@@ -197,6 +199,10 @@ LEDGER = os.environ.get(
     os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "ci/runs.jsonl"),
 )
 SYNC = os.path.join(os.path.dirname(LEDGER), "sync.json")
+# The gh wrapper's one shared reading of the REST budget, "<remaining> <reset epoch> <read at>"
+# (.local/bin/gh budget_left): `runs` names its reset when the ledger waits on the budget.
+GH_BUDGET = os.path.join(os.environ.get("GH_CALLS_DIR")
+                         or os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "gh-calls"), "budget")
 JOBS_LEDGER = os.environ.get("SCHEDULES_JOBS_LEDGER", os.path.join(os.path.dirname(LEDGER), "jobs.jsonl"))
 # The tag (or uploaded run) each dispatched release run's log names, for runs whose name does not
 # carry it; the hub's release graph reads it beside the ledger (hub_core::release_graph).
@@ -284,7 +290,17 @@ class GhError(Exception):
         self.detail = detail or msg
 
 
-class GhDeferred(GhError):
+class GhShared(GhError):
+    """A cause every repo of the pass meets, not this repo's own: the REST budget (`budget`), or
+    the exporter feed (`feed`). sync.json keeps the kind as the entry's `error_shared`, and `runs`
+    exits 5 on it, so a reader shows one outage, not one unreadable repo per repo (ar-230)."""
+
+    def __init__(self, msg, detail=None, kind="budget"):
+        super().__init__(msg, detail)
+        self.kind = kind
+
+
+class GhDeferred(GhShared):
     """The gh wrapper held this read for the shared REST reserve (its exit 75). The repo keeps
     its last state with this as its error, but the pass is not a failure: the wait is by design."""
 
@@ -331,8 +347,8 @@ def gh_fail(path, text, rc=None):
     except (ValueError, AttributeError):
         first = next((ln.strip() for ln in raw.splitlines() if ln.strip()), "")
     if "rate limit" in low and "exceeded" in low:
-        why = "GitHub API rate limit hit"
-    elif "http 401" in low or "bad credentials" in low or "gh auth login" in low:
+        return GhShared("GitHub API rate limit hit", f"gh api {path}: {raw}")
+    if "http 401" in low or "bad credentials" in low or "gh auth login" in low:
         why = "gh is not logged in: run gh auth login"
     else:
         why = first.removeprefix("gh: ").split(". If you reach out")[0][:160] or "gh failed with no output"
@@ -1445,6 +1461,28 @@ def stale_why(label, entry):
     return f"{label} last synced {entry.get('synced_at')}, older than {int(STALE.total_seconds() // 60)}m{why}"
 
 
+def ledger_down(entry, t):
+    """The cause a stale repo shares with every repo of the pass, as `ledger down: <cause>`, or None
+    when its staleness is its own: a sync file no pass has written in STALE (the timer or the pass is
+    down), or the entry's shared error (GhShared). A REST budget cause names its reset when the gh
+    wrapper's reading has one ahead: `, resets <ISO>`."""
+    gen = when(read_sync("generated_at") or None)
+    if gen and gen < t - STALE:
+        return f"ledger down: no sync pass since {iso(gen)} (schedules-sync.timer)"
+    kind = entry.get("error_shared")
+    if not kind or not entry.get("error"):
+        return None
+    reset = None
+    if kind == "budget":
+        try:
+            with open(GH_BUDGET) as f:
+                at = datetime.fromtimestamp(int(f.read().split()[1]), timezone.utc)
+            reset = at if at > t else None
+        except (OSError, ValueError, IndexError, OverflowError):
+            pass
+    return f"ledger down: {entry['error']}" + (f", resets {iso(reset)}" if reset else "")
+
+
 def read_sync(part="repos", path=SYNC):
     try:
         with open(path) as f:
@@ -1551,7 +1589,8 @@ def runs(argv, t):
     if until and synced and until <= t and not complete:
         return 4, f"{argv[0]} last synced {entry.get('synced_at')}, not yet past {opts['--until']}"
     if not complete and (not synced or synced < t - STALE):
-        return 1, stale_why(argv[0], entry)
+        down = ledger_down(entry, t)
+        return (5, down) if down else (1, stale_why(argv[0], entry))
     last, _, _ = read_ledger(f'"repo":"{name.lower()}"')
     if last is None:
         return 1, f"no ledger at {LEDGER}"
@@ -2064,15 +2103,20 @@ def main(argv):
                 state = sync_repo(repo, base, p, t, [r for r in got if r.get("event") == "schedule"], jlast)
                 if exporter.get("error"):
                     # The pages it served before failing are kept above: the cursor is past them.
-                    raise GhError(f"exporter feed: {exporter['error']}")
+                    raise GhShared(f"exporter feed: {exporter['error']}", kind="feed")
                 out.append(state)
             else:
                 raise GhError(f"unknown forge {forge} (github, forgejo)")
             entry.update(synced_at=iso(t), error=None)
+            entry.pop("error_shared", None)
         except GhError as e:
             bad += not isinstance(e, GhDeferred)
             print(f"schedules-sync: {repo}: {e.detail}", file=sys.stderr)
             entry["error"] = str(e)
+            if isinstance(e, GhShared):
+                entry["error_shared"] = e.kind
+            else:
+                entry.pop("error_shared", None)
             if forge == "github":
                 kept = dict(state or p or {"repo": repo, "base": base, "synced_at": None, "workflows": []})
                 kept["error"] = str(e)

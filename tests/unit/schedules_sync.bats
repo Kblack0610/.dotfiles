@@ -895,6 +895,52 @@ lrow() {
   assert_output --partial 'keeps 30 days'
 }
 
+@test "runs exits 5, ledger down, for a staleness every repo shares: a rate limit with its reset, the exporter feed, no sync pass; a repo's own error stays 1 (ar-230)" {
+  mkdir -p "$(dirname "$LEDGER")"
+  export GH_CALLS_DIR="$SANDBOX/gh-calls"; mkdir -p "$GH_CALLS_DIR"
+  echo '{"generated_at":"2025-11-06T11:55:00Z","repos":{"github:o/rl":{"synced_at":"2025-11-06T11:00:00Z","error":"GitHub API rate limit hit","error_shared":"budget"},"github:o/feed":{"synced_at":"2025-11-06T11:00:00Z","error":"exporter feed: HTTP 503","error_shared":"feed"},"github:o/old":{"synced_at":"2025-11-06T11:00:00Z","error":"HTTP 502"}}}' > "$XDG_STATE_HOME/ci/sync.json"
+  lrow 1 1 main 2025-11-06T09:00:00Z success
+  echo "12 $((SCHEDULES_NOW + 1200))" > "$GH_CALLS_DIR/budget"
+  run "$SUBJECT" runs o/rl
+  assert_failure 5
+  assert_output 'ledger down: GitHub API rate limit hit, resets 2025-11-06T12:20:00Z'
+  # a reading whose reset has passed names none
+  echo "4900 $((SCHEDULES_NOW - 60))" > "$GH_CALLS_DIR/budget"
+  run "$SUBJECT" runs o/rl
+  assert_failure 5
+  assert_output 'ledger down: GitHub API rate limit hit'
+  run "$SUBJECT" runs o/feed
+  assert_failure 5
+  assert_output 'ledger down: exporter feed: HTTP 503'
+  # negative control: a repo's own error is its own staleness
+  run "$SUBJECT" runs o/old
+  assert_failure 1
+  assert_output --partial 'HTTP 502'
+  # no pass in STALE: every repo is down for it, its own error or none
+  jq '.generated_at = "2025-11-06T11:00:00Z"' "$XDG_STATE_HOME/ci/sync.json" > "$SANDBOX/s" && mv "$SANDBOX/s" "$XDG_STATE_HOME/ci/sync.json"
+  run "$SUBJECT" runs o/old
+  assert_failure 5
+  assert_output 'ledger down: no sync pass since 2025-11-06T11:00:00Z (schedules-sync.timer)'
+}
+
+@test "a pass that hits a rate limit or the reserve marks each repo's error shared; a good read clears it (ar-230)" {
+  game_files
+  runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
+  echo 'gh: API rate limit exceeded for user ID 1.' > "$GHD/fail-o_game"
+  run "$SUBJECT"
+  run jq -c '.repos | map_values(.error_shared)' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output '{"github:o/game":"budget","github:o/empty":null}'
+  rm "$GHD/fail-o_game"; touch "$GHD/defer"
+  SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  run jq -c '.repos | map_values(.error_shared)' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output '{"github:o/game":"budget","github:o/empty":"budget"}'
+  # negative control: a repo's own error is not shared, and a good read clears the mark
+  rm "$GHD/defer"; echo 'HTTP 502' > "$GHD/fail-o_game"
+  SCHEDULES_NOW=1762431600 run "$SUBJECT"
+  run jq -c '.repos | map_values(.error_shared)' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output '{"github:o/game":null,"github:o/empty":null}'
+}
+
 @test "runs: a window that closed before the last sync is complete even when that sync is stale" {
   mkdir -p "$(dirname "$LEDGER")"
   echo '{"repos":{"github:o/game":{"synced_at":"2025-11-06T11:00:00Z"}}}' > "$XDG_STATE_HOME/ci/sync.json"

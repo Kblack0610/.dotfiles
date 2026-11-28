@@ -9,7 +9,8 @@ setup() {
   export FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
   export FLEET_MAIN_TTL=0 # each test's gh answers decide
   # The run ledger stand-in: `runs <repo>` answers every $LEDGER_DIR/<branch>.json (see ledger),
-  # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
+  # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists, or like a
+  # ledger down for every repo (exit 5, the file's line on stderr: a rate limit) while $LEDGER_DIR/DOWN does.
   # The PR store stand-in: `prs <repo>` answers $LEDGER_DIR/prs_<owner_repo>.tsv, else prs.tsv
   # (rows "branch \t number \t state \t ci \t head \t red \t merged_at \t title \t labels, comma-joined"), no PRs when there is neither,
   # `sync-prs [--wait] <repo>` (the poll catching up) copies $LEDGER_DIR/after_sync_<owner_repo>.tsv over that repo's rows, and fails while $LEDGER_DIR/SYNC_FAIL exists;
@@ -28,6 +29,7 @@ case "$1" in
   runs)
     [ $# -eq 2 ] || exit 2
     [ ! -e "$LEDGER_DIR/FAIL" ] || { echo "$2 last synced 2026-10-25T09:00:00Z, older than 30m" >&2; exit 1; }
+    [ ! -e "$LEDGER_DIR/DOWN" ] || { cat "$LEDGER_DIR/DOWN" >&2; exit 5; }
     cat "$LEDGER_DIR"/*.json 2>/dev/null | jq -cs 'add // []' ;;
   prs)
     for f in "$LEDGER_DIR"/PRS_FAIL*; do
