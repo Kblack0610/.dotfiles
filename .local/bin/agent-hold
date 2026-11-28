@@ -3,11 +3,16 @@
 # a message.
 #
 #   agent-hold set <resource> [--roster a,b,c] [--by name] [--kind load|resource]
-#                  [--until <time>] [--quote '<words>'] "<reason>"
+#                  [--until <time>] [--quote '<words>'] [--scope <repo>[:<path>],...] "<reason>"
+#                                   --scope: the repos or paths the hold locks for every project's
+#                                   work, not only rows tagged #hold/<resource>: dispatch skips a row
+#                                   that lands there (fleet-dispatch row_off_set) and agent-land
+#                                   refuses a PR whose changed files are under it (covers). <repo> is
+#                                   the forge repo name (home-config), <path> a file or directory in it
 #                                   --kind: load (the default) is the fleet pacing itself, which
 #                                   the shepherd lifts once the machine reads CLEAR; resource is
 #                                   anything else (bad RAM, a maintenance pause), released by hand
-#                                   (the default for dispatch). A re-set writes the kind,
+#                                   (the default for dispatch). A re-set writes the kind, scope,
 #                                   roster and reason afresh, drops the grants and keeps since;
 #                                   a hold by: human is re-set only --by human. --until (any time
 #                                   date -d reads, at most 24h ahead) ends the hold on its own:
@@ -48,6 +53,11 @@
 #                                   --expired lists only the holds past their until, which
 #                                   release ends (the shepherd's pace line names them)
 #   agent-hold show <resource>      print the hold file
+#   agent-hold scopes               resource<TAB>repo<TAB>path<TAB>granted, one line per --scope entry of
+#                                   each hold in force (path - for a whole repo, granted comma-separated)
+#   agent-hold covers <repo> [--for <id>...] < changed paths   exit 1, one held: line each, while a hold
+#                                   in force scopes a path given (a whole-repo scope: any path) and grants
+#                                   neither the caller nor a --for name (check decides that); else 0
 #   agent-hold aged [--days N]      each resource or human-set hold with no until, set N days ago
 #                                   or longer (1), then `page: high`, exit 1 when any; never releases
 #
@@ -55,6 +65,10 @@
 # A hold is state, not a message, because shell loops have no inbox and new sessions miss
 # a broadcast: the gate, the preflight and the coordinator all read this one file. Why and
 # how to use it: the fleet-comms and fleet-pace skills.
+#
+# A scope is what a hold locks when the work is not the holder's project's: on 2026-11-20 the human
+# locked home-config with #hold/ tags on its rows, and 40 minutes later home-config #1333, the work of
+# a unity-core-playground row, changed apps/ci-runner-governor anyway (ar-4187).
 #
 # A grant is GO as state: a staged restart lets a few sessions back in while the hold stays
 # set for the rest, and a human's narrowing lets the rows of a plan they approved run. It lives in
@@ -169,6 +183,33 @@ callers() {
   if [ -n "$t" ]; then printf '%s\n' "$t"; elif [ -n "${PWD##*/}" ]; then printf '%s\n' "${PWD##*/}"; fi
 }
 
+# scope_norm <list> -> the --scope list as the hold file keeps it: comma-separated <repo> or
+# <repo>:<path>, the path with no leading ./ or /, no trailing /, and no . or .. segment; fails
+# naming the bad entry. A repo is the forge's repo name, which agent-land and dispatch both read.
+scope_norm() {
+  local e r p out="" seg
+  local -a es segs
+  IFS=, read -ra es <<<"$1"
+  for e in "${es[@]}"; do
+    e="${e//[[:space:]]/}"
+    [ -n "$e" ] || continue
+    r="${e%%:*}" p=""
+    [ "$r" = "$e" ] || p="${e#*:}"
+    p="${p#./}"; while [[ "$p" == /* ]]; do p="${p#/}"; done; while [[ "$p" == */ ]]; do p="${p%/}"; done
+    [ "$r" = "$e" ] || [ -n "$p" ] ||
+      { echo "agent-hold set: --scope entry '$e' names no path after the colon (<repo> for the whole repo)" >&2; return 1; }
+    [[ "$r" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$r" != . ] && [ "$r" != .. ] ||
+      { echo "agent-hold set: --scope entry '$e' names no repo (<repo> or <repo>:<path>)" >&2; return 1; }
+    IFS=/ read -ra segs <<<"$p"
+    for seg in "${segs[@]}"; do
+      case "$seg" in ''|.|..) [ -z "$p" ] || { echo "agent-hold set: --scope path '$p' has an empty, . or .. segment" >&2; return 1; } ;; esac
+    done
+    out+="${out:+,}$r${p:+:$p}"
+  done
+  [ -n "$out" ] || { echo "agent-hold set: --scope names nothing" >&2; return 1; }
+  printf '%s' "$out"
+}
+
 # Who is holding, as set and claim record it and every reader shows it: the fleet-sessions
 # target in a tmux pane, else the working directory's basename. A claim keeps the Claude
 # session id beside it (sid:), so the name stays readable and the owner stays exact.
@@ -206,11 +247,13 @@ set_field() {
 cmd_set() {
   local resource="${1:-}"; shift || true
   need_resource "$resource"
-  local roster="" by="" reason="" kind="" until="" quote="" quoted=""
+  local roster="" by="" reason="" kind="" until="" quote="" quoted="" scope=""
+  # gate: none
   while [ $# -gt 0 ]; do
     case "$1" in
-      --roster|--by|--kind|--until|--quote) [ $# -ge 2 ] || { echo "agent-hold set: $1 needs a value" >&2; exit 2; }
+      --roster|--by|--kind|--until|--quote|--scope) [ $# -ge 2 ] || { echo "agent-hold set: $1 needs a value" >&2; exit 2; }
         case "$1" in --roster) roster="$2" ;; --by) by="$2" ;; --kind) kind="$2" ;; --until) until="$2" ;;
+          --scope) scope="$(scope_norm "$2")" || exit 2 ;;
           --quote) quote="$(oneline "$2")" quoted=1 ;; esac; shift 2 ;;
       --) shift; reason="$*"; break ;;
       -*) echo "agent-hold set: unknown flag $1" >&2; exit 2 ;;
@@ -279,6 +322,7 @@ cmd_set() {
     printf 'by: %s\n'       "$(oneline "$by")"
     printf 'roster: %s\n'   "$(oneline "$roster")"
     printf 'granted: \n'
+    [ -n "$scope" ] && printf 'scope: %s\n' "$scope"
     [ -n "$lowered" ] && printf 'lowered: %s\n' "$lowered"
     [ -n "$u" ] && printf 'until: %s\n' "$(date -d "@$u" +%Y-%m-%dT%H:%M:%S%z)"
     [ -n "$quote" ] && printf 'quote: %s\n' "$(cut -c1-300 <<<"$quote")"
@@ -681,6 +725,60 @@ cmd_aged() {
   return 1
 }
 
+# scopes -> resource, repo, path and granted, tab-separated, for each --scope entry of each hold in force.
+# A whole repo's path is -, since read with IFS=tab folds an empty field into the next one.
+cmd_scopes() {
+  # gate: none
+  [ $# -eq 0 ] || { echo "agent-hold scopes: takes no argument" >&2; exit 2; }
+  [ -d "$HOLD_ROOT" ] || return 0
+  local f e sc g
+  local -a es
+  for f in "$HOLD_ROOT"/*; do
+    [ -f "$f" ] && ! expired "$f" || continue
+    sc="$(field "$f" scope)"; [ -n "$sc" ] || continue
+    g="$(field "$f" granted)"
+    IFS=, read -ra es <<<"$sc"
+    for e in "${es[@]}"; do
+      [ -n "$e" ] || continue
+      if [[ "$e" == *:* ]]; then printf '%s\t%s\t%s\t%s\n' "${f##*/}" "${e%%:*}" "${e#*:}" "$g"
+      else printf '%s\t%s\t-\t%s\n' "${f##*/}" "$e" "$g"; fi
+    done
+  done
+}
+
+# covers <repo> [--for <id>...] < changed paths -> exit 1 with one held: line per hold in force whose
+# scope covers a path (its path, or a file under that directory; a whole-repo entry: any path) of
+# <repo>, compared case-blind, and that check does not pass for the caller or a --for name. Else 0.
+cmd_covers() {
+  local repo="${1:-}" rc=0
+  shift || true
+  # gate: none
+  [ -n "$repo" ] || { echo "agent-hold covers: name the repo" >&2; exit 2; }
+  local -a fors=()
+  case "${1:-}" in
+    '') ;;
+    --for) shift; fors=(--for "$@") ;;
+    *) echo "agent-hold covers: unknown argument $1" >&2; exit 2 ;;
+  esac
+  local files r sr sp g hit out
+  local -A seen=()
+  files="$(cat)"
+  [ -n "$files" ] || return 0
+  while IFS=$'\t' read -r r sr sp g; do
+    [ -n "$r" ] && [ -z "${seen[$r]+x}" ] || continue
+    [ "${sr,,}" = "${repo,,}" ] || continue
+    [ "$sp" != - ] || sp=''
+    if [ -z "$sp" ]; then hit="${files%%$'\n'*}"
+    else hit="$(SP="${sp,,}" awk '{ l = tolower($0) } l == ENVIRON["SP"] || index(l, ENVIRON["SP"] "/") == 1 { print; exit }' <<<"$files")"; fi
+    [ -n "$hit" ] || continue
+    seen[$r]=1
+    out="$(cmd_check "$r" "${fors[@]}" 2>/dev/null)" && continue
+    printf '%s (scope %s%s covers %s)\n' "$out" "$sr" "${sp:+:$sp}" "$hit"
+    rc=1
+  done < <(cmd_scopes)
+  return "$rc"
+}
+
 cmd_show() {
   local resource="${1:-}"
   need_resource "$resource"
@@ -689,7 +787,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,49p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,62p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
@@ -703,6 +801,8 @@ case "$verb" in
   aged)    cmd_aged "$@" ;;
   classes) cmd_classes ;;
   show)    cmd_show "$@" ;;
+  scopes)  cmd_scopes "$@" ;;
+  covers)  cmd_covers "$@" ;;
   -h|--help|help) usage ;;
   *) usage >&2; exit 2 ;;
 esac
