@@ -512,25 +512,20 @@ prs_fixture() {
 @test "prs reads the open PRs of the Forgejo repos in the PR store, with checks mapped and mergeable unknown (ar-4470)" {
   items_stub
   export BENCH_PRS_CMD=prs_forgejo BENCH_NOW=$T0
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
-  cat > "$SCHEDULES_SYNC" <<SS
-#!/usr/bin/env bash
-case "\$1" in
-  repos) echo '[{"forge":"github","repo":"o/gh"},{"forge":"forgejo","host":"git.example","repo":"o/fj"}]' ;;
-  prs) [ "\$2 \$3 \$4 \$5" = "git.example/o/fj --state open --checks" ] || exit 2
-    # #7 is the owner's; #8 is a bot's, which is not the fleet's to land and so never listed
-    printf '[{"number":7,"author":"o","branch":"fix/x","title":"bump x","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"FAIL"},{"number":8,"author":"renovate","branch":"renovate/y","title":"bump y","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"PASS"}]\n' \
-      "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" \
-      "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" ;;
-  *) exit 2 ;;
-esac
-SS
-  chmod +x "$SCHEDULES_SYNC"
+  # #7 is the owner's; #8 is a bot's, which is not the fleet's to land and so never listed
+  ss_answer repos.out '[{"forge":"github","repo":"o/gh"},{"forge":"forgejo","host":"git.example","repo":"o/fj"}]'
+  ss_answer prs.rc 2
+  ss_answer prs.git.example_o_fj.rc 0
+  printf '[{"number":7,"author":"o","branch":"fix/x","title":"bump x","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"FAIL"},{"number":8,"author":"renovate","branch":"renovate/y","title":"bump y","draft":false,"created_at":"%s","updated_at":"%s","url":"u","ci":"PASS"}]\n' \
+    "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" \
+    "$(date -u -d "@$((T0 - 400 * 3600))" +%FT%TZ)" "$(date -u -d "@$((T0 - 300 * 3600))" +%FT%TZ)" > "$SS_FIXTURE/ss.prs.git.example_o_fj.out"
   run "$SUBJECT" prs --json
   assert_success
   [ "$(jq -c '[.prs[] | [.ref, .idle_h, .checks, .mergeable, .class]]' <<<"$output")" = '[["o/fj#7",300,"FAILURE","UNKNOWN","stranded"]]' ]
   # a store that cannot be read is unreadable, never an empty list
-  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && echo "[{\\"forge\\":\\"forgejo\\",\\"host\\":\\"h\\",\\"repo\\":\\"o/fj\\"}]" || exit 1\n' > "$SCHEDULES_SYNC"
+  rm -f "$SS_FIXTURE"/ss.prs.*
+  ss_answer repos.out '[{"forge":"forgejo","host":"h","repo":"o/fj"}]'
+  ss_answer prs.rc 1
   run "$SUBJECT" prs --check aged
   assert_failure 2
   assert_output --partial 'unreadable:'
@@ -563,12 +558,12 @@ SS
   git -C "$clone" update-ref refs/remotes/origin/merged main
   printf '{"paths":{"%s":"r"}}\n' "$clone" > "$SANDBOX/map.json"
   export BENCH_PROJECT_MAP="$SANDBOX/map.json" BENCH_BRANCHES_CMD=prs_branches
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
   # o/r is a Forgejo repo here: the store names it host/owner/repo, so asking for o/r would read as unsynced
-  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && { echo "[{\\"forge\\":\\"forgejo\\",\\"host\\":\\"git.example\\",\\"repo\\":\\"o/r\\"}]"; exit 0; }\n[ "$1 $2" = "prs git.example/o/r" ] || exit 3\njq -cn --arg s "%s" %s\n' \
-    "$(git -C "$clone" rev-parse refs/remotes/origin/squashed)" \
-    "'[{branch: \"owned\", state: \"OPEN\", head_sha: \"x\"}, {branch: \"squashed\", state: \"MERGED\", head_sha: \$s}]'" > "$SCHEDULES_SYNC"
-  chmod +x "$SCHEDULES_SYNC"
+  ss_answer repos.out '[{"forge":"forgejo","host":"git.example","repo":"o/r"}]'
+  ss_answer prs.rc 3
+  ss_answer prs.git.example_o_r.rc 0
+  jq -cn --arg s "$(git -C "$clone" rev-parse refs/remotes/origin/squashed)" \
+    '[{branch: "owned", state: "OPEN", head_sha: "x"}, {branch: "squashed", state: "MERGED", head_sha: $s}]' > "$SS_FIXTURE/ss.prs.git.example_o_r.out"
   run "$SUBJECT" prs --check branches
   assert_failure 1
   assert_line '2 unowned branches'
@@ -579,7 +574,9 @@ SS
   refute_output --partial 'r merged'
   refute_output --partial 'r squashed'
   # a repo the PR store does not sync lists nothing: without its PRs every branch would read unowned
-  printf '#!/usr/bin/env bash\n[ "$1" = repos ] && { echo "[]"; exit 0; }\nexit 3\n' > "$SCHEDULES_SYNC"
+  rm -f "$SS_FIXTURE"/ss.prs.*
+  ss_answer repos.out '[]'
+  ss_answer prs.rc 3
   run "$SUBJECT" prs --check branches
   assert_success
   assert_output ''

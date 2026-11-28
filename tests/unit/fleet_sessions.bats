@@ -2744,7 +2744,7 @@ SH
   # exit 3, a repo the ledger does not sync, is no runs: no NIGHTLY row and nothing unreadable
   rm "$LEDGER_DIR/FAIL"
   # (runs only: a GitHub repo the PR store does not list is unreadable by design)
-  printf '#!/usr/bin/env bash\n[ "$1" = runs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
+  ss_script '[ "$1" = runs ] && exit 3; echo "[]"'
   FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
   [ "$(jq -r '.main | length' "$SANDBOX/state.json")" = 0 ]
   [ "$(jq -r '.unreadable | length' "$SANDBOX/state.json")" = 0 ]
@@ -4020,8 +4020,7 @@ SH
   # the ledger syncs the Forgejo repo only: the GitHub mirror is not in it (exit 3)
   ledger master "[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
   cp "$LEDGER_DIR/master.json" "$SANDBOX/fj-runs.json"; rm "$LEDGER_DIR/master.json"
-  cat > "$SCHEDULES_SYNC" <<SS
-#!/usr/bin/env bash
+  ss_script <<SS
 echo "\$*" >> "$LEDGER_DIR/calls"
 [ "\$1 \$2" = "runs forgejo:o/r" ] && { cat "$SANDBOX/fj-runs.json"; exit 0; }
 exit 3
