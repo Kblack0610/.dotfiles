@@ -5,6 +5,7 @@
 # a subject would post fixture data to a live service. `rbw get [--folder F] [--field X] <entry>`
 # prints $RBW_FIXTURE/[F/]<entry>[.X] when that file exists and fails like a missing entry
 # otherwise. `rbw unlocked` fails while $RBW_FIXTURE/locked exists, as it does on a locked vault.
+# `rbw list` prints $RBW_FIXTURE/rbw.list, the vault's item names, when it exists (fails when locked).
 set -uo pipefail
 
 FIX="${RBW_FIXTURE:?RBW_FIXTURE unset - stub used outside the sandbox}"
@@ -12,6 +13,7 @@ printf 'rbw %s\n' "$*" >> "$FIX/calls.log"
 
 case "${1:-}" in
 unlocked) [ ! -f "$FIX/locked" ] ;;
+list) [ ! -f "$FIX/locked" ] || exit 1; [ ! -f "$FIX/rbw.list" ] || cat "$FIX/rbw.list" ;;
 get)
   shift
   folder='' field=''
