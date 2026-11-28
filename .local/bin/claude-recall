@@ -554,14 +554,20 @@ DEFAULT_KINDS = ("slash", "skill", "agent", "intent", "prompt")
 STATS_KINDS = DEFAULT_KINDS + USE_KINDS + ("bypass", "denied")
 
 
-def hand_methods():
-    """The hook module that owns metadata.replaces, beside this script in the same checkout."""
-    import importlib.util
-    path = Path(__file__).resolve().parents[2] / ".claude" / "hooks" / "hand_methods.py"
-    spec = importlib.util.spec_from_file_location("hand_methods", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+@functools.lru_cache(maxsize=None)
+def hook_module(name):
+    """The hook <name>.py from this checkout's .claude/hooks, loaded by hooklib with that dir on sys.path
+    only for the load, so the hook's own `import hooklib` resolves as it does when the hook runs and no
+    hook file shadows a module name afterwards (hooklib stays cached in sys.modules for later loads)."""
+    hooks = str(Path(__file__).resolve().parents[2] / ".claude" / "hooks")
+    sys.path.insert(0, hooks)
+    try:
+        import hooklib
+        return hooklib.load(name)
+    finally:
+        sys.path.remove(hooks)
+
+
 # How a tool_result reads when a PreToolUse hook denied the call, so it never ran.
 DENIED = "PreToolUse:Bash hook error:"
 
@@ -742,19 +748,31 @@ def user_origin(rec):
     return "interactive"
 
 
-# Harness text that has no turnOrigin on older transcripts. None of it is a request anyone typed.
-HARNESS_PREFIXES = ("This session is being continued", "Stop hook feedback",
-                    "[Request interrupted", "Another Claude session sent", "Caveat:")
+def panel_conf_lines(name):
+    """The lines of .config/agent-panel/<name> beside this checkout, trimmed, past its comments
+    and blank lines."""
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..",
+                        ".config", "agent-panel", name)
+    with open(path, encoding="utf-8") as f:
+        return [ln.strip() for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+
+
+@functools.cache
+def harness_prefixes():
+    """The lines of .config/agent-panel/harness-prefixes.conf, the one table of text the harness
+    puts in a user turn (older transcripts give it no turnOrigin). None of it is a request anyone
+    typed."""
+    p = tuple(panel_conf_lines("harness-prefixes.conf"))
+    if not p:  # an empty tuple matches nothing, and every notice would count as typed
+        sys.exit("claude-recall: no entries in harness-prefixes.conf")
+    return p
 
 
 @functools.cache
 def typed_prefixes():
     """(kind, text) rows of .config/agent-panel/typed-prefixes.conf, the one table of prompts the
     fleet types into a session as if the human had: `task` a new request, `resume` a carry-on."""
-    path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..",
-                        ".config", "agent-panel", "typed-prefixes.conf")
-    with open(path, encoding="utf-8") as f:
-        rows = [ln.split(None, 1) for ln in f if ln.strip() and not ln.lstrip().startswith("#")]
+    rows = [ln.split(None, 1) for ln in panel_conf_lines("typed-prefixes.conf")]
     return tuple((r[0], r[1].strip()) for r in rows if len(r) == 2)
 
 
@@ -866,7 +884,7 @@ def stats_events(path, since, kinds=(), names=frozenset(), hand=None):
             # rule, a bullet, a cowsay border) is pasted output that would match everything.
             s = text.strip().split("\n", 1)[0].strip()
             if (origin != "interactive" or not s[:1].isalnum()
-                    or s.startswith(HARNESS_PREFIXES) or fleet_typed(text)):
+                    or s.startswith(harness_prefixes()) or fleet_typed(text)):
                 continue
             yield "prompt", None, origin, ts, s
     for events in pending.values():
@@ -891,7 +909,7 @@ def cmd_stats(a):
     names = frozenset(skill_names()) if kinds & set(USE_KINDS) else frozenset()
     hand = None
     if {"bypass", "denied"} & kinds:
-        mod = hand_methods()
+        mod = hook_module("hand_methods")  # owns metadata.replaces
         hand = (mod, mod.load_rules())
     agg = {}
     used = {}  # session -> skills and slash commands it ran, for intent coverage
@@ -1237,7 +1255,7 @@ def human_prompt(rec, text):
     s = text.lstrip()
     return (user_origin(rec) == "interactive" and not rec.get("isMeta")
             and (not s.startswith("<") or CMD_RE.match(text) is not None)
-            and not s.startswith(HARNESS_PREFIXES) and not fleet_typed(text, ("resume",)))
+            and not s.startswith(harness_prefixes()) and not fleet_typed(text, ("resume",)))
 
 
 def tool_output_file(path, since, until, emit, skills=False):
@@ -1686,19 +1704,9 @@ RUNNER_COMMANDS = ("fleet-lead", "fleet-overseer")
 GUARD_DENY = re.compile(r"^PreToolUse:\w+ hook error: (?:([a-z][a-z0-9-]+): )?")
 
 
-@functools.lru_cache(maxsize=None)
-def block_poll():
-    """block-poll.py from this checkout, so the loop count and the guard agree on what a wait loop is."""
-    import importlib.util
-    hook = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".claude", "hooks", "block-poll.py")
-    spec = importlib.util.spec_from_file_location("block_poll", hook)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
 def wait_loop(cmd):
-    mod = block_poll()
+    # block-poll.py from this checkout, so the loop count and the guard agree on what a wait loop is.
+    mod = hook_module("block-poll")
     return any(mod.polls(t) for t in mod.code_texts(mod.strip_heredocs(cmd)))
 
 
@@ -1832,9 +1840,15 @@ def read_spans(name, inp, cwd):
     return []
 
 
+@functools.cache
+def edit_tools():
+    """The Claude tools that write a file: .config/agent-panel/edit-tools.conf, the one list."""
+    return frozenset(panel_conf_lines("edit-tools.conf"))
+
+
 def write_paths(name, inp, cwd):
-    """The files a call wrote: Edit and Write targets, sed -i files and shell redirects."""
-    if name in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+    """The files a call wrote: edit-tool targets, sed -i files and shell redirects."""
+    if name in edit_tools():
         p = inp.get("file_path") or inp.get("notebook_path")
         return [norm_path(p, cwd)] if p else []
     if name != "Bash":
@@ -2225,7 +2239,6 @@ def cmd_tool_calls(a):
 
 
 # --- answer-lag: does a question get its answer before work starts ------------
-EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
 # Pasted text and injected reminders quote other people and other sessions; an unclosed one (a
 # truncated paste) runs to the end of the prompt.
 NOT_ASKED = re.compile(r"<(pasted_content|system-reminder)\b[^>]*>.*?(?:</\1[^>]*>|\Z)", re.S)
@@ -2286,7 +2299,7 @@ def answer_turns(path, since, until):
                         turn["answered"] = True
                         break
                     turn["calls"] += 1
-                    turn["edited"] |= name in EDIT_TOOLS
+                    turn["edited"] |= name in edit_tools()
     if turn is not None:
         yield turn
 

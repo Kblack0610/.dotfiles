@@ -21,7 +21,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{heading, Palette};
 
 /// What a key on the rows asks the app to do.
 #[derive(Debug, PartialEq)]
@@ -47,6 +47,7 @@ pub enum Kind {
     Edit,
     Tag,
     Untag,
+    Priority,
 }
 
 /// A line being typed at the status line, and the row it is about.
@@ -124,11 +125,8 @@ impl TaskView {
     /// A new read keeps the selection on the same line when it is still open.
     pub fn reselect(&mut self, was: Option<Row>, f: &Feed) {
         let rows = shown(f, self);
-        let at = was.and_then(|w| {
-            rows.iter()
-                .position(|r| r.sheet == w.sheet && r.raw == w.raw)
-        });
-        self.table.keep(at, rows.len());
+        self.table
+            .reselect(&rows, was, |r, w| r.sheet == w.sheet && r.raw == w.raw);
     }
 
     /// The selected row when it can be written, else why not (said on the status line).
@@ -203,6 +201,13 @@ impl TaskView {
                     text: p.text,
                 },
             ),
+            Kind::Priority => match tasks::set_priority(&r.raw, &p.text) {
+                Some(verb) => (format!("priority in {at}"), verb),
+                None => {
+                    self.said = Some(Err(tasks::NOT_A_PRIORITY.into()));
+                    return Ask::Done;
+                }
+            },
             Kind::Tag | Kind::Untag => {
                 let tags: Vec<String> = p.text.split_whitespace().map(str::to_string).collect();
                 let (add, remove) = if p.kind == Kind::Tag {
@@ -342,6 +347,15 @@ impl TaskView {
                     self.prompt = prompt(kind, r);
                 }
             }
+            KeyCode::Char('p') => {
+                if let Some(r) = self.target(f, false) {
+                    self.prompt = Some(Prompt {
+                        kind: Kind::Priority,
+                        text: String::new(),
+                        row: r,
+                    });
+                }
+            }
             KeyCode::Char('e') => {
                 if let Some(r) = self.target(f, false) {
                     self.prompt = Some(Prompt {
@@ -427,13 +441,6 @@ pub fn sprint_lines(rows: &[tasks::SprintRow], p: Palette, w: usize) -> Vec<Line
         .fit(w, p.head()),
     );
     out
-}
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
 }
 
 fn prio_style(priority: &str, p: Palette) -> ratatui::style::Style {
@@ -645,6 +652,7 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
             Kind::Edit => "New text (tags stay): ".into(),
             Kind::Tag => "Add tags (size/s, requested; a new size replaces the old): ".into(),
             Kind::Untag => "Remove tags: ".into(),
+            Kind::Priority => "Priority (urgent, high, normal or low): ".into(),
         };
         Line::styled(format!("{what}{}_", pr.text), p.warn())
     } else if let Some(r) = &v.running {
@@ -1008,6 +1016,26 @@ pub(crate) mod tests {
                 text: "fix the menu bar".into()
             }
         );
+
+        v.key(key('p'), Some(&f), 10);
+        assert_eq!(v.prompt.as_ref().unwrap().text, "", "priority starts empty");
+        typed(&mut v, &f, "high");
+        let Ask::Write(label, w) = enter(&mut v, &f) else {
+            panic!("priority runs")
+        };
+        assert_eq!(label, "priority in bnb/demo");
+        assert_eq!(
+            w.verb,
+            Verb::Tag {
+                raw: "- [ ] fix the menu".into(),
+                add: vec!["high".into()],
+                remove: vec![]
+            }
+        );
+        v.key(key('p'), Some(&f), 10);
+        typed(&mut v, &f, "medium");
+        assert_eq!(enter(&mut v, &f), Ask::Done, "a retired word is refused");
+        assert!(matches!(&v.said, Some(Err(e)) if e.contains("priority is")));
 
         let Ask::Write(label, w) = v.key(key('+'), Some(&f), 10) else {
             panic!("+ runs")

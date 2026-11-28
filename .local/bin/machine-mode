@@ -7,15 +7,6 @@
 #   machine-mode hours      print the day's parts, the mode each runs in, and which one is now
 #   machine-mode clock      the timer's tick: a new part's mode applies once (machine-clock.timer, at each part's start)
 #   machine-mode auto       give the mode back to the clock: apply this part's mode now
-#   machine-mode release-lane <host> --until <time>   keep <host>'s pool slots for release jobs
-#                           until <time> (date -d, at most 24h ahead); it ends on its own
-#   machine-mode release-lane --clear <host>          end that reservation now (removes the key)
-#   machine-mode release-lane    list the reservations
-#
-# A reservation is the "<host>.reserve" key, {"until": <epoch>}, in the same ConfigMap: the
-# governor pins the host to 0 until then, so gates go to other hosts while release.yml jobs,
-# which ask for host-<host> alone, take the withheld slots. Any machine with the kube context
-# can set one, for a cut or a re-send (playground docs/operations/steam.md#the-release-lane).
 #
 # The clock hours, .config/machine-mode/hours, name the day's parts. When a part begins, `clock`
 # switches to its mode, except that a mode set by hand holds while the human is here
@@ -23,48 +14,20 @@
 # the part's mode applies at the first retry after they are away. Inside a part nothing else runs,
 # so a hand switch stands until the next part begins.
 #
-# A mode sets three things, its numbers in .config/machine-mode/modes:
-#   runners      also how many of this host's Unity slots run: written to the slot count file,
-#                which each slot's unit reads before it starts (home-config site.yml,
-#                unity_ci_slot_count_owner). Slots at or under it are started; one over it is
-#                stopped now when idle, or by a waiter once its job ends. A host Ansible has not
-#                set up for it has no count directory, and this part is skipped.
-#   runners and unity_slots
-#                {"slots": N, "local": M, "by": "machine-mode <mode>"} as this host's "<host>.slots"
-#                key in the ci-runner-governor-override ConfigMap, merge-patched so no other
-#                writer's key is touched. slots pins the pool runners, local how many local Unity
-#                runs the governor grants a seat at once (unity-core-playground's slots.sh leases
-#                one per run). This writes no runner label: the governor relabels at runtime, so a
-#                busy runner finishes its job and a running local run keeps its seat, and ansible
-#                (put_labels.yml) resets each runner's labels on every apply. Takes minutes, and
-#                longer if a gate is running.
-#   level        how fast the fleet starts work: fleet-dispatch and claude-acct room scale their
-#                limits by it where they read them (lib/machine-mode.sh), so nothing is written.
+# A mode sets one thing, its level in .config/machine-mode/modes: how fast the fleet starts work.
+# fleet-dispatch and claude-acct room scale their limits by it where they read them
+# (lib/machine-mode.sh), so a switch writes only the state file. No mode stops dispatch: the low
+# level is reserved's trickle, and `agent-hold set dispatch` is the one full stop. The status shows
+# a dispatch hold by anyone, and never sets or lifts one.
 #
-# No mode stops dispatch: the low level is reserved's trickle, and `agent-hold set dispatch` is
-# the one full stop. The status shows a dispatch hold by anyone, and never sets or lifts one.
-#
-# If the cluster cannot be reached the local part still applies, the command exits 1, and
-# RUNNERS_PINNED=no in the state file turns the chip amber until a retry lands. There is no
-# second path to the runner labels. Usage and troubleshooting: .local/src/docs/machine-mode.md
+# Usage and troubleshooting: .local/src/docs/machine-mode.md
 
 set -uo pipefail
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
-# shellcheck source=../lib/prom.sh
-. "$here/../lib/prom.sh"
 # shellcheck source=../lib/machine-mode.sh
 . "$here/../lib/machine-mode.sh"
 
 STATE="$MACHINE_MODE_STATE"
-RUNNER_UNITS="${MACHINE_MODE_RUNNER_UNITS:-/etc/systemd/system/actions.runner.*-unity-pool-*.service}"
-# The count file and the job-end waiter Ansible installs (home-config ci-host defaults).
-SLOT_FILE="${MACHINE_MODE_SLOT_FILE:-/var/lib/ci-slots/slots}"
-WAIT_WORKER="${MACHINE_MODE_WAIT_WORKER:-/usr/local/bin/ci-wait-worker-exit}"
-# How long a waiter waits on a busy slot's job: GitHub's default job timeout, 360 minutes.
-DRAIN_TIMEOUT=21600
-CONFIGMAP=ci-runner-governor-override
-NAMESPACE=monitoring
-HOST="$(uname -n)"
 
 die() { echo "machine-mode: $*" >&2; exit 1; }
 
@@ -79,139 +42,12 @@ next_mode() {
 # Who holds dispatch, empty when nobody does.
 dispatch_holder() { agent-hold list | awk -F'\t' '$1 == "dispatch" { print $3 }'; }
 
-kube() { kubectl --context "${CC_KUBE_CONTEXT:-}" --request-timeout=10s -n "$NAMESPACE" "$@"; }
-
-# put_key <key> [<json>]: merge-patch one key of the ConfigMap, or remove it with no json. The
-# override's one write style (home-config apps/ci-runner-governor/override.schema.json): no
-# other writer's key is read or rewritten. Creates the ConfigMap only when it does not exist,
-# and patches again when another writer created it first.
-put_key() {
-  local key="$1" value="${2:-}" patch err
-  patch="$(jq -cn --arg k "$key" --arg v "$value" '{data: {($k): (if $v == "" then null else $v end)}}')"
-  err="$(kube patch configmap "$CONFIGMAP" --type merge -p "$patch" 2>&1 >/dev/null)" && return 0
-  if [[ "$err" == *NotFound* ]]; then
-    [ -z "$value" ] && return 0
-    err="$(kube create configmap "$CONFIGMAP" --from-literal="$key=$value" 2>&1 >/dev/null)" && return 0
-    [[ "$err" == *AlreadyExists* ]] && err="$(kube patch configmap "$CONFIGMAP" --type merge -p "$patch" 2>&1 >/dev/null)" && return 0
-  fi
-  printf '%s\n' "$err" >&2
-  return 1
-}
-
-# pin_host <slots> <local> <mode>: this host's "<host>.slots" key, the pool slots and local seats
-# the governor moves it to.
-pin_host() {
-  [ -n "${CC_KUBE_CONTEXT:-}" ] || { echo "CC_KUBE_CONTEXT is not set in ~/.config/command-center/env" >&2; return 1; }
-  put_key "$HOST.slots" "$(jq -cn --argjson n "$1" --argjson l "$2" --arg by "machine-mode $3" '{slots: $n, local: $l, by: $by}')"
-}
-
-# run_slots <count>: write the count file, start the slots at or under it, and stop the ones over
-# it, an idle one now and a busy one once its Runner.Worker exits (a user unit per slot,
-# machine-mode-drain-<n>, which a later switch that runs the slot again cancels). Returns 1 when
-# a write or a start or stop failed, after trying every slot.
-run_slots() {
-  local count="$1" path unit n pat rc=0
-  [ -d "${SLOT_FILE%/*}" ] || return 0
-  { printf '%s\n' "$count" > "$SLOT_FILE.tmp" && mv "$SLOT_FILE.tmp" "$SLOT_FILE"; } \
-    || { echo "machine-mode: could not write $SLOT_FILE" >&2; return 1; }
-  for path in $RUNNER_UNITS; do
-    unit="${path##*/}" n="${path##*-unity-pool-}" n="${n%.service}"
-    if [ "$n" -le "$count" ]; then
-      systemctl --user stop "machine-mode-drain-$n" 2>/dev/null
-      systemctl --no-ask-password start "$unit" || rc=1
-    elif ! systemctl is-active -q "$unit" || systemctl --user is-active -q "machine-mode-drain-$n"; then
-      continue
-    elif pat="^$(systemctl show -p WorkingDirectory --value "$unit")/bin[^/]*/Runner.Worker" && pgrep -f "$pat" >/dev/null; then
-      systemd-run --user --quiet --collect --unit "machine-mode-drain-$n" /bin/sh -c \
-        '"$0" "$1" "$2" && systemctl --no-ask-password stop "$3"' "$WAIT_WORKER" "$pat" "$DRAIN_TIMEOUT" "$unit" \
-        && echo "$unit: stops when its job ends" || rc=1
-    else
-      systemctl --no-ask-password stop "$unit" || rc=1
-    fi
-  done
-  [ "$rc" = 0 ] || echo "machine-mode: a Unity slot did not start or stop; is home-config's site.yml applied here (its polkit rule)?" >&2
-  return "$rc"
-}
-
-# release_lane [<host> --until <time> | --clear <host>]: see the header. Writes or removes only
-# the "<host>.reserve" key, and only for a host the governor reports on.
-release_lane() {
-  local host end now cm key
-  [ -n "${CC_KUBE_CONTEXT:-}" ] || die "CC_KUBE_CONTEXT is not set in ~/.config/command-center/env"
-  cm="$(kube get configmap "$CONFIGMAP" -o json --ignore-not-found)" || exit 1
-  [ -n "$cm" ] || cm='{}'
-  case "${1:-}" in
-    '')
-      jq -r '.data // {} | to_entries[] | select(.key | endswith(".reserve"))
-        | (.value | try fromjson catch {}) as $r | select(($r | type) == "object" and ($r.until | type) == "number")
-        | "\(.key | rtrimstr(".reserve")) \($r.until | floor)"' <<< "$cm" |
-        while read -r host end; do
-          printf '%s: until %s%s\n' "$host" "$(date -d "@$end" '+%Y-%m-%d %H:%M %Z')" \
-            "$( ((end <= $(date +%s))) && echo ", ended")"
-        done
-      return ;;
-    --clear)
-      host="${2:-}"; [ -n "$host" ] || die "usage: machine-mode release-lane --clear <host>"
-      key="$host.reserve"
-      jq -e --arg k "$key" '.data // {} | has($k)' <<< "$cm" >/dev/null || { echo "$host: no reservation"; return; }
-      put_key "$key" || exit 1
-      echo "$host: reservation ended; the governor re-admits its slots"
-      return ;;
-  esac
-  host="$1"
-  [ "${2:-}" = --until ] && [ -n "${3:-}" ] || die "usage: machine-mode release-lane <host> --until <time>"
-  [[ "$host" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "'$host' is not a pool host name"
-  end="$(date -d "$3" +%s 2>/dev/null)" || die "cannot read the time '$3'"
-  now="$(date +%s)"
-  ((end > now)) || die "$3 is not in the future (for a time tomorrow, say 'tomorrow $3')"
-  # One cut's whole run was under 10h (2026-11-06); a day caps a forgotten reservation.
-  ((end - now <= 86400)) || die "$3 is more than 24h ahead: one cut at a time"
-  # A typo would reserve nothing and say it had. Without Prometheus, say so and go on: a cut
-  # should not wait on monitoring.
-  local raw
-  if raw="$(prom_q "ci_governor_registered{host=\"$host\"}")"; then
-    jq -e --arg h "$host" 'any(.data.result[]; .metric.host == $h)' <<< "$raw" >/dev/null \
-      || die "the governor runs no host '$host' (no ci_governor_registered series)"
-  else
-    echo "warning: cannot read Prometheus to check that the governor runs '$host'" >&2
-  fi
-  key="$host.reserve"
-  put_key "$key" "{\"until\":$end}" || exit 1
-  echo "$host: reserved for release jobs until $(date -d "@$end" '+%Y-%m-%d %H:%M %Z'); its slots leave the pool one per governor cycle"
-}
-
 write_state() {
   local tmp
   mkdir -p "$(dirname "$STATE")"
   tmp="$(mktemp "$STATE.XXXXXX")" || return 1
-  printf 'MACHINE_MODE=%s\nRUNNERS_PINNED=%s\nMODE_BY=%s\nCLOCK_PART=%s\n' "$@" > "$tmp"
+  printf 'MACHINE_MODE=%s\nMODE_BY=%s\nCLOCK_PART=%s\n' "$@" > "$tmp"
   mv "$tmp" "$STATE"
-}
-
-# Where the runners move is the governor's own ci_governor_effective_slots (its pin, a release
-# reservation over it, or unpinned what it admits), never recomputed here.
-runner_line() {
-  local want="$1" mode="$2" raw admitted registered effective source
-  local q="{__name__=~\"ci_governor_(admitted|registered|effective_slots)\",host=\"$HOST\"}"
-  local pick='[.data.result[] | select(.metric.__name__ == $n) | .value[1] | tonumber] | max // empty'
-  if raw="$(prom_q "$q")"; then
-    admitted="$(jq -r --arg n ci_governor_admitted "$pick" <<< "$raw")"
-    registered="$(jq -r --arg n ci_governor_registered "$pick" <<< "$raw")"
-    effective="$(jq -r --arg n ci_governor_effective_slots "$pick" <<< "$raw")"
-    source="$(jq -r '[.data.result[] | select(.metric.__name__ == "ci_governor_effective_slots") | .metric.source] | first // empty' <<< "$raw")"
-  fi
-  local line="runners: ${admitted:-?} of ${registered:-?} taking new jobs"
-  if [ "$(state_value RUNNERS_PINNED)" = no ]; then
-    line+=", $want was not applied: run machine-mode $mode again"
-  elif [ -z "${admitted:-}" ] || [ -z "${registered:-}" ]; then
-    line+=" (cannot read Prometheus), set to $want"
-  elif [ -z "${effective:-}" ]; then
-    line+=" (the governor reports no target), set to $want"
-  elif ((admitted != effective)); then
-    line+=", moving to $effective"
-    [ "$source" = reserve ] && line+=" (reserved for release jobs)"
-  fi
-  printf '%s\n' "$line"
 }
 
 dispatch_line() {
@@ -225,12 +61,8 @@ dispatch_line() {
 }
 
 status() {
-  local mode runners
-  mode="$(current_mode)"
-  IFS='|' read -r _ runners _ <<< "$(mode_row "$mode")"
-  echo "mode: $mode"
+  echo "mode: $(current_mode)"
   echo "level: $(machine_level)"
-  runner_line "$runners" "$mode"
   dispatch_line
   clock_line
 }
@@ -265,57 +97,38 @@ clock_target() {
 }
 
 # clock: the tick of machine-clock.timer, at each part's start. Its exit code is the unit's result:
-# 0 done or nothing to do; 75 a hand mode held while the human is here; 1 a pin that did not reach
-# the cluster; 2 an hours file that cannot be read. The unit retries 75 and 1 every 15 minutes and
-# never 2, so a held part still applies once the human is away, as the old runner's tick did.
+# 0 done or nothing to do; 75 a hand mode held while the human is here; 1 a state file that could
+# not be written; 2 an hours file that cannot be read. The unit retries 75 and 1 every 15 minutes
+# and never 2, so a held part still applies once the human is away, as the old runner's tick did.
 clock() {
-  local part want by rc=0
+  local part want by
   read -r part want <<< "$(clock_target)"
   [ -n "$part" ] || exit 2   # clock_target said why
   by="$(state_value MODE_BY)"
   # A state file from before the clock names no setter: its mode was set by hand.
   [ -z "$by" ] && [ -n "$(state_value MACHINE_MODE)" ] && by=hand
   if [ "$(state_value CLOCK_PART)" = "$part" ]; then
-    # Applied this part already; retry only a runner pin that never reached the cluster.
-    [ "$(state_value RUNNERS_PINNED)" = no ] && [ "$by" = clock ] || return 0
+    return 0   # applied this part already
   elif [ "$by" = hand ] && [ "$(current_mode)" != "$want" ] && human_here; then
     echo "machine-mode: $part began; $(current_mode) was set by hand and you are here, so it holds until you are away (machine-mode auto hands it back)"
     return 75
   fi
-  switch "$want" clock "$part" || rc=$?
-  return "$rc"
+  switch "$want" clock "$part"
 }
 
 # switch <mode> [hand|clock] [part] -- apply a mode. A hand switch records the part it was made in,
 # so the clock leaves it until the next part begins.
 switch() {
-  local mode="$1" by="${2:-hand}" part="${3:-$(clock_part | cut -d'|' -f1)}" runners unity pinned=yes rc=0
-  IFS='|' read -r _ runners unity _ <<< "$(mode_row "$mode")"
-  if ! pin_host "$runners" "$unity" "$mode"; then
-    pinned=no rc=1
-    echo "machine-mode: could not reach the cluster, so the runners and local Unity runs did not change. The level is set to $mode." >&2
-  fi
-  run_slots "$runners" || pinned=no rc=1
-  write_state "$mode" "$pinned" "$by" "$part" || die "could not write $STATE"
+  local mode="$1" by="${2:-hand}" part="${3:-$(clock_part | cut -d'|' -f1)}"
+  write_state "$mode" "$by" "$part" || die "could not write $STATE"
   "$HOME/.local/bin/desk" signal custom/machine-mode 2>/dev/null || true
   status
-  return "$rc"
 }
 
 case "${1:-}" in
-  hours) hours; exit 0 ;;
-  release-lane) shift; release_lane "$@"; exit 0 ;;
-  -h|--help) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-esac
-
-if ! compgen -G "$RUNNER_UNITS" >/dev/null; then
-  # The timer is stowed on every machine; with no pool runners its tick has nothing to do.
-  [ "${1:-}" = clock ] && exit 0
-  die "no pool runners on this machine, so there is nothing to set"
-fi
-
-case "${1:-}" in
   '') status ;;
+  hours) hours ;;
+  -h|--help) sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//' ;;
   next) switch "$(next_mode)" ;;
   clock) clock ;;
   auto) read -r part want <<< "$(clock_target)"; [ -n "$part" ] || exit 1; switch "$want" clock "$part" ;;

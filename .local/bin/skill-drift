@@ -179,8 +179,8 @@
 set -uo pipefail
 
 SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
-PUB="${DOTFILES:-$HOME/.dotfiles}"
-PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+# shellcheck source=../lib/dotfiles-repos.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/dotfiles-repos.sh"
 # The agentctl runbooks and runner confs (private repo): the dups pass and the KNOB table read it.
 AGENTCTL_DIR="${AGENTCTL_CONF:-$HOME/.config/agentctl}"
 COMMANDS="${CLAUDE_COMMANDS:-$HOME/.claude/commands}"
@@ -319,7 +319,7 @@ check_frontmatter() {
   item="$(basename "$f")"
   head -1 "$f" | grep -q '^---$' || { add NOFRONTMATTER "$skill" "$item" "no YAML frontmatter"; return 0; }
   for key in "$@"; do
-    sed -n '2,/^---$/p' "$f" | grep -q "^$key:" || add NOFRONTMATTER "$skill" "$item" "frontmatter missing $key:"
+    fm_has "$f" "^$key:" || add NOFRONTMATTER "$skill" "$item" "frontmatter missing $key:"
   done
   return 0
 }
@@ -369,6 +369,11 @@ if not isinstance(d, dict):
 # --- static checks (also run in CI, where nothing else can) -------------------
 
 fm() { sed -n '2,/^---$/p' "$1"; }
+# fm_has <file> <ere>: the frontmatter has a line matching <ere>. Never `fm | grep -q` (or grep -m1,
+# or grep >/dev/null): sed writes in 4 KB chunks and grep stops at the first match, so a large
+# frontmatter kills sed with SIGPIPE and pipefail turns a match into a miss (CI read
+# shell-test-harness as "frontmatter missing name:", ar-4853).
+fm_has() { local t; t="$(fm "$1")"; grep -qE "$2" <<<"$t"; }
 
 # The frontmatter `name` must be kebab-case AND equal the directory name. Claude
 # Code takes the command from the DIRECTORY for a personal skill and from `name`
@@ -376,7 +381,7 @@ fm() { sed -n '2,/^---$/p' "$1"; }
 # is called - and which one wins depends on how it was installed.
 check_name() {
   local skill="$1" f="$2" name
-  name=$(fm "$f" | grep -m1 '^name:' | sed 's/^name:[[:space:]]*//; s/[[:space:]]*$//')
+  name=$(fm "$f" | awk '!n && /^name:/ {sub(/^name:[[:space:]]*/, ""); sub(/[[:space:]]*$/, ""); print; n=1}')
   [ -n "$name" ] || return 0
   printf '%s' "$name" | grep -qE '^[a-z][a-z0-9]*(-[a-z0-9]+)*$' \
     || add BADNAME "$skill" "$name" "name is not kebab-case"
@@ -436,7 +441,7 @@ check_system() {
   local skill="$1" f="$2" raw id ids=() any=0
   raw=$(system_raw "$f")
   case "$raw" in
-    "") if fm "$f" | grep -q '^  system:'; then
+    "") if fm_has "$f" '^  system:'; then
           add SYSTEM "$skill" system "system must be an inline list, e.g. [ci, tests]"
         else
           add SYSTEM "$skill" system "missing metadata.system: the systems it works on, or [any]"
@@ -882,12 +887,11 @@ check_unused() {
 # window: it runs after every check that reads the 90-day ones.
 # No transcripts at all means we cannot tell, as in check_unused.
 check_promote() {
-  local d f s n head drafts=()
+  local d f s n drafts=()
   for d in "$SKILLS"/*/; do
     f="$d/SKILL.md"
     [ -e "$f" ] || continue
-    head="$(fm "$f")"   # captured, so grep -q cannot SIGPIPE the reader under pipefail
-    grep -qE '^status:[[:space:]]*draft[[:space:]]*$' <<<"$head" && drafts+=("$(basename "$d")")
+    fm_has "$f" '^status:[[:space:]]*draft[[:space:]]*$' && drafts+=("$(basename "$d")")
   done
   [ ${#drafts[@]} -gt 0 ] || return 0
   USED=()
@@ -956,7 +960,7 @@ check_listing() {
       < <(jq -r '.skillOverrides // {} | to_entries[] | select(.value == "name-only") | .key' "$SETTINGS" 2>/dev/null)
   fi
   while IFS=$'\t' read -r name f; do
-    fm "$f" | grep -E '^paths:|^disable-model-invocation:[[:space:]]*true' >/dev/null && continue
+    fm_has "$f" '^paths:|^disable-model-invocation:[[:space:]]*true' && continue
     n=0
     [ -z "${nameonly[$name]:-}" ] && n=$(desc_bytes "$f")
     total=$((total + ${#name} + 5 + ${n:-0}))
@@ -1118,7 +1122,7 @@ if [ "$MODE" = overrides ]; then
   declare -A STATE=()
   while IFS=$'\t' read -r s v; do STATE[$s]=$v; done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"$cur")
   # A paths-scoped or model-disabled skill has its own listing rule; the toggle leaves it alone.
-  pinned() { [ -f "$1" ] && fm "$1" | grep -qE '^paths:|^disable-model-invocation:[[:space:]]*true'; }
+  pinned() { [ -f "$1" ] && fm_has "$1" '^paths:|^disable-model-invocation:[[:space:]]*true'; }
   hide=() restore=()
   while IFS= read -r s; do
     f="$SKILLS/$s/SKILL.md" state=${STATE[$s]:-listed}

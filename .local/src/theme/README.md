@@ -78,10 +78,10 @@ Both are `Persistent=true`, so a missed run (laptop closed, machine off)
 is caught up at next user-manager start.
 
 **Linux only.** These are systemd user units, and there is no launchd
-equivalent in `.config/launchd/`, so a Mac never flips on a schedule - it
+equivalent in the private repo's `.config/launchd/`, so a Mac never flips on a schedule - it
 keeps whatever theme was last applied there until someone runs `theme-switch`
 by hand. The day/night *defaults* below are still the fallback a fresh install
-picks (`setup_theme` in both installers), so a new Mac starts on `batman`; it
+picks (`setup_theme` in the installers' `base_functions.sh`), so a new Mac starts on `batman`; it
 just never moves off it on its own.
 
 The clock-based picker (`theme-switch --auto`) is for **manual** invocation
@@ -209,7 +209,8 @@ is a loop to cut.
 
 Because a fresh clone has none of them -- and `sketchybarrc` hard-`source`s
 `colors.sh` -- the installers call `setup_theme()` after `apply_dotfiles` to
-render them once. It passes `--only` the generated targets on purpose: the one
+render them once. It passes `--only` the generated targets (`THEME_TARGETS_<OS>` in
+the installers' shared `packages.conf`) on purpose: the one
 **tracked** target, termux, already ships correct, and re-rendering it at install
 time would hand a fresh machine a dirty tree before first login.
 

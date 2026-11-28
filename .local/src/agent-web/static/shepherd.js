@@ -40,23 +40,15 @@ function dueRow(d) {
     `<span class="pill">due ${shepAge(d.first_seen)}</span></div><div class="rd-body">${esc(d.line)}</div></div>`;
 }
 
-// The pass card: what `fleet-shepherd stats` says, the numbers the Queue chip and Home Assistant show.
-function passHtml(s) {
-  if (!s) return `<div class="empty">fleet-shepherd stats gave nothing.</div>`;
-  const id = (x) => esc((x || "").slice(0, 8));
-  const pills = [];
-  if (s.stuck) pills.push(`<span class="pill ask">stuck</span>`);
-  if (s.unhandled) pills.push(`<span class="pill ask">${s.unhandled} unhandled, ${s.unhandled_checks} checks in a row</span>`);
-  const now = s.pass_running
-    ? `pass ${id(s.pass_id)} ${esc(s.pass_status)}, ${dur(s.pass_age_s / 60)}: <code>${esc(s.attach)}</code>`
-    : s.pass_id ? `no pass running; the last was ${id(s.pass_id)} (${esc(s.pass_status)}): <code>${esc(s.attach)}</code>` : "no pass on record";
-  const last = s.last_pass_id ? `last verdict ${esc(s.last_verdict || "?")} for pass ${id(s.last_pass_id)}, ${dur(s.last_pass_age_s / 60)} ago` : "no verdict on record";
-  const why = s.stuck_why ? `<div class="rd-body">${esc(s.stuck_why)}</div>` : "";
+// The pass card: hub-core shepherd::Card words `fleet-shepherd stats`, the numbers the Queue chip and Home Assistant show.
+function passHtml(c, err) {
+  if (!c) return `<div class="empty">fleet-shepherd stats gave nothing${err ? `: ${esc(err)}` : ""}.</div>`;
+  const pills = c.flags.map((f) => `<span class="pill ask">${esc(f)}</span>`).join("");
+  const attach = c.attach ? ` <code>${esc(c.attach)}</code>` : "";
   return `<div class="card">` +
-    (pills.length ? `<div class="pills">${pills.join("")}</div>` : "") + why +
-    `<div class="rd-body">${now}</div><div class="rd-body">${last}</div>` +
-    `<div class="rd-body muted">last 24h: ${s.passes_24h} passes, ${s.nudges_24h} nudges, ${s.escalations_24h} escalations, ${s.skips_24h} skips; ` +
-    `${s.due} due, ${s.skipped} skipped, ${s.paged} paged</div></div>`;
+    (pills ? `<div class="pills">${pills}</div>` : "") + (c.why ? `<div class="rd-body">${esc(c.why)}</div>` : "") +
+    `<div class="rd-body">${esc(c.now)}${attach}</div><div class="rd-body">${esc(c.last)}</div>` +
+    `<div class="rd-body muted">${esc(c.totals)}</div></div>`;
 }
 
 function dueHtml(l) {
@@ -75,7 +67,7 @@ function renderShepherd() {
   const chat = d && d.target ? `<button class="btn" data-chat>Chat: open ${esc(d.target)} (${esc(d.status)})</button>`
     : '<span class="muted">No shepherd armed. Its lease is set when fleet-shepherd starts a pass.</span>';
   const pass = shst.err ? errPanel(shst.err, { card: true }) : !d ? '<div class="empty">Loading.</div>'
-    : passHtml(d.stats) + dueHtml(d.ledger);
+    : passHtml(d.pass, d.pass_error) + dueHtml(d.ledger);
   paint(el, `<div class="ovbar">${chat}</div>${pass}`);
 }
 

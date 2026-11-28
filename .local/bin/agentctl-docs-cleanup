@@ -1,26 +1,29 @@
 #!/usr/bin/env bash
-# agentctl-docs-cleanup - the nightly docs cleanup pass: count the drift, then queue one session to fix it.
+# agentctl-docs-cleanup - the nightly docs cleanup pass: count the drift, then queue one session per drifted area to fix it.
 #
-#   agentctl-docs-cleanup [--dry-run]     agentctl: docs-cleanup.conf; --dry-run counts and prints the task, queues nothing
+#   agentctl-docs-cleanup [--dry-run]     agentctl: docs-cleanup.conf; --dry-run counts and prints the tasks, queues nothing
 #
 # Deterministic: no model runs here. It writes tonight's baseline to the inbox (skill-drift over the
 # skills, skill-drift --docs over the global docs, skill-drift --dups --check over every home that
 # restates an instruction, the size of every lessons file, its open correction chains, and
-# `notes knowledge lint` over the knowledge base with the knowledge-retired list; it also scans the repos' copy stock, below), and when there is drift and no pass is already open it files ONE pass that runs the
-# docs-cleanup skill on that baseline. Only the board fills the queue (QUEUE.md "Admission"), so the
-# pass is a board row (agent-queue exit 5) that fleet-dispatch promotes and starts, so an unattended
-# pass starts only on an account under its weekly pace. The session lands its fixes by PR, one area per PR.
+# `notes knowledge lint` over the knowledge base with the knowledge-retired list; it also scans the repos' copy stock, below), and for each area
+# with drift and no pass already open (skills, docs, dups, chains, knowledge) it files one pass that
+# runs the docs-cleanup skill on that area of the baseline, under the slug docs-cleanup-pass-<area>.
+# Only the board fills the queue (QUEUE.md "Admission"), so each pass is a board row (agent-queue
+# exit 5) that fleet-dispatch promotes and starts, so an unattended pass starts only on an account
+# under its weekly pace. The session lands its area's fixes by PR.
 #
 # It replaced the weekly propose-only skill-refine runner: six reports (2026-09-28 to 11-02) while
 # skill DEADPATH rose from 25 to 31 showed that a report nobody applies fixes nothing.
 #
-# Verdict: WORKED when it filed a pass, NOOP when there was no drift or a pass is still open, FAILED
-# when a count could not be taken or the open pass has sat unstarted (on the board, or queued) past
-# DOCS_CLEANUP_STARVED_DAYS.
+# Verdict: WORKED when it filed a pass, NOOP when there was no drift or every drifted area's pass is
+# still open, FAILED when a count could not be taken, an add failed, or an area's open pass has sat
+# unstarted (on the board, or queued) past DOCS_CLEANUP_STARVED_DAYS; the other areas are filed first.
 set -uo pipefail
 # shellcheck source=/dev/null
 . "$HOME/.local/lib/agent-proof.sh" || { echo "agentctl-docs-cleanup: agent-proof.sh not found; cannot publish an outcome" >&2; exit 1; }
 NAME="${AGENTCTL_NAME:-docs-cleanup}"
+# Each area's pass is queued under $SLUG-<area>; a bare $SLUG is the whole pass an old row line names.
 SLUG=docs-cleanup-pass
 # Provisional, confidence medium: 2 nights unstarted is a starved pass, not a busy queue. The pass
 # queued 2026-11-06 at low sat 5 nights behind 678 high and urgent items, each night a quiet NOOP.
@@ -102,68 +105,149 @@ lessons_kb="$(awk '{s += $1} END {printf "%d", s / 1024}' "$dir/lessons.tsv")"
 summary="skills $skills_n, global docs $docs_n, restated pairs $dups_n (baseline $dups_max), lessons ${lessons_kb} KB, correction chains $chains_n, knowledge $knowledge_n"
 printf '%s\n' "$summary" > "$dir/summary.txt"
 
-if [ "$skills_n" = 0 ] && [ "$docs_n" = 0 ] && [ "$dups_over" = 0 ] && [ "$chains_n" = 0 ] && [ "$knowledge_n" = 0 ]; then
+# Each drifted area is its own pass, so its own board row: the dispatch judge skipped the one row
+# that named every area as a bundle (ar-2163, 2026-11-18). An area is named by its baseline file, and
+# its words are its part of the summary. The lessons size rides with the chains, since a chain is
+# folded in a lessons file; on its own it is a figure, not drift.
+declare -A said=()
+[ "$skills_n" = 0 ] || said[skills]="skills $skills_n"
+[ "$docs_n" = 0 ] || said[docs]="global docs $docs_n"
+[ "$dups_over" = 0 ] || said[dups]="restated pairs $dups_n (baseline $dups_max)"
+[ "$chains_n" = 0 ] || said[chains]="correction chains $chains_n, lessons ${lessons_kb} KB"
+[ "$knowledge_n" = 0 ] || said[knowledge]="knowledge $knowledge_n"
+AREAS="skills docs dups chains knowledge"
+
+if [ "${#said[@]}" = 0 ]; then
     report NOOP "no drift ($summary)"
     echo "docs-cleanup: no drift ($summary)"
     exit 0
 fi
 
-# One pass at a time under one slug: agent-queue refuses a second active item with it, and a
-# finished one sits in done/ where `show` still finds it, so only an active state means "open".
-# Each night's pass is new work under that slug, so it is queued --repeat.
-item="$(agent-queue show "$SLUG" --json 2>/dev/null)"
-state="$(jq -r '.state // empty' <<<"$item" 2>/dev/null)"
-# Starved: queued past STARVED_DAYS with nothing holding it. Another hold
-# (after, focus, ask) is the queue's own choice, not starvation.
-if [ "$state" = queued ] && jq -e '(.hold // "") == ""' <<<"$item" >/dev/null; then
-    queued_at="$(jq -r '.queued // empty' <<<"$item")"
-    queued_s="$(date -d "$queued_at" +%s 2>/dev/null)" && [ -n "$queued_at" ] \
-        || fail "pass $SLUG has no readable queued time ('$queued_at'), cannot judge starvation"
-    [ $(( $(date +%s) - queued_s )) -lt $(( STARVED_DAYS * 86400 )) ] \
-        || fail "pass $SLUG starved: queued since $queued_at, never started ($summary)"
+# The board rows the last adds filed (ROWF: one "<board>\t<id>\t<filed epoch>\t<area>" line per
+# area) are the open passes while the board lists them: open is not started yet, starved past
+# STARVED_DAYS; doing is an item working it. A row the board no longer lists closed or was dropped,
+# so its line goes and tonight files that area again. A line with no area is from when one row was
+# the whole pass: while the board lists it, every area waits on it, as it did then.
+ROWF="$INBOX/row"
+keep=()
+declare -A open_row=()
+if [ -s "$ROWF" ]; then
+    board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || fail "could not read the board for the pass rows in $ROWF ($summary)"
+    while IFS=$'\t' read -r rboard rid filed_s rarea; do
+        [ -n "$rid" ] || continue
+        rstate="$(jq -r --arg p "$rboard" --arg k "$rid" 'first(.rows[]? | select(.project == $p and .id == $k) | .state) // empty' <<<"$board")"
+        [ -n "$rstate" ] || continue
+        if [ -z "$rarea" ]; then
+            [ "$rstate" != open ] || [ $(( $(date +%s) - filed_s )) -lt $(( STARVED_DAYS * 86400 )) ] \
+                || fail "pass $SLUG starved: board row $rid on $rboard filed $(date -d "@$filed_s" +%F), never started ($summary)"
+            report NOOP "pass $SLUG is board row $rid on $rboard, $rstate ($summary)"
+            echo "docs-cleanup: pass $SLUG is board row $rid on $rboard, $rstate, not filing another ($summary)"
+            exit 0
+        fi
+        keep+=("$rboard"$'\t'"$rid"$'\t'"$filed_s"$'\t'"$rarea")
+        open_row[$rarea]="$rboard"$'\t'"$rid"$'\t'"$filed_s"$'\t'"$rstate"
+    done < "$ROWF"
 fi
-case "$state" in
+
+# A pass queued before the split, under the bare slug, held every area: while it is active it still
+# does, so the first night after the split files nothing beside it.
+legacy="$(agent-queue show "$SLUG" --json 2>/dev/null | jq -r '.state // empty' 2>/dev/null)"
+case "$legacy" in
     queued|running|waiting|review)
-        report NOOP "pass $SLUG still $state ($summary)"
-        echo "docs-cleanup: pass $SLUG still $state, not queuing another ($summary)"
+        report NOOP "pass $SLUG (every area) still $legacy ($summary)"
+        echo "docs-cleanup: pass $SLUG (every area) still $legacy, not queuing another ($summary)"
         exit 0 ;;
 esac
-# The board row the last add filed (ROWF: "<board>\t<id>\t<filed epoch>") is the open pass while
-# the board lists it: open is not started yet, starved past STARVED_DAYS; doing is an item working
-# it. A row the board no longer lists closed or was dropped, so tonight files the next one.
-ROWF="$INBOX/row"
-if [ -s "$ROWF" ]; then
-    IFS=$'\t' read -r rboard rid filed_s < "$ROWF"
-    board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || fail "could not read the board for pass row $rid on $rboard ($summary)"
-    rstate="$(jq -r --arg p "$rboard" --arg k "$rid" 'first(.rows[]? | select(.project == $p and .id == $k) | .state) // empty' <<<"$board")"
-    if [ -n "$rstate" ]; then
-        [ "$rstate" != open ] || [ $(( $(date +%s) - filed_s )) -lt $(( STARVED_DAYS * 86400 )) ] \
-            || fail "pass $SLUG starved: board row $rid on $rboard filed $(date -d "@$filed_s" +%F), never started ($summary)"
-        report NOOP "pass $SLUG is board row $rid on $rboard, $rstate ($summary)"
-        echo "docs-cleanup: pass $SLUG is board row $rid on $rboard, $rstate, not filing another ($summary)"
-        exit 0
-    fi
-    [ "$DRY" = 1 ] || rm -f "$ROWF"
-fi
 
 # The skill is the one this runner's conf names, so a rename is one edit in the conf.
 skill="$(agentctl skill "$NAME" 2>/dev/null)" && [ -n "$skill" ] || fail "no SKILL= in the $NAME conf (agentctl skill $NAME)"
-task="Run the $skill skill on tonight's baseline in ${dir/#$HOME/\~}: $summary. Fix by cause, one area per PR, and write the pass report."
-if [ "$DRY" = 1 ]; then
-    echo "docs-cleanup: would queue: $task"
-    exit 0
+# What each area came to: filed (a new pass), open (a pass still waiting or working), held (the
+# board's daily cap refused its row, so the next night files it again) or bad (a starved pass or a
+# failed add). A bad area does not stop the others, and the night reads FAILED.
+filed=() open=() held=() bad=()
+for a in $AREAS; do
+    [ -n "${said[$a]:-}" ] || continue
+    slug="$SLUG-$a"
+    # One pass at a time per area under its slug: agent-queue refuses a second active item with it,
+    # and a finished one sits in done/ where `show` still finds it, so only an active state means
+    # "open". Each night's pass is new work under that slug, so it is queued --repeat.
+    item="$(agent-queue show "$slug" --json 2>/dev/null)"
+    state="$(jq -r '.state // empty' <<<"$item" 2>/dev/null)"
+    # Starved: queued past STARVED_DAYS with nothing holding it. Another hold
+    # (after, focus, ask) is the queue's own choice, not starvation.
+    if [ "$state" = queued ] && jq -e '(.hold // "") == ""' <<<"$item" >/dev/null; then
+        queued_at="$(jq -r '.queued // empty' <<<"$item")"
+        if ! queued_s="$(date -d "$queued_at" +%s 2>/dev/null)" || [ -z "$queued_at" ]; then
+            bad+=("pass $slug has no readable queued time ('$queued_at'), cannot judge starvation"); continue
+        fi
+        [ $(( $(date +%s) - queued_s )) -lt $(( STARVED_DAYS * 86400 )) ] \
+            || { bad+=("pass $slug starved: queued since $queued_at, never started"); continue; }
+    fi
+    case "$state" in
+        queued|running|waiting|review)
+            open+=("$slug $state")
+            echo "docs-cleanup: pass $slug still $state, not queuing another"
+            continue ;;
+    esac
+    if [ -n "${open_row[$a]:-}" ]; then
+        IFS=$'\t' read -r rboard rid filed_s rstate <<<"${open_row[$a]}"
+        if [ "$rstate" = open ] && [ $(( $(date +%s) - filed_s )) -ge $(( STARVED_DAYS * 86400 )) ]; then
+            bad+=("pass $slug starved: board row $rid on $rboard filed $(date -d "@$filed_s" +%F), never started"); continue
+        fi
+        open+=("$slug row $rid $rstate")
+        echo "docs-cleanup: pass $slug is board row $rid on $rboard, $rstate, not filing another"
+        continue
+    fi
+    # The area leads the row's title, so notes' twin check (the first 80 characters) never links one
+    # area's add to another area's open row, nor refuses it as a similar row.
+    task="Docs-cleanup area $a: run the $skill skill on that area of tonight's baseline in ${dir/#$HOME/\~}: ${said[$a]}. Fix it by cause in one PR and write the pass report."
+    if [ "$DRY" = 1 ]; then
+        echo "docs-cleanup: would queue $slug: $task"
+        continue
+    fi
+    # An automated filer: the add files a board row and exits 5 (QUEUE.md "Admission"); exit 0 is a
+    # pulled run (AGENT_QUEUE_PULL), queued under $slug. High plus `cleanup` is where the queue orders
+    # the fleet's own housekeeping (agent-queue ORDER); a row the add files keeps the priority, not the
+    # tag, and an open twin row it lands on takes both, with this brief (agent-queue file_story).
+    out="$(agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$slug" --repeat --priority high --tags cleanup "$task" 2>&1)"
+    rc=$?
+    printf '%s\n' "$out" >&2
+    case "$rc" in
+        0) filed+=("queued $slug") ;;
+        5) rboard='' rid=''
+           IFS=: read -r rboard rid < <(sed -n '/^held [^ ]* -> \([^ ]*:[^ ]*\).*/{s//\1/p;q;}' <<<"$out")
+           [ -n "${rid:-}" ] || { bad+=("the board took pass $slug but printed no held line"); continue; }
+           keep+=("$rboard"$'\t'"$rid"$'\t'"$(date +%s)"$'\t'"$a")
+           filed+=("filed $slug as board row $rid on $rboard") ;;
+        # Exit 6 is the board's intake gate or its daily cap (QUEUE.md "Admission"); only the cap,
+        # whose refusal names intake_daily_cap (notes-cli gate.rs), clears overnight, so only it is
+        # held and filed again next night, as the rollup does (#3686). A gate refusal stays bad.
+        6) if grep -q intake_daily_cap <<<"$out"; then held+=("$slug held by the board's daily cap, filed again next night")
+           else bad+=("the board's intake gate refused pass $slug"); fi ;;
+        *) bad+=("could not file pass $slug") ;;
+    esac
+done
+
+# ROWF is rewritten once, before any verdict, so a night that files one area and finds another
+# starved still records the row it filed.
+if [ "$DRY" != 1 ]; then
+    if [ "${#keep[@]}" -gt 0 ]; then printf '%s\n' "${keep[@]}" > "$ROWF"; else rm -f "$ROWF"; fi
 fi
-# An automated filer: the add files a board row and exits 5 (QUEUE.md "Admission"); exit 0 is a
-# pulled run (AGENT_QUEUE_PULL), queued under $SLUG. High plus `cleanup` is where the queue orders
-# the fleet's own housekeeping (agent-queue ORDER); the board row keeps the priority, not the tag.
-out="$(agent-queue add --project dotfiles --from auto:docs-cleanup --slug "$SLUG" --repeat --priority high --tags cleanup "$task")"
-rc=$?
-printf '%s\n' "$out" >&2
-case "$rc" in
-    0) report WORKED "queued $SLUG ($summary)" ;;
-    5) IFS=: read -r rboard rid < <(sed -n '/^held [^ ]* -> \([^ ]*:[^ ]*\).*/{s//\1/p;q;}' <<<"$out")
-       [ -n "${rid:-}" ] || fail "the board took pass $SLUG but printed no held line ($summary)"
-       printf '%s\t%s\t%s\n' "$rboard" "$rid" "$(date +%s)" > "$ROWF"
-       report WORKED "filed $SLUG as board row $rid on $rboard ($summary)" ;;
-    *) fail "could not file the pass ($summary)" ;;
-esac
+# join <part...> -> the parts as one "; "-separated line, for the outcome.
+join() { local s; s="$(printf '%s; ' "$@")"; printf '%s' "${s%; }"; }
+# HELDF holds the epoch of the first night in a row the cap held a pass: a cap full every night
+# for STARVED_DAYS is a starved pass too, so the drift does not hide behind NOOP nights.
+HELDF="$INBOX/held"
+if [ "${#held[@]}" -gt 0 ] && [ "$DRY" != 1 ]; then
+    [ -s "$HELDF" ] || date +%s > "$HELDF"
+    held_s="$(cat "$HELDF")"
+    [ $(( $(date +%s) - held_s )) -lt $(( STARVED_DAYS * 86400 )) ] ||
+        bad+=("passes held by the board's daily cap every night since $(date -d "@$held_s" +%F)")
+elif [ "$DRY" != 1 ]; then rm -f "$HELDF"; fi
+# A FAILED night still names the passes it filed or held, which the verdict would otherwise hide.
+[ "${#bad[@]}" = 0 ] || fail "$(join "${bad[@]}")${filed[0]:+; also $(join "${filed[@]}")}${held[0]:+; also $(join "${held[@]}")} ($summary)"
+[ "$DRY" != 1 ] || exit 0
+[ "${#held[@]}" = 0 ] || printf 'docs-cleanup: %s\n' "${held[@]}"
+if [ "${#filed[@]}" -gt 0 ]; then report WORKED "$(join "${filed[@]}" "${held[@]}") ($summary)"
+elif [ "${#held[@]}" -gt 0 ]; then report NOOP "$(join "${held[@]}" "${open[@]}") ($summary)"
+else report NOOP "passes still open: $(join "${open[@]}") ($summary)"; fi

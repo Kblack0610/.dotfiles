@@ -96,6 +96,7 @@ REASONS_TSV="$PROMPTS/inbox-triage/rules/priority-reasons.tsv" # the reason list
 
 DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG=""; REASONS=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
 declare -A WAITERS=()   # row id -> the open rows waiting on it with #after/<id> (backlog_pass fills it)
+declare -A ROW_WAS=()   # row id -> the session line it was filed from, its first `was:` with a #from/ (backlog_pass fills it)
 REWROTE=0; MOVED=0; DROPPED=0; RAISED=0; CLOSED_DONE=0; REPORT=0; IMPROVED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""; VPRIO=""
 OUT=""; ANSWER_ID=""; DEFERRED='[]'; LINES_DROPPED=0
 FLAG=""; RECORD=""; OUTBOX=""
@@ -256,9 +257,13 @@ ask_project() {
 want_channel() { if [ "$1" = outbox ]; then echo outbox; else echo human; fi; }
 
 # file_line <project> <raw> <text> <args...>: one `ptask file`, counted, FILED_ID set to the id of
-# the first row it wrote (the CLI prints the rows on stdout). A refusal is recorded with the CLI's reason.
+# the first row it wrote (the CLI prints the rows on stdout). A refusal is recorded with the CLI's reason,
+# except the intake gate's (exit GATE_RC: a session's row a gated board takes only as an evidenced
+# fault, or any board's row past its daily cap, QUEUE.md "Admission"), which records nothing and returns GATE_RC for the caller to keep the
+# line as an improvement.
+GATE_RC=6
 file_line() {
-  local p="$1" raw="$2" text="$3" out err errf; shift 3
+  local p="$1" raw="$2" text="$3" out err errf rc; shift 3
   FILED_ID=""
   if [ "$DRY" = 1 ]; then printf 'would file [%s] %s:' "$p" "$raw"; printf ' %q' "$@"; echo; FILED=$((FILED + 1)); return 0; fi
   errf="$(mktemp)"
@@ -271,8 +276,9 @@ file_line() {
     [ -n "$FILED_ID" ] || FILED_ID="$(sed -n 's/^  twin of open row \([a-z][a-z0-9]*-[0-9][0-9]*\)$/\1/p' <<<"$out")"
     FILED=$((FILED + 1))
   else
-    err="$(<"$errf")"; rm -f -- "$errf"
+    rc=$?; err="$(<"$errf")"; rm -f -- "$errf"
     [ -n "$out" ] && printf '%s\n' "$out"
+    [ "$rc" = "$GATE_RC" ] && return "$GATE_RC"
     say "$p: not filed, left in the inbox: $raw${err:+ ($err)}"
     note refused "$p" "$(tail -n 1 <<<"${err:-refused}" | clean 160)" "$text"
     FAILED=$((FAILED + 1)); return 1
@@ -506,6 +512,98 @@ row_types() {
   proof_why "notes row types failed"; return 1
 }
 
+# file_routed <src> <raw> <text> <project> <epic> <n> <row>... <args>...: file_line for one routed
+# line, its n rows (`--as`) under <epic> when it names one. A new epic goes on its sheet before its
+# rows and is dropped again when the intake gate refuses them, so no epic is left with none. 0 filed,
+# 2 kept as an improvement because the gate refused it (QUEUE.md "Admission"), 1 not filed.
+file_routed() {
+  local src="$1" raw="$2" text="$3" p="$4" epic="$5" k="$6" eid='' made='' idf r rc; shift 6
+  local -a rows=("${@:1:k}") as=(); shift "$k"
+  # Only when a row would go under it (a split's rows all carry their own parent).
+  if [ -n "$epic" ] && unparented "${rows[@]}"; then
+    # In this shell, not `$(...)`, so EPIC_TWIN reaches here.
+    idf="$(mktemp)"
+    epic_new "$p" "$(clean 150 <<<"$epic")" >"$idf" && { eid="$(<"$idf")"; [ -n "$EPIC_TWIN" ] || made="$eid"; }
+    rm -f -- "$idf"
+  fi
+  for r in "${rows[@]}"; do
+    [ -z "$eid" ] || r="$(under_epic "$r" "$eid")"
+    as+=(--as "$r")
+  done
+  file_line "$src" "$raw" "$text" "$@" "${as[@]}"; rc=$?
+  [ "$rc" = "$GATE_RC" ] || { [ "$rc" = 0 ]; return; }
+  [ -z "$made" ] || notes ptask "$p" drop --why "intake gate: its rows were kept as an improvement" -- "$made" >/dev/null \
+    || say "$p: epic $made has no rows, the intake gate refused them"
+  improve_line "$src" "$raw" "$text" "$p" "intake gate: no evidenced fault, plan phase or ask" && return 2
+  return 1
+}
+
+# own_words_win <from> <action> <own> <dest> <board>: whether an outbox line goes where its own words
+# point, read without its neighbours: they point to a project on the board other than <dest>. The
+# neighbours decide only a line whose words name none.
+own_words_win() {
+  [ "$1" = outbox ] && [ "$2" = file ] && [ -n "$3" ] && [ "$3" != "$4" ] \
+    && jq -e --arg p "$3" 'any(.projects[]; .project == $p)' <<<"$5" >/dev/null
+}
+
+# own_parent_dup <n> <action> <of> <id> <text> <board> <dest> <lane> <rows> -> "<dest> US <lane> US
+# <rows>" when the model called line <n> a dup of the open row its own #of/ names. A split line is a
+# child of that row, never a repeat of it, so the caller files it under that row (ar-5549: ar-5404's
+# children were merged into tr-340, tr-414, hc-888). Fails for any other answer.
+own_parent_dup() {
+  local n="$1" action="$2" of="$3" id="$4" text="$5" board="$6" dest="$7" lane="$8" rows="$9" parent
+  [ "$action" = dup ] && [ -z "$of" ] && [ -n "$id" ] && [ "$(clean 40 <<<"$id")" = "$(parent_word "$text")" ] || return 1
+  parent="$(jq -c --arg id "$id" 'first(.rows[] | select(.id == $id and .state != "done")) // empty' <<<"$board")"
+  [ -n "$parent" ] || return 1
+  say "line $n names $id as its own parent: filed under it, not as its dup"
+  [ -n "$dest" ] || dest="$(jq -r '.project // ""' <<<"$parent")"
+  [ -n "$lane" ] || { [[ " ${text,,} " == *" #agent "* ]] && lane=agent; } || lane="$(jq -r '.lane // ""' <<<"$parent")"
+  [ -n "${rows//$'\x1e'/}" ] || rows="$text"
+  printf '%s\x1f%s\x1f%s\n' "$dest" "$lane" "$rows"
+}
+
+# from_item <text>: the item a session's line came from (its #from/<item>), lower-cased, or empty.
+from_item() { local re=' #from/([A-Za-z0-9_-]+)'; [[ " $1" =~ $re ]] && printf '%s\n' "${BASH_REMATCH[1],,}" || :; }
+
+# sibling_dup <n> <action> <of> <id> <text> <board> -> the project to file on (may be empty) when
+# the model called line <n> a dup of a sibling: the batch line <of>, or the open row <id> whose own
+# lines (the `was:` lines under it) came from the same #from/ item in other words. One session wrote
+# both as separate lines (a plan phase split into its passes), so the caller files the line as its
+# own row (ar-5824). A `was:` in the same words is the line sent again, a real twin: the dup stands.
+# The writer's twin check reads a sibling the same way (notes-cli `sibling`). Reads route's texts and line_dest.
+sibling_dup() {
+  local n="$1" action="$2" of="$3" id="$4" text="$5" board="$6" item said dest=""
+  [ "$action" = dup ] || return 1
+  item="$(from_item "$text")" said="$(untagged "${text,,}")"
+  [ -n "$item" ] || return 1
+  if [ -n "$of" ]; then
+    [ "$of" -ge 1 ] 2>/dev/null && [ "$of" -le "${#texts[@]}" ] || return 1
+    dest="${line_dest[$of]:-}"
+    [ "$(from_item "${texts[of - 1]}")" = "$item" ] && [ "$(untagged "${texts[of - 1],,}")" != "$said" ] || return 1
+  else
+    id="$(clean 40 <<<"$id")"
+    # shellcheck disable=SC2016 # jq source, not shell
+    dest="$(jq -r --arg id "$id" --arg t "#from/$item" --arg said "$said" 'first(.rows[] | select(.id == $id and .state != "done")
+      | . as $r | [(.details // [])[] | select(startswith("was: ")) | .[5:] | ascii_downcase | split(" ") | select(index($t))]
+      | select(length > 0 and all(map(select(test("^#[a-z]") | not)) | join(" ") != $said)) | "=" + ($r.project // "")) // ""' <<<"$board")"
+    [ -n "$dest" ] || return 1
+    dest="${dest#=}"
+  fi
+  say "line $n and ${of:+line }${of:-$id} are two lines of $item: filed as its own row, not as a dup"
+  printf '%s\n' "$dest"
+}
+
+# dup_filed <own_parent_dup's args> -> dest, lane and rows (as own_parent_dup prints them) when a
+# model dup is filed as a row instead: the line's own parent, or a sibling of its item (the line's
+# own words when the answer has no rows).
+dup_filed() {
+  own_parent_dup "$@" && return
+  local d rows="$9"
+  d="$(sibling_dup "${@:1:6}")" || return 1
+  [ -n "${rows//$'\x1e'/}" ] || rows="$5"
+  printf '%s\x1f%s\x1f%s\n' "${7:-$d}" "$8" "$rows"
+}
+
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
@@ -552,7 +650,7 @@ route() {
   ask "$ROUTE_PROMPT" "${#raws[@]}" route || return
   answered route || return 1
   out="$OUT"
-  local n action id of dest lane plan why how epic rows cands r from raw text src eid ctx k near go own_plan
+  local n action id of dest lane plan why how epic rows cands r from raw text src ctx k near go own_plan
   local -a cv
   local -a args rowv asv
   # The row each filed line wrote (id, project, lane), by n, for a later line that repeats it, and
@@ -562,7 +660,7 @@ route() {
   # beside it is filed, with their projects (see pass).
   leave() { if [ "$from" = outbox ]; then left_why[$n]="$1"; else left "$from" "$text" "$1"; fi; }
   local filed_board=""
-  local own
+  local own rw
   while IFS=$'\x1f' read -r n action id of dest lane plan why epic own rows cands; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
     raw="${raws[n - 1]}" from="${froms[n - 1]}" text="${texts[n - 1]}"
@@ -571,11 +669,8 @@ route() {
     why="$(clean 100 <<<"$why")"
     how="model: ${why:-no why}"
     dest="$(clean 60 <<<"$dest")"
-    # An outbox line goes where its own words point, read without its neighbours, whenever they
-    # point to a project on the board: the neighbours decide only a line whose words name none.
     own="$(clean 60 <<<"$own")"
-    if [ "$from" = outbox ] && [ "$action" = file ] && [ -n "$own" ] && [ "$own" != "$dest" ] \
-      && jq -e --arg p "$own" 'any(.projects[]; .project == $p)' <<<"$board" >/dev/null; then
+    if own_words_win "$from" "$action" "$own" "$dest" "$board"; then
       say "outbox: line $n's own words point to $own, its neighbours to ${dest:-none}: filed on $own"
       dest="$own"
       how="own words: $own; model: ${why:-no why}"
@@ -584,6 +679,9 @@ route() {
     if is_proposal "$text"; then
       apply_proposal "$action" "$id" "$dest" "$rows" "$why" "$how" "$epics" "$board" && line_dest[$n]="$PROPOSAL_DEST"
       continue
+    fi
+    if rw="$(dup_filed "$n" "$action" "$of" "$id" "$text" "$board" "$dest" "$lane" "$rows")"; then
+      IFS=$'\x1f' read -r dest lane rows <<<"$rw"; action=file id='' of=''
     fi
     case "$action" in
       file|dup)
@@ -617,7 +715,7 @@ route() {
           own_plan=''; [[ " ${text,,} " == *" #plan "* ]] && own_plan=1 plan=1
           go=1; [ -n "$own_plan" ] && [[ " ${text,,} " != *" #go "* ]] && go=''
           for r in "${rowv[@]}"; do
-            r="$(epic_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics")"
+            r="$(row_checked "$(clean 150 <<<"$r")" "${dest:-$from}" "$epics" "$text" "$board" "${#rowv[@]}")"
             if [ -n "$plan" ] && [ "${#asv[@]}" = 0 ] && [[ " $r " != *" #plan "* ]]; then r="$r #plan"; fi
             if [ -n "$go" ] && [[ " $r " == *" #plan "* && " $r " != *" #go "* ]]; then r="$r #go"; fi
             [ -n "$r" ] && asv+=("$r")
@@ -636,14 +734,9 @@ route() {
         elif [ -n "$dest" ] && [ "$dest" != "$from" ]; then
           args+=(--project "$dest")
         fi
-        # A new epic goes on its sheet before the rows that go under it.
-        if [ "$action" = file ]; then
-          if [ -n "$epic" ] && eid="$(epic_new "${dest:-$from}" "$(clean 150 <<<"$epic")")"; then
-            for r in "${!asv[@]}"; do asv[r]="$(under_epic "${asv[r]}" "$eid")"; done
-          fi
-          for r in "${asv[@]}"; do args+=(--as "$r"); done
-        fi
-        file_line "$src" "$raw" "$text" "${args[@]}" --why "$how" || continue
+        [ "$action" = file ] || { asv=(); epic=''; }
+        file_routed "$src" "$raw" "$text" "${dest:-$from}" "$epic" "${#asv[@]}" "${asv[@]}" "${args[@]}" --why "$how" \
+          || { [ $? = 2 ] && line_dest[$n]="${dest:-$from}"; continue; }
         if [ "$action" = file ]; then
           [ "$DRY" = 1 ] && FILED_ID="<the row of line $n>"
           line_id[$n]="$FILED_ID"
@@ -792,26 +885,45 @@ row_priority() { [[ " $1 " =~ [[:space:]]#(urgent|high|normal|low)[[:space:]] ]]
 # prio_rank <priority>: the rubric's order, an untagged or unknown priority lowest.
 prio_rank() { case "$1" in urgent) echo 4 ;; high) echo 3 ;; normal) echo 2 ;; low) echo 1 ;; *) echo 0 ;; esac; }
 
-# improve_row <project> <raw> <why>: a backlog row's words (no checkbox, tags or marker) kept in the
-# project's improvements.md by `notes improve`, the one writer, which never touches ideas.md and
-# adds nothing when the line is there already, so a retry after a refused drop writes it once.
+# improve_words <raw>: a backlog row's words, no checkbox, tags or marker.
+improve_words() { sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//; s/(^|[[:space:]])#[A-Za-z][^[:space:]]*//g; s/^[[:space:]]+//' <<<"$1"; }
+
+# improve_ok <project> <raw>: whether a row's words may go to improvements.md, asked of `notes
+# improve --check` (writes nothing) before backlog_row drops the row. Exit 3 is health work, which
+# stays on the board: no failure, the row is kept.
+improve_ok() {
+  local p="$1" words rc=0
+  words="$(improve_words "$2")"
+  [ -n "$words" ] || return 1
+  notes improve "$p" --check -- "$words" >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    3) say "$p: health work, not an improvement, kept: $2" ;;
+    *) say "$p: not kept as an improvement (an old notes? notes-bootstrap --build-only): $2"
+       [ "$DRY" = 1 ] || { proof_why "notes improve --check failed"; FAILED=$((FAILED + 1)); } ;;
+  esac
+  return 1
+}
+
+# improve_row <project> <raw> <why>: the words of a row backlog_row has just dropped, kept in the
+# project's improvements.md by `notes improve`, the one writer, which never touches ideas.md. It runs
+# after the drop, so a drop ptask refuses (a parent with open #of/ children, ar-5182) copies nothing.
 improve_row() {
   local p="$1" words
-  words="$(sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//; s/(^|[[:space:]])#[A-Za-z][^[:space:]]*//g; s/^[[:space:]]+//' <<<"$2")"
-  [ -n "$words" ] || return 1
-  # Exit 3 is health work, which stays on the board: no failure, the row is kept (backlog_row).
-  local rc=0
-  if [ "$DRY" = 1 ]; then
-    notes improve "$p" --check -- "$words" >/dev/null 2>&1 || rc=$?
-    [ "$rc" != 3 ] || { say "$p: health work, not an improvement, kept: $2"; return 1; }
-    printf 'would run: notes improve'; printf ' %q' "$p" --why "$3" -- "$words"; echo; return 0
-  fi
-  notes improve "$p" --why "$3" -- "$words" >/dev/null || rc=$?
-  [ "$rc" != 3 ] || { say "$p: health work, not an improvement, kept: $2"; return 1; }
-  [ "$rc" = 0 ] || {
-    say "$p: not kept as an improvement (an old notes? notes-bootstrap --build-only): $2"
-    proof_why "notes improve failed"; FAILED=$((FAILED + 1)); return 1
+  words="$(improve_words "$2")"
+  if [ "$DRY" = 1 ]; then printf 'would run: notes improve'; printf ' %q' "$p" --why "$3" -- "$words"; echo; return 0; fi
+  notes improve "$p" --why "$3" -- "$words" >/dev/null || {
+    say "$p: dropped as an improvement but not written to improvements.md: $2"
+    proof_why "notes improve failed after the drop"; FAILED=$((FAILED + 1)); return 1
   }
+}
+
+# sibling_rows <a> <b>: whether open rows <a> and <b> were filed from two differently worded lines
+# of one #from/ item (ROW_WAS), a plan phase's passes, which are never each other's dup (ar-5824).
+sibling_rows() {
+  local a="${ROW_WAS[$1]-}" b="${ROW_WAS[$2]-}"
+  [ -n "$a" ] && [ -n "$b" ] && [ "$(from_item "$a")" = "$(from_item "$b")" ] \
+    && [ "$(untagged "${a,,}")" != "$(untagged "${b,,}")" ]
 }
 
 # backlog_row <project> <lane> <raw> <own id> <state> <child count> <epics> <lane ids>
@@ -829,19 +941,6 @@ backlog_row() {
   if [ "$state" = doing ]; then
     dest=""
     [ "$action" = rewrite ] || [ "$action" = raise ] || action=keep
-  fi
-  # ask-sweep finds a plan's finish row by its slug on the plan's own board (sweep_plans), so the row
-  # stays on this board, and a rewrite that drops or shortens the slug is kept as it is.
-  local slug=""
-  [[ $raw =~ finish\ ([^\ :]+):\ [0-9]+\ phases?\ left ]] && slug="${BASH_REMATCH[1]}"
-  if [ -n "$slug" ]; then
-    [ -n "$dest" ] && say "$p ($lane): $own stays: ask-sweep finds plan $slug's row on this board"
-    dest=""
-    if [ "$action" = rewrite ] && [[ $row != *"$slug"* ]]; then
-      say "$p ($lane): $own kept: the rewrite drops plan slug $slug, which ask-sweep finds it by"
-      action=keep
-    fi
-    [[ $action =~ ^(drop|dup|done|improvement)$ ]] && action=keep
   fi
   # a heading over child rows is never closed: its children would sit under a ticked row
   [ "$nkids" -gt 0 ] && [[ $action =~ ^(drop|dup|done|improvement)$ ]] && action=keep
@@ -879,7 +978,10 @@ backlog_row() {
       ;;
     dup)
       id="$(clean 40 <<<"$id")"
-      if [ -n "$id" ] && [ "$id" != "$own" ] && grep -qxF -- "$id" <<<"$all" &&
+      if [ -n "$own" ] && [ -n "$id" ] && sibling_rows "$own" "$id"; then
+        say "$p ($lane): $own kept: $id is a sibling from $(from_item "${ROW_WAS[$own]}"), not its twin"
+        KEPT=$((KEPT + 1))
+      elif [ -n "$id" ] && [ "$id" != "$own" ] && grep -qxF -- "$id" <<<"$all" &&
         pt "$p" "$lane" --exact drop --dup "$id" -- "$raw"; then
         DROPPED=$((DROPPED + 1)) VERDICT=dup
       else
@@ -917,9 +1019,17 @@ backlog_row() {
       # The human's own board and a row they asked for are theirs: never an improvement.
       why="$(clean 100 <<<"$why")"
       if [ "$lane" = agent ] && [ -n "$why" ] && ! [[ " $raw " =~ [[:space:]]#requested[[:space:]] ]] &&
-        improve_row "$p" "$raw" "$why" &&
+        improve_ok "$p" "$raw" &&
         pt "$p" "$lane" --exact drop --why "triage: improvement: kept in improvements.md" -- "$raw"; then
-        IMPROVED=$((IMPROVED + 1)) VERDICT=improvement
+        # A write that fails after the drop reopens the row, so its words stay on the board.
+        if improve_row "$p" "$raw" "$why"; then
+          IMPROVED=$((IMPROVED + 1)) VERDICT=improvement
+        elif [ -n "$own" ] && pt "$p" "$lane" reopen --why "triage: the improvements.md write failed" "$own"; then
+          KEPT=$((KEPT + 1))
+        else
+          say "$p: dropped, not in improvements.md and not reopened: $raw"
+          DROPPED=$((DROPPED + 1)) VERDICT=drop
+        fi
       else
         KEPT=$((KEPT + 1))
       fi
@@ -1029,6 +1139,9 @@ backlog_pass() {
   local w g
   while read -r w g; do WAITERS[$g]+="${WAITERS[$g]:+ }$w"; done < <(jq -r '.rows[]? | select(.state == "open" and .id != null)
     | .id as $w | (.tags_cased // .tags // [])[] | select(startswith("after/") and length > 6) | "\($w) \(.[6:])"' <<<"$BOARD")
+  # Each row's session line, for a dup between two lines of one item (sibling_rows).
+  while IFS=$'\x1f' read -r w g; do ROW_WAS[$w]="$g"; done < <(jq -r '.rows[]? | select(.id != null and .state != "done")
+    | [.id, first((.details // [])[] | select(startswith("was: ") and test("(^| )#from/"; "i")) | .[5:])] | join("\u001f")' <<<"$BOARD")
   while IFS= read -r p; do
     [ -n "$ONLY" ] && [ "$p" != "$ONLY" ] && continue
     agentctl report --name "$NAME" "item=$p" >/dev/null 2>&1 || true

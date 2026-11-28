@@ -106,6 +106,50 @@ parent_word() { grep -oE '(^| )#of/[^ ]+' <<<"$1" | tail -n 1 | sed 's/.*#of\///
 # no_parent <text>: the words without any `#of/` tag, one space apart.
 no_parent() { sed -E 's/(^| )#of\/[^ ]+//g; s/  +/ /g; s/^ //; s/ $//' <<<"$1"; }
 
+# own_parent <line> <project> <board json>: the id the line's own last `#of/<id>` names, when that is
+# an open row of the project, epic or not; nothing (exit 1) otherwise. The writer chose it: a session
+# splitting an L row files its children under that row, and the model, told to pick only epics, would
+# drop the link (epic_checked strips any non-epic), leaving the L row looking unsplit to dispatch.
+own_parent() {
+  local id
+  id="$(parent_word "$1")"
+  [ -n "$id" ] && jq -e --arg id "$id" --arg p "$2" \
+    'any(.rows[]?; .id == $id and .project == $p and .state != "done")' >/dev/null <<<"$3" || return 1
+  printf '%s\n' "$id"
+}
+
+# row_checked <row> <project> <epics> <line> <board json> [<rows>]: a model's row as route files it from
+# <line>: epic_checked, then under the line's own parent (own_parent) when it has one, whatever epic the
+# model picked. The line's #after/ gates go on every row, since each is part of the work that waits, and
+# its #pts/ replaces the row's own when the line files as one row (<rows>, default 1): a session's split
+# child, sized by the session that split it; the model drops both (ar-5551). A line the model splits
+# further leaves each row its own size. An empty row stays empty, and an `epic(` row keeps its own parent.
+row_checked() {
+  local r of t
+  local -a words
+  r="$(epic_checked "$1" "$2" "$3")"
+  of="$(own_parent "$4" "$2" "$5")" && [ -n "$(no_parent "$r")" ] && [[ "$r" != epic\(* ]] \
+    && r="$(no_parent "$r") #of/$of"
+  if [ -n "$r" ]; then
+    read -r -d '' -a words <<<"$4" || true
+    for t in "${words[@]}"; do
+      case "$t" in
+        '#after/'?*) [[ " $r " == *" $t "* ]] || r="$r $t" ;;
+        '#pts/'?*) [ "${6:-1}" = 1 ] && r="$(sed -E 's/(^|[[:space:]])#pts\/[^[:space:]]*//g' <<<"$r") $t" ;;
+      esac
+    done
+  fi
+  printf '%s\n' "$r"
+}
+
+# unparented <row>...: does any row name no `#of/` parent? A model's new epic is filed only when a row
+# would go under it (under_epic skips a row with a parent), never to sit with no children.
+unparented() {
+  local r
+  for r in "$@"; do [[ " $r " == *' #of/'* ]] || return 0; done
+  return 1
+}
+
 # read_board: `notes board --json` into BOARD, which holds the board only when it returns 0. A
 # failed read puts notes' own first error line and exit code in the log (the caller's say) and the
 # pass's reason (proof_why), so the red it raises names its cause.

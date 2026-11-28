@@ -35,6 +35,15 @@ impl From<Option<f64>> for Val {
 }
 
 impl Val {
+    /// A word as a cell: a blank one is no value, so it sorts last and draws as `-`.
+    pub fn word(s: &str) -> Val {
+        if s.is_empty() {
+            Val::None
+        } else {
+            Val::Text(s.to_string())
+        }
+    }
+
     /// The cell as a surface draws it: text as written, a whole number without its `.0`.
     pub fn shown(&self) -> Option<String> {
         match self {
@@ -75,6 +84,10 @@ pub trait Row {
     /// A chip no row is under is left out, unless it is the one in force: for a table with
     /// more kinds than usually have a row.
     const HIDE_EMPTY: bool = false;
+    /// The column whose exact term (`id:=ar-1`) names one record. The first chip keeps a row such
+    /// a term names even when `in_default` leaves it out, so a link to any record finds it there.
+    /// Empty pins nothing.
+    const PIN: &'static str = "";
     /// The column a phone row leads with, full width and wrapping. Empty keeps the plain table.
     const LEAD: &'static str = "";
     /// The few columns under the lead on a phone; the rest wait for a tap.
@@ -127,6 +140,7 @@ impl<T: Row> Row for &T {
     const COLUMNS: &'static [&'static str] = T::COLUMNS;
     const STATES: &'static [&'static str] = T::STATES;
     const FACETS: &'static [&'static str] = T::FACETS;
+    const PIN: &'static str = T::PIN;
     const LEAD: &'static str = T::LEAD;
     const GLANCE: &'static [&'static str] = T::GLANCE;
     const LEGEND: &'static [(&'static str, &'static str)] = T::LEGEND;
@@ -288,6 +302,19 @@ fn keeps<R: Row>(ts: &[Term], r: &R) -> bool {
             .any(|u| !u.neg && u.key == Some(k) && u.hits(r, &mut text)),
         _ => t.hits(r, &mut text) != t.neg,
     })
+}
+
+/// Whether the chip `state` (empty for the first) lists `r`. The first also lists a row a positive
+/// exact term on `R::PIN` names, so a link to one record finds it whatever chip it lives on.
+fn on_chip<R: Row>(ts: &[Term], r: &R, state: &str) -> bool {
+    if !state.is_empty() {
+        return r.in_state(state);
+    }
+    r.in_default()
+        || (!R::PIN.is_empty()
+            && ts
+                .iter()
+                .any(|t| !t.neg && t.exact && t.key == Some(R::PIN) && t.hits(r, &mut None)))
 }
 
 /// A state chip and how many rows the query leaves under it, with its hue while it holds any
@@ -567,14 +594,9 @@ impl View {
     /// The rows the query and chip keep: in the sort, or in the table's own order without one.
     pub fn apply<'a, R: Row>(&self, rows: &'a [R]) -> Vec<&'a R> {
         let ts = terms::<R>(&self.q);
-        let kept = rows.iter().filter(|r| {
-            keeps(&ts, *r)
-                && if self.state.is_empty() {
-                    r.in_default()
-                } else {
-                    r.in_state(&self.state)
-                }
-        });
+        let kept = rows
+            .iter()
+            .filter(|r| keeps(&ts, *r) && on_chip(&ts, *r, &self.state));
         if self.sort.is_empty() {
             return kept.collect();
         }
@@ -602,11 +624,8 @@ impl View {
             .iter()
             .enumerate()
             .map(|(i, s)| {
-                let n = if i == 0 {
-                    kept.iter().filter(|r| r.in_default()).count()
-                } else {
-                    kept.iter().filter(|r| r.in_state(s)).count()
-                };
+                let chip = if i == 0 { "" } else { s };
+                let n = kept.iter().filter(|r| on_chip(&ts, *r, chip)).count();
                 Chip {
                     name: s,
                     n,

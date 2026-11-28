@@ -8,19 +8,11 @@
 # extension (.config/firefox/tab-keeper).
 set -euo pipefail
 
-notify() { command -v notify-send >/dev/null && notify-send "kblab" "$1"; }
+MENU_TITLE=kblab MENU_WIDTH=700
+# shellcheck source=../lib/link-menu.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/link-menu.sh"
 
-menu() {
-    if command -v wofi >/dev/null 2>&1; then
-        wofi --dmenu -i --matching=fuzzy -p "$1" --width 700 --height 600
-    elif command -v rofi >/dev/null 2>&1; then
-        rofi -dmenu -i -matching fuzzy -p "$1"
-    else
-        return 1
-    fi
-}
-
-gen="${HOME_CONFIG:-$HOME/dev/home/home-config}/scripts/gen-ha-launcher.py"
+gen="${HOME_CONFIG:-$HOME/dev/home/home-config}/scripts/ingress/gen-ha-launcher.py"
 [ -f "$gen" ] || { notify "home-config not found: $gen"; exit 1; }
 
 # One line per site: name | group | url. The url stays last so the selection can

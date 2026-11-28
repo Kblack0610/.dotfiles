@@ -125,10 +125,30 @@ create_directories() {
     log_info "Directory structure created"
 }
 
+# Each OS installer names its package helper and its packages.conf OS tag right after
+# sourcing this file (PKG_INSTALL=install_pacman_package PKG_OS=arch), and the catalog
+# steps below then install the same way on every OS.
+PKG_INSTALL=""
+PKG_OS=""
+
+# install_catalog <CATEGORY> [package...] - PACKAGES_<CATEGORY> and PACKAGES_<CATEGORY>_<OS>
+# from packages.conf, plus any packages named here, through this OS's package helper.
+install_catalog() {
+    local common="PACKAGES_$1" own="PACKAGES_$1_${PKG_OS^^}"
+    shift
+    if [[ -z "$PKG_INSTALL" ]]; then
+        log_info "No default implementation - override in OS-specific file"
+        return 0
+    fi
+    # Unquoted on purpose: each catalog entry is one space-separated string.
+    # shellcheck disable=SC2086
+    install_package_list "$PKG_INSTALL" "$PKG_OS" ${!common:-} ${!own:-} "$@"
+}
+
 # Install basic requirements
 install_basics() {
     log_section "Installing basic requirements"
-    log_info "No default implementation - override in OS-specific file"
+    install_catalog BASIC
 }
 
 # Update system packages
@@ -137,28 +157,41 @@ update_system() {
     log_info "No default implementation - override in OS-specific file"
 }
 
-
-# Install basic requirements
-install_os_reqs() {
-    log_section "Installing basic requirements"
-    log_info "No default implementation - override in OS-specific file"
-}
 # Install development tools
 install_tools() {
     log_section "Installing development tools"
-    log_info "No default implementation - override in OS-specific file"
+    install_catalog DEV
 }
 
 # Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
-    log_info "No default implementation - override in OS-specific file"
+    install_catalog TERMINAL
 }
 
 # Install GUI applications
 install_gui() {
     log_section "Installing GUI applications"
-    log_info "No default implementation - override in OS-specific file"
+    install_catalog GUI
+}
+
+# The pacman helper Arch and Arch-on-WSL share. install_wsl.sh empties SUDO on a root shell,
+# which has no sudo; set here, so an exported SUDO never changes how Arch installs.
+SUDO=sudo
+install_pacman_package() {
+    local package="$1"
+
+    if pacman -Q "$package" &>/dev/null; then
+        log_info "$package already installed"
+        return 0
+    fi
+
+    log_info "Installing $package..."
+    if $SUDO pacman -S --noconfirm "$package" &>/dev/null; then
+        log_info "✓ $package installed"
+    else
+        log_warning "✗ Failed to install $package"
+    fi
 }
 
 # Install language runtimes
@@ -321,7 +354,9 @@ setup_kubernetes() {
     log_info "Kubernetes directories created"
 
     # Offer to run cluster setup wizard
-    local k8s_setup="$SCRIPT_DIR/linux/k8s-clusters-setup.sh"
+    # Relative to this file: each OS installer points $SCRIPT_DIR at its own subdirectory.
+    local k8s_setup
+    k8s_setup="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/linux/k8s-clusters-setup.sh"
     if [[ -x "$k8s_setup" && "${INSTALL_YES:-}" != 1 ]]; then
         echo ""
         read -p "Run Kubernetes cluster setup wizard? (y/N): " -n 1 -r
@@ -332,22 +367,35 @@ setup_kubernetes() {
     fi
 }
 
-# Install Rust
+# Install Rust: rustup, the one Rust installer on every OS but Termux. The guard is
+# rustup, not rustc or cargo: a distro rust has both but cannot honor
+# tests/rust-toolchain, so tests/rust.sh fails on it (razer-laptop, hc-1096).
 install_rust() {
     log_section "Installing Rust"
-    
-    if command -v rustc &>/dev/null; then
-        log_info "Rust already installed ($(rustc --version))"
+
+    # A shell that never read .zshrc or .zprofile (a unit, sudo, ssh -c) lacks ~/.cargo/bin:
+    # an installed rustup there counts, so it is not installed again over the live toolchain.
+    [[ -f "$HOME/.cargo/env" ]] && source "$HOME/.cargo/env"
+    if command -v rustup &>/dev/null; then
+        log_info "rustup already installed ($(rustup --version 2>/dev/null))"
         return 0
     fi
-    
-    log_info "Downloading and installing Rust..."
-    if curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; then
-        # Source cargo environment
-        source "$HOME/.cargo/env"
-        log_info "✓ Rust installed successfully"
+
+    # A distro rust stays: other packages may depend on it. ~/.cargo/env puts rustup's
+    # proxies first on PATH; removing the package is the human's call.
+    if command -v pacman &>/dev/null && pacman -Q rust &>/dev/null; then
+        log_warning "Distro package rust is installed; rustup's toolchain shadows it. Remove it with: sudo pacman -R rust"
+    elif command -v dpkg &>/dev/null && dpkg -s rustc &>/dev/null; then
+        log_warning "Distro package rustc is installed; rustup's toolchain shadows it. Remove it with: sudo apt remove rustc cargo"
+    fi
+
+    log_info "Downloading and installing rustup..."
+    # pipefail: a failed curl would otherwise feed sh an empty script that exits 0
+    if (set -o pipefail; curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y) &&
+        source "$HOME/.cargo/env" && command -v rustup &>/dev/null; then
+        log_info "rustup installed ($(rustup --version 2>/dev/null))"
     else
-        log_error "Failed to install Rust"
+        log_error "Failed to install rustup"
         return 1
     fi
 }
@@ -367,7 +415,7 @@ build_local_rust_tools() {
     mkdir -p "$HOME/.local/bin"
 
     # name:relative-source-dir pairs
-    local tools=("agent-panel:.local/src/agent-panel" "agent-web:.local/src/agent-web" "hub:.local/src/hub-tui" "timebox:.local/src/timebox")
+    local tools=("agent-panel:.local/src/agent-panel" "agent-web:.local/src/agent-web" "hub:.local/src/hub-tui" "hub-cases:.local/src/hub-core" "timebox:.local/src/timebox")
     local entry name src
     for entry in "${tools[@]}"; do
         name="${entry%%:*}"
@@ -387,10 +435,19 @@ build_local_rust_tools() {
 # One definition for every node: a native host and the fleet-agent image both
 # install through these steps, so their tool versions cannot drift apart.
 
-# The packages the fleet module needs; OS installers override with their helper.
+# The packages the fleet module needs.
 install_fleet_packages() {
     log_section "Installing fleet packages"
-    log_info "No default implementation - override in OS-specific file"
+    install_catalog FLEET
+}
+
+# The fleet module's steps, the same on every OS that runs agent sessions.
+fleet_steps() {
+    step fleet      install_fleet_packages
+    step fleet      install_tmux
+    step fleet      install_agent_harnesses
+    step fleet      install_rust
+    step fleet      build_fleet_tools
 }
 
 # tmux 3.8 with tree-mode-self-kill.patch, built from the release tarball into
@@ -425,17 +482,34 @@ install_agent_harnesses() {
     if [[ -x "$HOME/.local/bin/claude" ]]; then
         log_info "claude already installed ($("$HOME/.local/bin/claude" --version 2>/dev/null))"
     else
-        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0
-        (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) || { log_error "claude install failed"; return 1; }
+        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0. Three
+        # tries with the npm loop's backoff below: the download drops now and then (image run
+        # 46116188081, curl 56 mid-transfer).
+        local claude_try
+        for claude_try in 1 2 3; do
+            (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) && break
+            [[ $claude_try -eq 3 ]] && { log_error "claude install failed"; return 1; }
+            log_warning "claude install failed, try $claude_try of 3"
+            sleep $((claude_try * ${HARNESS_NPM_BACKOFF_S:-15}))
+        done
     fi
-    local entry bin pkg
+    local entry bin pkg try out got failed=0
     for entry in codex:@openai/codex opencode:opencode-ai; do
         bin="${entry%%:*}" pkg="${entry#*:}"
         if command -v "$bin" &>/dev/null; then
             log_info "$bin already installed"
         elif command -v npm &>/dev/null; then
-            npm install -g --prefix "$HOME/.local" "$pkg" &>/dev/null && log_info "$bin installed" ||
-                log_warning "$bin install failed (npm $pkg)"
+            # Three tries with a growing backoff, then a failed step: the registry drops a fetch now
+            # and then, and a warning let the fleet-agent image build on, to fail its smoke 3 min
+            # later (runs 45294263315 and 45294498605, ar-5027).
+            got=0
+            for try in 1 2 3; do
+                if out=$(npm install -g --prefix "$HOME/.local" "$pkg" 2>&1); then got=1; break; fi
+                [[ $try -eq 3 ]] || { log_warning "$bin install failed (npm $pkg), try $try of 3"; sleep $((try * ${HARNESS_NPM_BACKOFF_S:-15})); }
+            done
+            # The others still install: the failure is the step's return, after agy.
+            [[ $got -eq 1 ]] || { log_error "$bin install failed (npm $pkg): $(tail -n 3 <<<"$out")"; failed=1; continue; }
+            log_info "$bin installed"
         else
             log_warning "npm not found, skipping $bin"
         fi
@@ -448,7 +522,7 @@ install_agent_harnesses() {
     if [[ -x "$bin/agy" ]]; then
         "$bin/agy" update &>/dev/null && log_info "agy up to date ($("$bin/agy" --version 2>/dev/null))" ||
             log_warning "agy update failed"
-        return 0
+        return "$failed"
     fi
     # An if, not a bare command: under the installer's set -e a failed download would end the run.
     local scratch
@@ -460,6 +534,7 @@ install_agent_harnesses() {
         log_warning "agy install failed"
     fi
     rm -rf "$scratch"
+    return "$failed"
 }
 
 # What a session's host reads its sessions and serves its pages with.
@@ -642,6 +717,68 @@ install_music() {
     log_info "No default implementation - override in OS-specific file"
 }
 
+# keyd (key remapping daemon: F12 -> Super layer) with the stowed config. Debian stable has no
+# keyd package (Ubuntu 23.10+ universe does): with none installed it says where to get it.
+setup_keyd() {
+    log_section "Setting up keyd (key remapping)"
+
+    [[ -n "$PKG_INSTALL" ]] && "$PKG_INSTALL" "keyd"
+    if ! command -v keyd &>/dev/null; then
+        log_warning "keyd not available from the package manager - install from source: https://github.com/rvaiya/keyd"
+        return 0
+    fi
+
+    local src="$HOME/.dotfiles/.config/keyd/default.conf"
+    local dst="/etc/keyd/default.conf"
+
+    if [[ ! -f "$src" ]]; then
+        log_warning "keyd source config not found at $src - skipping"
+        return 0
+    fi
+
+    sudo install -Dm644 "$src" "$dst"
+    log_info "Installed keyd config to $dst"
+
+    sudo systemctl enable --now keyd
+    sudo keyd reload &>/dev/null || true
+    log_info "keyd enabled and reloaded"
+}
+
+# Render theme-switch's generated output: the THEME_TARGETS_<OS> list in packages.conf. Those
+# files are NOT tracked -- they are the render of a tracked palette + template, and tracking them
+# meant the theme-day/theme-night timers dirtied the repo twice a day. A fresh clone therefore
+# has none of them, and sketchybarrc hard-`source`s colors.sh, so it must be rendered at install.
+#
+# --only the generated targets on purpose: termux is the one TRACKED render (the phone reads it
+# over git), it already ships correct, and re-rendering it here would leave a fresh install with
+# a dirty tree before first login.
+setup_theme() {
+    log_section "Rendering theme (generated config)"
+
+    local targets_var="THEME_TARGETS_${PKG_OS^^}"
+    local targets="${!targets_var:-}"
+    if [[ -z "$targets" ]]; then
+        log_warning "$targets_var not defined in packages.conf - skipping"
+        return 0
+    fi
+
+    local theme_switch="$HOME/.local/bin/theme-switch"
+    if [[ ! -x "$theme_switch" ]]; then
+        log_warning "theme-switch not found at $theme_switch - skipping"
+        log_info "Render later with:  theme-switch <theme> --only $targets"
+        return 0
+    fi
+
+    # Honour a theme already chosen on this machine; otherwise the daytime
+    # default, matching what theme-day.timer applies at 07:00.
+    local state="$HOME/.config/theme/current"
+    local theme="batman"
+    [[ -r "$state" ]] && theme="$(<"$state")"
+
+    log_info "Rendering generated theme files for: $theme"
+    "$theme_switch" "$theme" --only "$targets"
+}
+
 # Printed after a real (non dry-run) install. OS installers override this to
 # add their own manual follow-ups.
 post_install_notes() {
@@ -775,11 +912,7 @@ install_all() {
     step dev        install_rust
     step dev        build_local_rust_tools
 
-    step fleet      install_fleet_packages
-    step fleet      install_tmux
-    step fleet      install_agent_harnesses
-    step fleet      install_rust
-    step fleet      build_fleet_tools
+    fleet_steps
 
     step containers install_kubernetes
     step containers setup_kubernetes
@@ -799,13 +932,14 @@ install_all() {
 # Export all functions for overriding
 export -f log_info log_error log_warning log_section
 export -f create_directories update_system
+export -f install_catalog install_pacman_package
 export -f install_basics install_tools install_terminal install_gui install_runtime
 export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust build_local_rust_tools
-export -f install_fleet_packages build_tmux_patched_source install_agent_harnesses build_fleet_tools
+export -f install_fleet_packages fleet_steps build_tmux_patched_source install_agent_harnesses build_fleet_tools
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
 export -f install_fonts setup_ssh_key apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
-export -f install_music post_install_notes
+export -f setup_keyd setup_theme install_music post_install_notes
 export -f _csv_has module_selected step _collect_modules validate_module_names print_modules run_install
 export -f install_all
 export -f _resolve_pkg_name install_package_list

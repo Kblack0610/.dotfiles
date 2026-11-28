@@ -13,16 +13,10 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, len, wrap, Table};
-use crate::fmt::{clock, older, pct, Palette};
+use crate::fmt::{clock, heading, older, pct, Palette};
 use hub_core::display::fmt::{dur_secs, tokens, usd_opt};
 use hub_core::layout::FOLD_ROWS;
-
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
-}
+use hub_core::shepherd::Card;
 
 /// The rows as shown: the table's query, state and sort applied. j/k step through these and
 /// Enter opens the one selected.
@@ -168,10 +162,17 @@ fn who_table(
     out
 }
 
-/// Sessions' Shepherd inner tab: `fleet-shepherd`'s ledger, who holds the pass lease and when it
-/// took it, then each line due with its role, how long it has waited, and whether the last pass
-/// left it unhandled. The pass's rundowns are Log's Rundowns.
-pub fn shepherd_page(d: &Due, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+/// Sessions' Shepherd inner tab: the pass card (`fleet-shepherd stats`, worded by hub-core's
+/// `shepherd::Card`, the words the web tab draws), `fleet-shepherd`'s ledger, who holds the pass
+/// lease and when it took it, then each line due with its role, how long it has waited, and
+/// whether the last pass left it unhandled. The pass's rundowns are Log's Rundowns.
+pub fn shepherd_page(
+    d: &Due,
+    pass: Option<&Result<Card, String>>,
+    p: Palette,
+    now: i64,
+    w: usize,
+) -> Vec<Line<'static>> {
     let lease = match (&d.lease_holder, d.lease_at) {
         (Some(h), Some(at)) => format!(
             "lease {h}, taken {} ago",
@@ -180,10 +181,11 @@ pub fn shepherd_page(d: &Due, p: Palette, now: i64, w: usize) -> Vec<Line<'stati
         (Some(h), None) => format!("lease {h}"),
         _ => "no pass holds the lease".into(),
     };
-    let mut out = vec![clip_line(
+    let mut out = pass_card(pass, p, w);
+    out.push(clip_line(
         heading("SHEPHERD", format!("  {} due, {lease}", d.due.len()), p),
         w,
-    )];
+    ));
     if d.due.is_empty() {
         out.push(Line::styled("Nothing due.", p.dim()));
     } else {
@@ -230,6 +232,42 @@ pub fn shepherd_page(d: &Due, p: Palette, now: i64, w: usize) -> Vec<Line<'stati
         Line::styled("The pass's rundowns: Log > Rundowns.", p.dim()),
         w,
     ));
+    out
+}
+
+/// The pass card's lines: its flags amber, then what runs now, the last verdict and the day's counts.
+fn pass_card(pass: Option<&Result<Card, String>>, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let c = match pass {
+        None => {
+            return vec![clip_line(
+                Line::styled("Reading fleet-shepherd stats.", p.dim()),
+                w,
+            )]
+        }
+        Some(Err(e)) => {
+            return vec![clip_line(
+                Line::styled(format!("fleet-shepherd stats gave nothing: {e}."), p.warn()),
+                w,
+            )]
+        }
+        Some(Ok(c)) => c,
+    };
+    let mut out = vec![clip_line(heading("PASS", String::new(), p), w)];
+    if !c.flags.is_empty() {
+        out.push(clip_line(Line::styled(c.flags.join(", "), p.warn()), w));
+    }
+    if !c.why.is_empty() {
+        out.push(clip_line(Line::raw(c.why.clone()), w));
+    }
+    let now = if c.attach.is_empty() {
+        c.now.clone()
+    } else {
+        format!("{} {}", c.now, c.attach)
+    };
+    out.push(clip_line(Line::raw(now), w));
+    out.push(clip_line(Line::raw(c.last.clone()), w));
+    out.push(clip_line(Line::styled(c.totals.clone(), p.dim()), w));
+    out.push(Line::raw(""));
     out
 }
 
@@ -797,7 +835,7 @@ pub fn runner_page(
 
     out.push(Line::raw(""));
     out.push(clip_line(
-        heading("STATUS", "  its status file, then activity.log".into(), p),
+        heading("STATUS", "  its status file, then activity.log", p),
         w,
     ));
     if r.status.is_empty() {
@@ -828,7 +866,7 @@ pub fn runner_page(
 
     out.push(Line::raw(""));
     let floor = if r.calls.partial { "+" } else { "" };
-    out.push(clip_line(heading("CALLS", "  calls.jsonl".into(), p), w));
+    out.push(clip_line(heading("CALLS", "  calls.jsonl", p), w));
     let row = |l: &str, t: &Totals, f: &str| {
         vec![
             l.to_string().into(),
@@ -1299,8 +1337,16 @@ pub mod tests {
             lease_holder: Some("runner".into()),
             lease_at: Some((NOW - 120) as u64),
         };
+        let card = || Card {
+            flags: vec!["stuck".into()],
+            why: "no pass for 3h".into(),
+            now: "pass 01234567 working, 5m:".into(),
+            attach: "tmux attach -t sh".into(),
+            last: "last verdict WORKED for pass abcdefgh, 2h00m ago".into(),
+            totals: "last 24h: 4 passes".into(),
+        };
         let p = Palette { no_color: true };
-        let s = shepherd_page(&d, p, NOW, 120)
+        let s = shepherd_page(&d, Some(&Ok(card())), p, NOW, 120)
             .iter()
             .map(plain)
             .collect::<Vec<_>>()
@@ -1312,17 +1358,34 @@ pub mod tests {
             "15m",
             "trader-agent-1 landed #12",
             "Log > Rundowns",
+            "PASS",
+            "stuck",
+            "no pass for 3h",
+            "pass 01234567 working, 5m: tmux attach -t sh",
+            "last verdict WORKED for pass abcdefgh, 2h00m ago",
+            "last 24h: 4 passes",
         ] {
             assert!(s.contains(want), "{want:?} missing from\n{s}");
         }
-        let none = shepherd_page(&Due::default(), p, NOW, 120)
+        let none = shepherd_page(&Due::default(), None, p, NOW, 120)
             .iter()
             .map(plain)
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
-            none.contains("0 due, no pass holds the lease") && none.contains("Nothing due."),
+            none.contains("0 due, no pass holds the lease")
+                && none.contains("Nothing due.")
+                && none.contains("Reading fleet-shepherd stats."),
             "{none}"
+        );
+        let failed = shepherd_page(&Due::default(), Some(&Err("exit 1".into())), p, NOW, 120)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            failed.contains("fleet-shepherd stats gave nothing: exit 1."),
+            "{failed}"
         );
     }
 

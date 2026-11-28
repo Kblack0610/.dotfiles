@@ -16,7 +16,10 @@ src/
 # notes: the active profile selection is machine-local — each box copies
 # config.toml.example → config.toml and sets its own profile. Only the
 # template is tracked, so no machine's choice can ever reroute another's.
+# profiles.toml is notes-bootstrap's link to the private overlay's shared profile tables,
+# which lands in this tree on a box where ~/.config/notes is a folded stow link.
 .config/notes/config.toml
+.config/notes/profiles.toml
 
 .local/share/applications/*.desktop
 
@@ -320,7 +323,7 @@ test_notifications.sh
 .agent/
 !tests/fixtures/burn/home/.agent/
 
-# Test suite: vendored bats + per-run failure artifacts (see tests/Makefile bootstrap)
+# Test suite: vendored bats + per-run failure artifacts (see tests/bootstrap.sh)
 # Trailing slash would match only a real directory. A git worktree needs `tests/vendor`
 # SYMLINKED to the primary checkout's copy (bootstrap clones it once), and a symlink is
 # not a directory -- so the slash form left it showing as untracked in every worktree,

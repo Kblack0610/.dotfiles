@@ -205,20 +205,24 @@ pub fn run(p: &Profile, log: &Logger, a: Args) -> Result<i32> {
     let text = a.text.join(" ");
     if a.check {
         // Classifies the text only: no project is read, so a typo'd project is `save`'s error.
-        let text = one_line(&text);
-        if text.is_empty() {
+        if one_line(&text).is_empty() {
             return Ok(1);
         }
-        return Ok(refuse_health(&text).unwrap_or(0));
+        return Ok(health_of(&text).map_or(0, refused));
     }
     save(p, log, &a.project, a.why.as_deref(), &text)
 }
 
-/// The refusal exit, said on stderr, when `text` is health work.
-fn refuse_health(text: &str) -> Option<i32> {
-    let why = health(text)?;
+/// Why `text` (a row or a line, its bookkeeping tags ignored) is health work, or `None`: what
+/// `--check` answers, and what the intake gate (`gate.rs`) admits onto a gated board.
+pub(crate) fn health_of(text: &str) -> Option<&'static str> {
+    health(&one_line(text))
+}
+
+/// The refusal exit, said on stderr, for health work.
+fn refused(why: &str) -> i32 {
     eprintln!("health work, not an improvement ({why}): it stays on the board");
-    Some(HEALTH_EXIT)
+    HEALTH_EXIT
 }
 
 fn save(p: &Profile, log: &Logger, project: &str, why: Option<&str>, text: &str) -> Result<i32> {
@@ -227,8 +231,8 @@ fn save(p: &Profile, log: &Logger, project: &str, why: Option<&str>, text: &str)
         eprintln!("nothing to keep: the text is empty");
         return Ok(1);
     }
-    if let Some(rc) = refuse_health(&text) {
-        return Ok(rc);
+    if let Some(why) = health(&text) {
+        return Ok(refused(why));
     }
     let dir = projects::project_dir(p, project)?;
     let day = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -362,11 +366,8 @@ mod tests {
 
     #[test]
     fn check_asks_without_writing() {
-        assert_eq!(
-            refuse_health("meet the prod stage standard"),
-            Some(HEALTH_EXIT)
-        );
-        assert_eq!(refuse_health("a nicer empty state"), None);
+        assert!(health_of("meet the prod stage standard #low #agent").is_some());
+        assert_eq!(health_of("a nicer empty state"), None);
     }
 
     #[test]

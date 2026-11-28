@@ -21,7 +21,7 @@ setup() {
 stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "$SANDBOX/bin/$1"; }
 
 # socket: a real unix socket for the glob to find; python because bash cannot make one.
-socket() { python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/$1"; }
+socket() { unix_sock "$TMUX_TMPDIR/tmux-$(id -u)/$1"; }
 
 ago() { echo $(( NOW - $1 * 60 )); }
 

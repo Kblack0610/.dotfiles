@@ -5,6 +5,34 @@ use anyhow::{Context, Result};
 use chrono::{Datelike, Duration, NaiveDate, Weekday};
 use std::path::Path;
 
+/// An open task matching `query` (already lower-cased) by normalised text: the one predicate
+/// `done`, `start` and `rm` share in `project_tasks` and `focus`, so they never disagree about
+/// what is selectable.
+pub fn is_match(line: &str, query: &str) -> bool {
+    is_open_task(line) && task_key(line).contains(query)
+}
+
+/// A `YYYY-MM-DD` test date; panics on any other text.
+#[cfg(test)]
+pub(crate) fn date(s: &str) -> NaiveDate {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+}
+
+/// `s` in kebab case: lowercase ASCII letters and digits, every other run one `-`, none at
+/// either end; empty when `s` has no letter or digit.
+pub fn kebab(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.truncate(out.trim_end_matches('-').len());
+    out
+}
+
 /// FNV-1a of `s` as 16 hex digits: the compare-and-swap base a page reads and sends back
 /// (`notes show` and `notes put`, `notes outbox show` and `put`). Stable across builds, so a hash
 /// a page read with one `notes` still matches after an upgrade.
@@ -1108,11 +1136,6 @@ pub fn look_tag(line: &str) -> Option<Look> {
     first.or_else(|| last.and_then(look_word))
 }
 
-/// `line` without its `#ask` or `#investigate` tag, the rest as it was.
-pub fn without_look_tag(line: &str) -> String {
-    without_words(line, |w| look_word(w).is_some())
-}
-
 /// `line` without its look tag and every routing word.
 pub fn without_look_and_routing_tags(line: &str) -> String {
     without_words(line, |w| look_word(w).is_some() || is_routing_word(w))
@@ -1239,6 +1262,54 @@ pub fn recurs_on(line: &str, date: NaiveDate) -> bool {
     }
 }
 
+/// `s` as a YAML double-quoted scalar, quotes included. A JSON string is one, so no title can
+/// end the value early or break the front matter; `unquote_yaml` reads it back.
+pub fn yaml_quote(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_default()
+}
+
+/// The value of one front-matter scalar: a double-quoted one has its escapes decoded (what
+/// `yaml_quote` writes: `\\`, `\"`, `\n`, `\t`, `\uXXXX`), a single-quoted one only its quotes
+/// stripped, a bare one is returned as is. The caller trims first.
+pub fn unquote_yaml(v: &str) -> String {
+    if let Some(inner) = v.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        let mut out = String::with_capacity(inner.len());
+        let mut it = inner.chars();
+        while let Some(c) = it.next() {
+            if c != '\\' {
+                out.push(c);
+                continue;
+            }
+            match it.next() {
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some('b') => out.push('\u{8}'),
+                Some('f') => out.push('\u{c}'),
+                Some('0') => out.push('\0'),
+                Some('/') => out.push('/'),
+                Some('u') => {
+                    let hex: String = it.by_ref().take(4).collect();
+                    match u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32) {
+                        Some(ch) => out.push(ch),
+                        None => {
+                            out.push_str("\\u");
+                            out.push_str(&hex);
+                        }
+                    }
+                }
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            }
+        }
+        return out;
+    }
+    v.strip_prefix('\'')
+        .and_then(|s| s.strip_suffix('\''))
+        .unwrap_or(v)
+        .to_string()
+}
+
 /// Pull a top-level scalar `key: value` out of flat YAML text (e.g. a Sentinel watch
 /// manifest) without pulling in a YAML crate. Returns the value with surrounding single
 /// or double quotes stripped and whitespace trimmed. First match wins; comment lines
@@ -1272,12 +1343,8 @@ pub fn parse_yaml_scalar(text: &str, key: &str) -> Option<String> {
         if is_block_marker(v) {
             return fold_block(&mut lines);
         }
-        let v = v
-            .strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .or_else(|| v.strip_prefix('\'').and_then(|s| s.strip_suffix('\'')))
-            .unwrap_or(v)
-            .trim();
+        let v = unquote_yaml(v);
+        let v = v.trim();
         if v.is_empty() {
             return None;
         }
@@ -2085,9 +2152,7 @@ mod tests {
         assert_eq!(without_agent_tag("- [ ] #agent fix it"), "- [ ] fix it");
     }
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     #[test]
     fn the_legacy_ai_tag_is_matched_as_a_whole_token() {
@@ -3058,6 +3123,22 @@ after
         );
         assert_eq!(strip_every("- [ ] x (every:mon,thu) more"), "- [ ] x more");
         assert_eq!(strip_every("- [ ] plain task"), "- [ ] plain task");
+    }
+
+    #[test]
+    fn yaml_quote_round_trips_through_unquote_yaml() {
+        for t in [
+            "plain",
+            "say \"hi\"",
+            "C:\\temp",
+            "a\nb\tc",
+            "bell \u{7}",
+            "caf\u{e9} \u{1F600}",
+        ] {
+            assert_eq!(unquote_yaml(&yaml_quote(t)), t, "{t:?}");
+        }
+        assert!(!yaml_quote("a\nb").contains('\n'));
+        assert_eq!(yaml_quote("a\"b"), r#""a\"b""#);
     }
 
     #[test]

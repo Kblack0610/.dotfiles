@@ -16,7 +16,7 @@ use crate::host_history::{self, HostHistory};
 use crate::host_now::{self, HostNow};
 use crate::infra::{self, Infra};
 use crate::links::{Kind, Link};
-use crate::machines::Machine;
+use crate::machines::{Machine, DISK_LOW, MEM_HIGH};
 use crate::run_detail;
 use crate::session_page::Part;
 use crate::table::{Row, Val};
@@ -39,7 +39,7 @@ pub struct SlotUse {
     pub slot: String,
     /// Every cap it takes (`github_runner_pool_slot`), in the exporter's order.
     pub takes: Vec<String>,
-    /// As `ci::runners_now` says it: busy, idle, lent, withheld, standby or off.
+    /// As `ci::runners_now` says it: busy, idle or off.
     pub now: String,
     pub job: String,
     /// Cores its job uses and the cores it may use (`cc:runner_cores_{busy,allowed}`).
@@ -71,11 +71,6 @@ pub(crate) fn short(v: f64) -> String {
 pub(crate) fn whole(v: f64) -> String {
     format!("{:.0}", v.round())
 }
-
-/// The Space line's amber: free disk under this share (the Machines disk cell's amber line),
-/// memory at or past this share used.
-const DISK_LOW: f64 = 0.2;
-const MEM_HIGH: f64 = 0.9;
 
 /// `ws-unity-2` before `ws-unity-10`: a name's trailing number sorts as a number.
 fn natural(name: &str) -> (&str, u64) {
@@ -122,18 +117,14 @@ impl SlotUse {
 impl Row for SlotUse {
     const COLUMNS: &'static [&'static str] =
         &["slot", "takes", "now", "job", "cores", "mem", "disk"];
-    const STATES: &'static [&'static str] =
-        &["all", "busy", "idle", "lent", "withheld", "standby", "off"];
+    const STATES: &'static [&'static str] = &["all", "busy", "idle", "off"];
     const FACETS: &'static [&'static str] = &["now"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "slot";
     const GLANCE: &'static [&'static str] = &["now", "cores", "mem"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" => Val::None,
-            s => Val::Text(s.to_string()),
-        };
+        let text = Val::word;
         match col {
             "slot" => text(&self.slot),
             "takes" => text(&self.takes.join(" ")),
@@ -177,10 +168,7 @@ impl Row for RecentJob {
     const GLANCE: &'static [&'static str] = &["conclusion", "took"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| match s {
-            "" => Val::None,
-            s => Val::Text(s.to_string()),
-        };
+        let text = Val::word;
         match col {
             "started" => self.started.map(|t| t as f64).into(),
             "repo" => text(&self.repo),
@@ -239,7 +227,7 @@ pub fn find<'a>(infra: &'a Infra, host: &str) -> Result<&'a Machine, String> {
 }
 
 /// Its host, then every other name a series gives it: the hostnames `Infra::aliases` maps to it
-/// and the hosts its runners and governor report.
+/// and the hosts its runners report.
 pub fn names(infra: &Infra, host: &str) -> Vec<String> {
     let alias = infra.aliases();
     let mut out = vec![host.to_string()];
@@ -268,10 +256,9 @@ pub fn read(
 ) -> Result<MachinePage, String> {
     let m = find(infra, host)?;
     let names = names(infra, &m.host);
-    let powered = m.power.as_ref().map(|p| p.host.as_str());
     let (history, live) = std::thread::scope(|s| {
         let live = s.spawn(|| host_now::read(&names));
-        let history = host_history::read(&names, powered, now);
+        let history = host_history::read(&names, now);
         (
             history,
             live.join().unwrap_or_else(|_| Err("panicked".into())),
@@ -363,15 +350,7 @@ fn when(epoch: i64) -> String {
         .map_or("?".into(), |t| t.format("%b %d %H:%M").to_string())
 }
 
-/// Why a machine has no reading, as the Now part says it.
-fn why_no_reading(m: &Machine) -> String {
-    match m.power.as_ref().map(|p| p.state.as_str()) {
-        Some(s) if !s.is_empty() && s != "running" => format!("the governor has it {s}"),
-        _ => "Prometheus has no node exporter series for it".into(),
-    }
-}
-
-/// Its row as labelled parts: Now, CI, Governor, Power, Up since, Grafana.
+/// Its row as labelled parts: Now, CI, Up since, Grafana.
 fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64) -> Vec<Part> {
     let mut out = vec![];
     let now = match m.cpu {
@@ -388,7 +367,10 @@ fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64)
         }
         None => Part::new(
             "Now",
-            format!("{}: {}", crate::reading::NO_DATA, why_no_reading(m)),
+            format!(
+                "{}: Prometheus has no node exporter series for it",
+                crate::reading::NO_DATA
+            ),
         )
         .warn(true),
     };
@@ -409,37 +391,6 @@ fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64)
             t = format!("{t}; {} off", m.off);
         }
         out.push(Part::new("CI", t).warn(m.off > 0));
-    }
-    if let Some(g) = &m.governor {
-        let mut t = g.says();
-        if !g.verdict.is_empty() {
-            t = format!("{t} ({})", g.verdict);
-        }
-        if let Some(a) = g.admitted {
-            t = format!("{t}, admits {a:.0}");
-        }
-        out.push(Part::new("Governor", t));
-    }
-    if let Some(p) = &m.power {
-        let mut t = p.state.clone();
-        if !p.reason.is_empty() && p.reason != "none" {
-            t = format!("{t} ({})", p.reason);
-        }
-        t = match p.max {
-            Some(max) => format!("{t}, {:.1}h of {max:.0}h today", p.hours),
-            None => format!("{t}, {:.1}h today", p.hours),
-        };
-        if let Some(usd) = p.usd_per_hour {
-            t = format!("{t} at ${usd:.2}/h");
-        }
-        if !p.hold.is_empty() {
-            let until = p.until.map(|u| format!(" until {}", when(u as i64)));
-            t = format!("{t}; held {}{}", p.hold, until.unwrap_or_default());
-        }
-        if !p.rule.is_empty() {
-            t = format!("{t}; {}", p.rule);
-        }
-        out.push(Part::new("Power", t).warn(!p.hold.is_empty()));
     }
     if let Some(b) = m.boot {
         let up = crate::display::fmt::age(at as i64 - b as i64);
@@ -702,12 +653,9 @@ mod tests {
             "no data: Prometheus has no node exporter series for it"
         );
         assert!(p.parts[0].warn);
-        let p = page(&i, "aws-burst-1", "", &[]);
-        assert_eq!(p.parts[0].text, "no data: the governor has it stopped");
-        assert!(p.parts.iter().any(|x| x.label == "Power"));
         // No reading, so no other or idle: only its runner, its use no data.
         let names: Vec<&str> = p.slots.iter().map(|x| x.slot.as_str()).collect();
-        assert_eq!(names, ["burst-1"]);
+        assert_eq!(names, ["mini-1"]);
         assert_eq!(p.slots[0].cores_text(), crate::reading::NO_DATA);
     }
 
@@ -718,8 +666,10 @@ mod tests {
         let now = &p.parts[0];
         assert!(now.text.starts_with("cpu 62%, "), "{}", now.text);
         assert!(now.text.contains("71C"));
-        let gov = p.parts.iter().find(|x| x.label == "Governor").unwrap();
-        assert_eq!(gov.text, "withhold (hot)");
+        assert!(p
+            .parts
+            .iter()
+            .all(|x| x.label != "Governor" && x.label != "Power"));
         let g = p.parts.iter().find(|x| x.label == "Grafana").unwrap();
         assert_eq!(
             g.link,
@@ -824,7 +774,7 @@ mod tests {
         // The Machines row's runners hover reads the same memory.
         assert_eq!(p.machine.runner_mem, [("ws-unity-1".to_string(), 2.0 * G)]);
         assert_eq!(s[0].takes, ["unity", "light"]);
-        assert_eq!((s[0].now.as_str(), s[1].now.as_str()), ("busy", "withheld"));
+        assert_eq!((s[0].now.as_str(), s[1].now.as_str()), ("busy", "idle"));
         assert_eq!(
             (s[0].cores_text(), s[0].mem_text(), s[0].disk_text()),
             ("6.0/8".into(), "2.0/14G".into(), "58G".into())

@@ -89,6 +89,8 @@ registered() {
   t send-keys -t '=agent-s:' Enter
   wait_until 'registered main'
   run "$ACCT" move agent-s --server "$SRV" --stop-shells
+  # a resume that never registers is most often a stray key typed into bash ahead of it (ar-5592)
+  (( status == 0 )) || t capture-pane -pJ -t '=agent-s:'
   assert_success
   assert_output --partial 'claude-acct: moved agent-s to alt'
   [ "$(cat "$HOME/choices")" = 1 ]

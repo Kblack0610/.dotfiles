@@ -10,6 +10,7 @@
 #   projects.<profile>          name  summary  status  version
 #   stats                       profile name stage version open urgent high low planned agent sheet
 #   stats.json                  the `projects --stats --json` array, verbatim
+#   space.<name>.json           what `notes projects <name> --json` prints (the project page); with none it fails
 #   focus.all                   profile  file  line  key  text
 #   ptask.<profile>.<project>   path  line  key  text
 #   path.<profile>.<kind>       the root `notes --profile P path <kind>` prints
@@ -17,12 +18,13 @@
 #   prios                       name  prio, what `notes projects --prios` prints
 #   front-page.<project>        the file `notes projects --front-page <dir>` prints for that dir
 #   board.json                  what `notes board --json` prints; its .elsewhere rows only --id finds
-#   ptask.added                 what `notes ptask <name> add` prints (the row, with its id)
+#   ptask.added                 what `notes ptask <name> add` prints (the row, with its id); ptask.add.rc its exit
 #   ptask.agent.added           what `notes ptask <name> --agent add` prints
 #   ptask.agent.add.rc          the code `notes ptask <name> --agent add` exits (0 with none)
 #   playtest.<profile>.<project> what `notes ptask <name> --playtest list` prints; with none it fails
 #   stats.fail                  makes `projects --stats` fail
 #   roll.window                 the `window ...` lines `projects --release` prints after the freeze
+#   log.jsonl                   what `notes log ... --json` prints, every event whatever the filter; log.fail makes it fail
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -97,8 +99,12 @@ case "${1:-}" in
       # counts, as TSV (`stats`) or the JSON array (`stats.json`)
       --stats) [ -f "$FIX/stats.fail" ] && exit 1
                if [ "${3:-}" = "--json" ]; then emit stats.json; else emit stats; fi ;;
-      # `notes --profile P projects` -> name TAB summary TAB status TAB version
-      *) emit "projects.${profile:-personal}" ;;
+      # `notes --profile P projects` -> name TAB summary TAB status TAB version; `projects <name> --json`
+      # is the page, from space.<name>.json, and fails for a name with none
+      *) if [ "${3:-}" = "--json" ]; then
+           [ -f "$FIX/space.${2}.json" ] || { echo "no current project named '${2}'" >&2; exit 1; }
+           emit "space.${2}.json"
+         else emit "projects.${profile:-personal}"; fi ;;
     esac
     ;;
   focus)
@@ -118,7 +124,7 @@ case "${1:-}" in
       --playtest) [ "${4:-}" = list ] || exit 0
                   [ -f "$FIX/playtest.${profile:-personal}.${proj}" ] || exit 1
                   emit "playtest.${profile:-personal}.${proj}" ;;
-      add) emit ptask.added ;;     # the row the real verb prints; recorded too
+      add) emit ptask.added; exit "$(cat "$FIX/ptask.add.rc" 2>/dev/null || echo 0)" ;;  # the row the real verb prints; recorded too
       # `notes ptask <name> --agent add`: the agent row it prints, from ptask.agent.added
       --agent) [ "${4:-}" != add ] || { emit ptask.agent.added; exit "$(cat "$FIX/ptask.agent.add.rc" 2>/dev/null || echo 0)"; } ;;
       *) : ;;                      # done/rm: recorded only
@@ -148,6 +154,9 @@ case "${1:-}" in
       jq -c --args '$ARGS.positional as $ids | {today: "", rows: [((.rows // []), (.done // []), (.elsewhere // []))[] | select(.id as $i | $ids | index($i))]}' \
         "${ids[@]}" < "$FIX/board.json"
     fi ;;
+  log)
+    [ ! -f "$FIX/log.fail" ] || { echo 'notes: the record is locked' >&2; exit 2; }
+    emit log.jsonl ;;
   today)
     : ;;                           # bootstrap no-op
   *)

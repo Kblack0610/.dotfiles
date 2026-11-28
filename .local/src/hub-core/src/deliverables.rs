@@ -62,14 +62,6 @@ impl Deliverable {
     }
 }
 
-fn word(s: &str) -> Val {
-    if s.is_empty() {
-        Val::None
-    } else {
-        Val::Text(s.to_string())
-    }
-}
-
 /// The table's own order is worst first (`track_rank`), then the soonest ETA, so no column is
 /// sorted until asked.
 impl Row for Deliverable {
@@ -81,12 +73,12 @@ impl Row for Deliverable {
 
     fn val(&self, col: &str) -> Val {
         match col {
-            "project" => word(&self.project),
-            "epic" => word(&self.title),
-            "sys" => word(&self.system),
+            "project" => Val::word(&self.project),
+            "epic" => Val::word(&self.title),
+            "sys" => Val::word(&self.system),
             "done" => self.percent.map_or(Val::None, |p| Val::Num(f64::from(p))),
             "eta" => self.eta.map_or(Val::None, |e| Val::Num(e as f64)),
-            "track" => word(&self.track),
+            "track" => Val::word(&self.track),
             _ => Val::None,
         }
     }

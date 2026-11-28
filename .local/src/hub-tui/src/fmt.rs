@@ -85,12 +85,14 @@ impl Palette {
             _ => (self.c(b.fg(Color::Black).bg(Color::Magenta)), "NODATA"),
         }
     }
-    /// A pass rate: red under 70%, amber under 90%.
-    pub fn pass(&self, ratio: Option<f64>) -> Style {
-        match ratio.map(|r| (r * 100.0).round()) {
-            Some(p) if p < 70.0 => self.bad(),
-            Some(p) if p < 90.0 => self.warn(),
-            _ => Style::new(),
+    /// The hue of a judged cell (`hub_core::vocab::Level`): red, amber, muted for a reading nobody
+    /// takes, plain when fine.
+    pub fn hue(&self, l: hub_core::vocab::Level) -> Style {
+        match l {
+            hub_core::vocab::Level::Bad => self.bad(),
+            hub_core::vocab::Level::Warn => self.warn(),
+            hub_core::vocab::Level::Neutral => self.dim(),
+            hub_core::vocab::Level::Ok => Style::new(),
         }
     }
 }
@@ -99,6 +101,23 @@ impl Palette {
 pub fn older(total: usize, shown: usize, p: Palette) -> Option<ratatui::text::Line<'static>> {
     (total > shown)
         .then(|| ratatui::text::Line::styled(format!("  +{} older", total - shown), p.dim()))
+}
+
+/// A blank word as `-`, the way every table shows one.
+pub fn dash<S: AsRef<str> + Into<String>>(s: S) -> String {
+    if s.as_ref().is_empty() {
+        "-".into()
+    } else {
+        s.into()
+    }
+}
+
+/// A section's heading: the title, then `rest` dimmed. A caller that wants a gap puts it in `rest`.
+pub fn heading(title: &str, rest: impl Into<String>, p: Palette) -> ratatui::text::Line<'static> {
+    ratatui::text::Line::from(vec![
+        ratatui::text::Span::styled(title.to_string(), p.head()),
+        ratatui::text::Span::styled(rest.into(), p.dim()),
+    ])
 }
 
 #[cfg(test)]

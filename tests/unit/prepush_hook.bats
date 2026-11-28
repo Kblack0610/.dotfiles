@@ -177,7 +177,7 @@ realrepo() {
     cp "$REPO/tests/$f" "$W/tests/$f"
   done
   cp "$REPO/.shellcheckrc" "$W/"
-  cp "$REPO/.local/lib/test-pick.sh" "$W/.local/lib/"
+  cp "$REPO/.local/lib/test-pick.sh" "$REPO/.local/lib/uncomment.sh" "$W/.local/lib/"
   : >"$W/tests/broad.txt"
   printf '@test "x" { true; }\n' >"$W/tests/unit/x.bats"
   printf '#!/usr/bin/env bash\n[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0\n' >"$W/.local/src/tmux/fleet.sh"

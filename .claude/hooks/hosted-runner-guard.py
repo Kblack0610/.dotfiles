@@ -20,14 +20,13 @@ keeps a label already in the file is denied too: touching a hosted job means mov
 Bash writes (sed, cat >) and other agents; the org's Actions budget at $0 with prevent-further-usage
 is the backstop GitHub enforces. Fail-open, like the sibling guards: any error allows the edit.
 """
-import importlib.util
 import json
 import os
 import re
 import subprocess
-import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import hooklib
+
 WORKFLOW = re.compile(r"(^|/)\.github/workflows/[^/]+\.ya?ml$")
 # Larger and suffixed images too: macos-14-large, macos-13-xlarge, ubuntu-24.04-arm, ubuntu-latest-4-cores.
 HOSTED = re.compile(r"(?<![\w.-])(?:ubuntu|windows|macos)-(?:latest|slim|\d[\w.]*)(?:-\w+)*(?![\w.-])")
@@ -52,10 +51,7 @@ def config():
 
 def is_github(url):
     """forge-guard's host check, which resolves an ssh Host alias (ssh -G, 2 s)."""
-    spec = importlib.util.spec_from_file_location("forge_guard", os.path.join(HERE, "forge-guard.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.is_github(url)
+    return hooklib.load("forge-guard").is_github(url)
 
 
 def origin(path):
@@ -91,35 +87,29 @@ def written(tool, ti):
     return "\n".join(e.get("new_string", "") for e in ti.get("edits", []))
 
 
-def main():
-    payload = json.load(sys.stdin)
+def decide(payload):
     ti = payload.get("tool_input") or {}
     path = ti.get("file_path") or ""
     if not WORKFLOW.search(path):
-        return
+        return None
     text = "\n".join(COMMENT.sub("", line) for line in written(payload.get("tool_name"), ti).splitlines())
     hit = HOSTED.search(text)
     if not hit:
-        return
+        return None
     cfg = config()
     where = origin(os.path.realpath(path))
     if not where:
-        return
+        return None
     owner, repo, url, rel = where
     if owner.lower() not in {o.lower() for o in cfg.get("self_hosted_only", [])} or not is_github(url):
-        return
+        return None
     if f"{owner}/{repo}:{rel}".lower() in {k.lower() for k in cfg.get("allow", {})}:
-        return
+        return None
     if public(f"{owner}/{repo}"):
-        return
-    reason = MSG.format(repo=f"{owner}/{repo}", path=rel, label=hit.group(0))
+        return None
     # gate: hook-hosted-runner-guard
-    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                             "permissionDecisionReason": reason}}))
+    return MSG.format(repo=f"{owner}/{repo}", path=rel, label=hit.group(0))
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
+    hooklib.run(decide)

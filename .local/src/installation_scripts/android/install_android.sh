@@ -12,6 +12,7 @@ source "$BASE_DIR/base_functions.sh"
 
 # Load configuration
 load_config
+PKG_INSTALL=install_pkg_package PKG_OS=android
 
 # Helper: Install package with pkg
 install_pkg_package() {
@@ -41,27 +42,6 @@ update_system() {
     if pkg upgrade -y &>/dev/null; then
         log_info "Packages upgraded"
     fi
-}
-
-# Override: Install basics
-install_basics() {
-    log_section "Installing basic requirements"
-    install_package_list install_pkg_package android \
-        $PACKAGES_BASIC $PACKAGES_BASIC_ANDROID
-}
-
-# Override: Install development tools
-install_tools() {
-    log_section "Installing development tools"
-    install_package_list install_pkg_package android \
-        $PACKAGES_DEV $PACKAGES_DEV_ANDROID
-}
-
-# Override: Install terminal enhancements
-install_terminal() {
-    log_section "Installing terminal enhancements"
-    install_package_list install_pkg_package android \
-        $PACKAGES_TERMINAL $PACKAGES_TERMINAL_ANDROID
 }
 
 # Override: Install GUI applications

@@ -6,7 +6,8 @@
 # one section's enumerable facts (a state, a source, a verb, a default, a lane) and the code that
 # implements it, from the files as text, so the section cannot drift from agent-queue,
 # fleet-dispatch or fleet-lease unseen. Change the code and its section together.
-# Skipped where the private overlay is absent (public CI); it runs in the Stop fast tier.
+# Skipped where the private overlay is absent (this repo's CI); the private repo runs it through
+# .github/workflows/queue-doc.yml, on its PRs and pushes and daily, where no case may skip (ar-4243).
 
 setup() {
   load '../vendor/bats-support/load'
@@ -17,6 +18,7 @@ setup() {
   [ -f "$DOC" ] || skip "no private overlay at $PRIV"
   AQ="$PUB/.local/bin/agent-queue"
   FD="$PUB/.local/bin/fleet-dispatch"
+  LAND="$PUB/.local/bin/agent-land"
   FL="$PUB/.local/bin/fleet-lease"
 }
 
@@ -61,10 +63,10 @@ doc_states() {
   done
 }
 
-@test "Admission: the AGENT_QUEUE_PULL values the section names are the ones fleet-dispatch sets" {
+@test "Admission: the AGENT_QUEUE_PULL values the section names are the ones fleet-dispatch and agent-land set" {
   local code
   code=$({
-    grep -oE 'AGENT_QUEUE_PULL="?\$?\{?(PULL:-)?[a-z]+' "$FD" | grep -oE '[a-z]+$'
+    grep -ohE 'AGENT_QUEUE_PULL="?\$?\{?(PULL:-)?[a-z]+' "$FD" "$LAND" | grep -oE '[a-z]+$'
     sed -nE 's/^start_pull\(\) \{.*&& echo ([a-z]+) \|\| echo ([a-z]+);.*/\1\n\2/p' "$FD"
   } | sort -u)
   [ -n "$code" ]

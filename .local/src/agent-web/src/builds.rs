@@ -4,21 +4,19 @@
 //! only draws, a page at a time. Its view keys carry a `b` prefix (`bq`, `bs`, `bsort`, `bdir`,
 //! `bpg`) because the table
 //! beside it on either tab keeps the plain ones. A new ledger line pushes the `builds` event; a
-//! run's log and its detail (jobs, steps, cost) are read when it is opened, priced with the rates
-//! the Infra tab's answer carries.
+//! run's log and its detail (jobs and steps) are read when it is opened.
 
 use hub_core::builds::{self, Builds, Paths, Run, RunKey, Scope, STALE_SECS};
 use hub_core::jobs::{self, now};
 use hub_core::layout;
 use hub_core::queue::Item;
-use hub_core::run_detail::Rates;
 use hub_core::session_actions::System;
 use hub_core::table::{self, Summary, View};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cache::{off, ReadCache};
+use crate::cache::{failed, off, ReadCache};
 
 /// Quick reloads and each keystroke in the search share one read of a 7 MB ledger.
 const CACHE_SECS: u64 = 5;
@@ -67,12 +65,7 @@ fn render(b: &Builds, q: &Query) -> String {
         look: b.needs_look(scope),
         table,
     };
-    serde_json::to_string(&out).unwrap_or_else(|e| failed(e.to_string()))
-}
-
-/// A body the section can still render when reading itself failed.
-fn failed(e: String) -> String {
-    serde_json::json!({ "rows": [], "errors": [e] }).to_string()
+    serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows"], e.to_string()))
 }
 
 /// The ledger's read, joined to the PR store, the queue `items` and the releases, kept a few
@@ -97,7 +90,9 @@ pub async fn current(
 
 /// The view `q` asks for.
 pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
-    current(items).await.map_or_else(failed, |b| render(&b, &q))
+    current(items)
+        .await
+        .map_or_else(|e| failed(&["rows"], e), |b| render(&b, &q))
 }
 
 /// A ledger append: the kept read is answered once more and refreshed behind it.
@@ -116,15 +111,11 @@ pub async fn log(key: RunKey) -> Result<String, String> {
 /// The run `key` names, opened: header, jobs and steps from the ledger and the job archive, and
 /// its page's sections. A GitHub run the archive has not finished is read once from GitHub
 /// (kept 30 s), and its Changes read the repo's clone; the joined read is the table's own.
-pub async fn detail(
-    key: RunKey,
-    rates: Rates,
-    items: (Vec<Item>, Option<String>),
-) -> Result<String, String> {
+pub async fn detail(key: RunKey, items: (Vec<Item>, Option<String>)) -> Result<String, String> {
     let b = current(items).await?;
     let d = off(move || {
         let cache = jobs::Paths::from_env().cache;
-        builds::open_detail(&b, &Paths::from_env(), &cache, &rates, &key, now())
+        builds::open_detail(&b, &Paths::from_env(), &cache, &key, now())
     })
     .await??;
     serde_json::to_string(&d).map_err(|e| e.to_string())
@@ -263,11 +254,5 @@ mod tests {
         assert_eq!(v["rows"][0]["id"], per);
         assert_eq!(v["table"]["pager"]["page"], 2);
         assert!(v.get("more").is_none());
-    }
-
-    #[test]
-    fn a_failed_read_still_gives_the_section_a_body() {
-        let v: serde_json::Value = serde_json::from_str(&failed("gone".into())).unwrap();
-        assert_eq!(v["errors"][0], "gone");
     }
 }

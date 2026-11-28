@@ -1,15 +1,19 @@
 #!/bin/bash
-# Stop-post: register a MEANINGFUL session into an agent-facing registry so an
+# Stop-post: register the session into an agent-facing registry so an
 # agent (or the user) can later list / resume / compact it. Never blocks.
 #
 # Key points:
 #   - Destination is the AGENT axis ~/.agent/sessions/{project}/sessions.jsonl,
-#     never the human ~/.notes/inbox (low-noise, agent-facing by design).
-#   - "Meaningful" = the session actually did work: >=1 Edit/Write tool_use in
-#     the transcript, OR a dirty git worktree, OR an agentctl runner (AGENTCTL_NAME,
-#     which the agentctl runner wrapper exports): a read-only runner still spends, and its row
-#     carries the cost and the runner's name in `agentctl` (outcome rows already use
-#     `runner` as a boolean). Pure Q&A / read-only by hand -> no entry.
+#     never the human ~/.notes/captures (low-noise, agent-facing by design).
+#   - Registered: every interactive session (transcript entrypoint `cli`, a hand or a dispatched
+#     tmux session, read-only or editing through Bash: agentctl-session-outcomes, fleet-bench and
+#     `sessions` read their sessions from here), and a headless call only when it made
+#     an edit call, left a dirty git tree, or is an agentctl runner (AGENTCTL_NAME, which the runner
+#     wrapper exports): a read-only runner still spends, and its row carries the runner's name in
+#     `agentctl` (outcome rows already use `runner` as a boolean). A read-only headless call (a judge,
+#     a probe; thousands a day) -> no entry.
+#   - `edits` counts the edit-tool tool_use calls (edit-tools.conf), not lines naming them:
+#     an interactive transcript carries the tool schemas, so a line count read 2+ with no edit (ar-143).
 #   - Upsert by session_id: exactly ONE line per session, not per turn.
 #   - Self-heals: drops lines whose transcript file no longer exists, but only lines
 #     this machine wrote (`host`). store-sync shares the registry across the fleet, so
@@ -42,10 +46,19 @@ if [ ! -d "$PROJECT_DIR" ]; then
   [ -n "$PRIOR" ] && PROJECT_NAME=$(basename "$(dirname "$PRIOR")")
 fi
 
-# --- meaningful gate: real work only, else skip silently ---
-# grep -c prints "0" and exits 1 on no match; capture stdout only, default empty->0.
-EDITS=$(grep -c -E '"name":"(Edit|Write|MultiEdit|NotebookEdit)"' "$TRANSCRIPT" 2>/dev/null)
+# --- the gate: an interactive session, or a headless one that did work ---
+# edits: the edit tool calls; grep only narrows the lines jq parses, and a line that is not a
+# JSON object, or a content block that is not one, is skipped rather than failing the count.
+# shellcheck source=../../../.local/lib/edit-tools.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../../.local/lib/edit-tools.sh" &&
+  EDIT_RE="$(edit_tools_re)" && EDIT_JSON="$(edit_tools_json)" ||
+  { echo "80-session-register: no edit-tool list, so the session was not registered" >&2; exit 0; }
+EDITS=$(grep -E "\"name\":\"($EDIT_RE)\"" "$TRANSCRIPT" 2>/dev/null |
+  jq -Rn --argjson tools "$EDIT_JSON" '[inputs | fromjson? | objects | select(.type == "assistant") | .message.content? | arrays | .[] | objects
+           | select(.type == "tool_use" and (.name | IN($tools[])))] | length' 2>/dev/null)
 EDITS=${EDITS:-0}
+INTERACTIVE=false
+grep -m1 -q -F '"entrypoint":"cli"' "$TRANSCRIPT" 2>/dev/null && INTERACTIVE=true
 DIRTY=false
 cd "$PROJECT_DIR" 2>/dev/null || true
 if git rev-parse --git-dir >/dev/null 2>&1; then
@@ -54,7 +67,7 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   fi
 fi
 AGENTCTL="${AGENTCTL_NAME:-}"
-if [ "${EDITS:-0}" -lt 1 ] && [ "$DIRTY" = false ] && [ -z "$AGENTCTL" ]; then
+if [ "$EDITS" -lt 1 ] && [ "$INTERACTIVE" = false ] && [ "$DIRTY" = false ] && [ -z "$AGENTCTL" ]; then
   exit 0
 fi
 

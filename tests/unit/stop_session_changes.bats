@@ -2,7 +2,7 @@
 # stop-session-changes.py -- the paths this session changed, judged from its session-start snapshot.
 #
 # The Stop gate picks its shell tests from this list. A checkout or reset that moves HEAD back (a canary start,
-# a bisect, a reset to an older commit) rewrites files the session never edited. Before the fix each
+# a bisect, a reset to an older commit) or a checkout onto another branch rewrites files the session never edited. Before the fix each
 # of them counted as the session's, and one harness path in the list picked every test file.
 #
 # git is a subprocess, not the subject: a throwaway repo under $BATS_TEST_TMPDIR, with a remote
@@ -101,4 +101,73 @@ changed() { python3 "$CLASSIFIER" changed "$REPO" session-1; }
   run changed
   assert_success
   assert_output ""
+}
+
+# A branch cut from before "two" with its own commit, left behind on main before the snapshot.
+other_branch() {
+  git -C "$REPO" checkout -q -b other HEAD~1
+  printf 'other\n' >"$REPO/b.txt"
+  git -C "$REPO" commit -qam other
+  git -C "$REPO" checkout -q main
+}
+
+@test "a checkout onto another branch does not count that branch's commits" {
+  other_branch
+  snapshot
+  git -C "$REPO" checkout -q other
+  run changed
+  assert_success
+  assert_output ""
+}
+
+@test "a commit made on that other branch still counts, and only it" {
+  other_branch
+  snapshot
+  git -C "$REPO" checkout -q other
+  printf 'mine\n' >"$REPO/c.txt"
+  git -C "$REPO" add c.txt
+  git -C "$REPO" commit -qm mine
+  run changed
+  assert_success
+  assert_output "c.txt"
+}
+
+@test "a baseline from before refs were recorded still sets apart a backward move" {
+  snapshot
+  python3 - "$BATS_TEST_TMPDIR/cache"/claude-stop-hook/session-start-*.json <<'PY'
+import json, sys
+for p in sys.argv[1:]:
+    d = json.load(open(p))
+    d.pop("\0refs")
+    json.dump(d, open(p, "w"))
+PY
+  git -C "$REPO" checkout -q HEAD~1
+  run changed
+  assert_success
+  assert_output ""
+}
+
+@test "a recorded tip that no longer exists does not drop the filter" {
+  other_branch
+  snapshot
+  python3 - "$BATS_TEST_TMPDIR/cache"/claude-stop-hook/session-start-*.json <<'PY'
+import json, sys
+for p in sys.argv[1:]:
+    d = json.load(open(p))
+    d["\0refs"].append("0" * 40)
+    json.dump(d, open(p, "w"))
+PY
+  git -C "$REPO" checkout -q other
+  run changed
+  assert_success
+  assert_output ""
+}
+
+@test "a branch made after the snapshot counts: nothing records that it predates the session" {
+  snapshot
+  other_branch
+  git -C "$REPO" checkout -q other
+  run changed
+  assert_success
+  assert_output "b.txt"
 }

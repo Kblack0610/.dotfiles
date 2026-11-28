@@ -297,6 +297,12 @@ impl Registry {
             .find(|p| p.is_dir())
     }
 
+    /// The host of forge `forge` (`forges.<forge>`); None when the
+    /// registry does not list it.
+    pub fn forge_host(&self, forge: &str) -> Option<&str> {
+        self.raw.get("forges")?.get(forge)?.as_str()
+    }
+
     /// `trackers.<name>.type`: game, app or infra.
     pub fn kind(&self, name: &str) -> Option<String> {
         let t = self.tracker(name)?.get("type")?.as_str()?;
@@ -552,18 +558,17 @@ impl Registry {
     /// worktree is its repo; inside a registered repo the longest repo-relative app `path` wins,
     /// and at the worktree root a `<type>/<app>/<rest>` or `release/<app>-v<version>` branch names
     /// the app; a reaped worktree under the worktree root is named by the `<repo>-<slug>`
-    /// convention; a directory outside any repo, or in an unregistered repo under the temp dir, is
-    /// `_unscoped` unless its basename is a key.
+    /// convention; any other path whose checkout (or, outside a repo, whose own) basename is no
+    /// key is `_unscoped`.
     pub fn project_for_path(&self, abs_path: &str) -> String {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
         let wt_root = env("WT_ROOT")
             .unwrap_or_else(|| format!("{}/.worktrees", env("HOME").unwrap_or_default()));
-        let tmp = env("TMPDIR").unwrap_or_else(|| "/tmp".into());
-        self.project_under(abs_path, &wt_root, &tmp)
+        self.project_under(abs_path, &wt_root)
     }
 
-    /// `project_for_path` with the worktree root and temp dir passed in, so a test gives its own.
-    fn project_under(&self, abs_path: &str, wt_root: &str, tmp: &str) -> String {
+    /// `project_for_path` with the worktree root passed in, so a test gives its own.
+    fn project_under(&self, abs_path: &str, wt_root: &str) -> String {
         let co = Checkout::find(Path::new(abs_path));
         let mut base = fallback(abs_path);
         let mut repo_name: Option<String> = None;
@@ -611,13 +616,7 @@ impl Registry {
                 return hit.to_string();
             }
         }
-        let tmp = format!("{}/", tmp.trim_end_matches('/'));
-        let place = co.as_ref().map_or_else(
-            || abs_path.to_string(),
-            |c| c.repo.to_string_lossy().into_owned(),
-        );
-        let in_tmp = place.len() > tmp.len() && place.starts_with(&tmp);
-        if (co.is_none() || in_tmp) && !self.known(&base) {
+        if !self.known(&base) {
             return "_unscoped".into();
         }
         base
@@ -943,8 +942,8 @@ mod tests {
 
     /// Every case `tests/unit/project_name.bats` pins for `resolve_project_name`, built as real
     /// git trees and answered by both the shell resolver and `project_for_path`; each must give
-    /// the expected key, so the two cannot drift. The roots go to the shell as `WT_ROOT` and `TMPDIR` and to Rust as
-    /// arguments, so no test mutates the process environment.
+    /// the expected key, so the two cannot drift. The worktree root goes to the shell as `WT_ROOT`
+    /// and to Rust as an argument, so no test mutates the process environment.
     #[test]
     fn project_for_path_matches_the_shell() {
         let root = std::env::temp_dir().join(format!("project-map-pfp-{}", std::process::id()));
@@ -1053,8 +1052,9 @@ mod tests {
             (wt.join("unrelated-name"), "mono-canon"),
             (tmp.join("tmp.AbC123xyZ"), "_unscoped"),
             (tmp.join("tmp.AbC123xyZ/sub"), "_unscoped"),
-            (repos.join("stranger/sub"), "stranger"),
-            (repos.join("stranger-wt"), "stranger"),
+            (repos.join("stranger"), "_unscoped"),
+            (repos.join("stranger/sub"), "_unscoped"),
+            (repos.join("stranger-wt"), "_unscoped"),
         ];
         for (path, want) in cases {
             let p = path.to_str().unwrap();
@@ -1075,7 +1075,7 @@ mod tests {
                 .expect("bash runs");
             let shell = String::from_utf8_lossy(&out.stdout).trim().to_string();
             assert_eq!(shell, *want, "shell resolver on {p}");
-            let got = reg.project_under(p, wt.to_str().unwrap(), tmp.to_str().unwrap());
+            let got = reg.project_under(p, wt.to_str().unwrap());
             assert_eq!(got, *want, "project_for_path on {p}");
         }
         // negative control: the basename rule this replaces in agent-panel names a worktree by

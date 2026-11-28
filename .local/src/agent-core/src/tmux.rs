@@ -35,6 +35,11 @@ pub struct Pane {
     pub labels: String,
     /// fleet-dispatch started its session or window: `@dispatch` is set on the session, or on the window for one opened in a shared session.
     pub dispatched: bool,
+    /// Epoch seconds of the pane's own last output (`#{pane_last_output_time}`, so a sibling pane
+    /// in the window does not count), 0 when unread (a tmux without the format): what any harness
+    /// drawing in the pane last did, so a harness with no status file is read by it
+    /// (`agent::activity_status`).
+    pub activity: u64,
 }
 
 /// `<server>/<session>:<window>`.
@@ -141,9 +146,7 @@ pub fn list_panes() -> (Vec<Pane>, Vec<String>) {
 }
 
 fn list_server_panes(server: &str) -> Result<Vec<Pane>, String> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = crate::now_secs();
     let env = |k: &str, d: &str| {
         std::env::var(k)
             .ok()
@@ -180,7 +183,7 @@ fn pane_format(now: u64, shepherd_home: (&str, &str)) -> String {
     "#{session_name}\t#{window_index}\t#{pane_current_path}\t#{pane_pid}\t#{pane_id}\t\
      #{&&:#{session_attached},#{window_active}}\t#{window_id}\t#{pane_title}\t\
      #{?@fav,fav ,}#{?@tag_important,important ,}#{?@tag_pinned,pinned ,}#{?@tag_agent,agent ,}#{?@tag_group,#{@tag_group} ,}#{?@dispatch,dispatch ,}\
-     #{?#{||:#{e|<:NOW,#{@shepherd}},#{&&:#{==:#{session_name},HOME_SESSION},#{==:#{window_name},HOME_WINDOW}}},shepherd ,}\t#{@fleet_stage}\t#{@fleet_labels}\t#{?@dispatch,1,}"
+     #{?#{||:#{e|<:NOW,#{@shepherd}},#{&&:#{==:#{session_name},HOME_SESSION},#{==:#{window_name},HOME_WINDOW}}},shepherd ,}\t#{@fleet_stage}\t#{@fleet_labels}\t#{?@dispatch,1,}\t#{pane_last_output_time}"
         .replace("NOW", &now.to_string())
         .replace("HOME_SESSION", shepherd_home.0)
         .replace("HOME_WINDOW", shepherd_home.1)
@@ -210,6 +213,7 @@ fn parse_panes(server: &str, text: &str) -> Vec<Pane> {
             stage: f.get(9).copied().unwrap_or("").to_string(),
             labels: f.get(10).copied().unwrap_or("").to_string(),
             dispatched: f.get(11) == Some(&"1"),
+            activity: f.get(12).and_then(|n| n.parse().ok()).unwrap_or(0),
         });
     }
     panes
@@ -302,7 +306,8 @@ mod tests {
 
     #[test]
     fn parses_panes_with_their_server() {
-        let text = "hub\t0\t/home/u\t42\t%7\t2\t@3\t✳ title\tpinned \tSTALLED\tmanual,x\t1\n\
+        let text =
+            "hub\t0\t/home/u\t42\t%7\t2\t@3\t✳ title\tpinned \tSTALLED\tmanual,x\t1\t1795000000\n\
                     hub\t1\t/home/u\t43\t%8\t0\t@4\tt\t\nshort\trow\n";
         let panes = parse_panes("hub", text);
         assert_eq!(panes.len(), 2);
@@ -323,6 +328,8 @@ mod tests {
         );
         // Its own field, not the tags column, where a tag group could be named dispatch.
         assert!(panes[0].dispatched && !panes[1].dispatched);
+        // The window's last output; a row without the column reads 0, never activity now.
+        assert_eq!((panes[0].activity, panes[1].activity), (1795000000, 0));
     }
 
     #[test]
@@ -340,7 +347,9 @@ mod tests {
         assert!(fmt.contains(tag), "{fmt}");
         assert!(!fmt.contains("HOME_"));
         assert!(
-            fmt.ends_with("\t#{@fleet_stage}\t#{@fleet_labels}\t#{?@dispatch,1,}"),
+            fmt.ends_with(
+                "\t#{@fleet_stage}\t#{@fleet_labels}\t#{?@dispatch,1,}\t#{pane_last_output_time}"
+            ),
             "{fmt}"
         );
         assert!(!fmt.contains("NOW"));

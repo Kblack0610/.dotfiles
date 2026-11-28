@@ -7,6 +7,10 @@ description = "What the hub boards read and the session actions they offer, for 
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "hub-cases"
+path = "src/bin/hub-cases.rs"
+
 [dependencies]
 agent-core = { path = "../agent-core" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
