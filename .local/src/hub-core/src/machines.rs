@@ -126,6 +126,9 @@ pub struct Pool {
     /// time): None before the exporter reports the window, 0 for a quiet one. Beside `done`.
     pub done_1h: Option<f64>,
     pub done_5h: Option<f64>,
+    /// Passed of passed and failed over the same windows (`cc:pool_pass_ratio_1h`, `_5h`), as `pass`.
+    pub pass_1h: Option<f64>,
+    pub pass_5h: Option<f64>,
     pub done: Option<f64>,
     /// Seconds a finished job of the kind usually runs: the exporter's 24h median over every
     /// workflow (`cc:pool_run_seconds_24h`). None for the local gates and before it reports.
@@ -438,6 +441,8 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             oldest: get("cc:pool_oldest_wait_seconds", &p),
             done_1h: get("cc:pool_done_1h", &p),
             done_5h: get("cc:pool_done_5h", &p),
+            pass_1h: get("cc:pool_pass_ratio_1h", &p),
+            pass_5h: get("cc:pool_pass_ratio_5h", &p),
             done: get("cc:pool_done_24h", &p),
             usual: get("cc:pool_run_seconds_24h", &p),
             pass: get("cc:pool_pass_ratio_24h", &p),

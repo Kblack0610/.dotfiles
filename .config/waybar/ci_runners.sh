@@ -11,14 +11,16 @@
 # Hover: the title with each CI node's cells (BAR of them, the fuller of its taken CPU and memory
 # shares, a part cell as an eighth block on the dim colour, the rest dim), then the board's head
 # line less its runner count (jobs running, queued, the units taken of the CI pool, done
-# in 1h and 5h once reported, done in 24h, pass rate painted red under 70% and amber under 90%),
-# the ci domain's parts and why
-# runner rows may be short, then jobs by kind (running, waiting, oldest, done, usual, pass), CI POOL
+# in 1h and 5h once reported, each with its pass rate, done in 24h, every pass rate painted red under
+# 70% and amber under 90%), the ci domain's parts and why runner rows may be short, the jobs no online
+# runner can take in red, the busy ARC runners with no pod series in amber (on no machine, so no row
+# or unit counts them), the Unity pool (each set's jobs running of its most), GitHub's own runners
+# by repo, then jobs by kind (running, waiting, oldest, done, usual, pass), CI POOL
 # (its units, taken, free and real use, and TAKEN BY: the units each job kind, other pods and free
 # hold, as hub_core words them), one row per machine: TAKEN (the CPU and memory pods take of its allocatable, then its cells like the
-# title's, `-` on no CI node), RUNNING (each job by kind and repo: a pod's scale set or
-# ScaledJob, a Unity slot's pool) and NEXT (the oldest waiting job that fits it, how long it has
-# waited). A machine's name and booking are red when its load per core is past HOT_RATIO (the
+# title's, `-` on no CI node) and NEXT (the oldest waiting job that fits it, how long it has
+# waited), and under it one line per run there (hub_core::ci::Work: repo and PR or branch, job, a
+# matrix's shards as `n of N`, its time and usual, its scale set or kind). A machine's name and booking are red when its load per core is past HOT_RATIO (the
 # load chip's own line). Then the job pods no node has
 # room for, the runners that are down, the jobs running long, WAITING (the first waiting jobs,
 # where each fits and about when it starts) and where every runner is listed.
@@ -97,6 +99,18 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   def share: [(if .cpu_alloc > 0 then .cpu / .cpu_alloc else 0 end), (if .mem_alloc > 0 then .mem / .mem_alloc else 0 end)] | max;
   def bbar: if .booked == null then "" else ubar(.booked | share * BAR; BAR) end;
   # hub_core::jobpods::Pending::line, the cores as jobpods::request: `arc-org-light x3 (1.69 cpu 1.2G each)`.
+  # hub_core::ci::Work: `.dotfiles #3592 fast tier: 16 of 24 unit shards, 6m (usual 6m) on arc-repo-dotfiles`,
+  # `starting: x2 on arc-org-light` for pods whose runner reports no job yet.
+  def wline: . as $w | [(if (.repo // "") == "" then empty
+               elif (.pr // "") != "" then "\(.repo) #\(.pr)"
+               elif (.branch // "") != "" then "\(.repo) \(.branch | if length > 24 then .[:23] + "~" else . end)"
+               else .repo end), (.job // "")] | map(select(. != "")) | join(" ")
+    | . + (if $w.of != null then ": \($w.n) of \($w.of)" + (if ($w.unit // "") == "" then "" else " \($w.unit)" end) + " shards"
+           elif $w.n > 1 then ": x\($w.n)" else "" end)
+    + (if $w.ran == null then "" else ", \($w.ran | dur)" + (if $w.usual == null then "" else " (usual \($w.usual | dur))" end) end)
+    + (if ($w.set // "") == "" then "" else " on \($w.set)" end);
+  # A window'"'"'s pass rate beside its count: ` (83% passed)`, nothing with no rate.
+  def wpass: if . == null then "" else . as $p | " (" + ($p | pass_paint(($p | pct) + " passed")) + ")" end;
   def ptext: "\(.kind)\(if .n > 1 then " x\(.n)" else "" end) (\(.cpu * 100 | round / 100 | tostring) cpu \(.mem | bytes)\(if .n > 1 then " each" else "" end))";
   [$grn, $yel, $red] as $colour
   | (.red // []) as $nobody
@@ -104,8 +118,8 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ("\($g.busy) running, \($g.queued) queued"
      + (if $g.queued > 0 and $g.oldest != null then " (oldest \($g.oldest | dur))" else "" end)
      + (if $g.units == null then "" else ", \($g.units.brief)" end)
-     + (if $g.done_1h == null then "" else ", \($g.done_1h) done 1h" end)
-     + (if $g.done_5h == null then "" else ", \($g.done_5h) done 5h" end)
+     + (if $g.done_1h == null then "" else ", \($g.done_1h) done 1h" + ($g.pass_1h | wpass) end)
+     + (if $g.done_5h == null then "" else ", \($g.done_5h) done 5h" + ($g.pass_5h | wpass) end)
      + (if $g.done > 0 then ", \($g.done) done 24h"
           + (if $g.pass == null then "" else ", " + ($g.pass | pass_paint(($g.pass | pct) + " passed")) end)
         else "" end)) as $head
@@ -122,14 +136,13 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ([$g.machines[].host | length] + [7] | max) as $mw
   | ($g.machines | map(.bcell = (.booked | bcell))) as $ms
   | ([$ms[].bcell | length] + [6] | max) as $uw
-  | ([$ms[] | .runlist = (if (.running | length) == 0 then "-" else .running | join(", ") end)
-            | .nextline = (if .next == null then "-"
+  | ([$ms[] | .nextline = (if .next == null then "-"
                 else .next.job + (if .next.repo == "" then "" else " (\(.next.repo))" end) + " " + (.next.wait | dur) end)]) as $ms
-  | ([$ms[].runlist | length] + [7] | max) as $rw
   | ([$ms[] | ((.load // 0) >= $hot) as $hotrow
       | ((.host | pad($mw) | esc) + " " + (.bcell | lpad($uw))
          | if $hotrow then paint($red) else . end)
-      + "  " + bbar + (" " * (if .booked == null then BAR else 0 end)) + "  " + (.runlist | pad($rw) | esc) + "  " + (.nextline | esc)]) as $machines
+      + "  " + bbar + (" " * (if .booked == null then BAR else 0 end)) + "  " + (.nextline | esc),
+      (.work // [] | .[] | "  " + (wline | esc))]) as $machines
   # WAITING: job (repo), how many, how long the oldest waited, where it fits (with the slot state
   # when that is no idle or busy slot), and when it starts.
   | ([$g.next[] | . as $q
@@ -152,7 +165,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
       | ([$u.columns] + $u.rows | map([range(length) as $i | .[$i] | if $i == 0 then pad($w[$i]) else lpad($w[$i]) end] | join("  ") | esc)) as $t
       | [($u.head | esc), ($u.line | esc), ""] + $t + [""] end) as $pool
   | (("KIND" | pad($kw)) + " RUNNING WAITING OLDEST  DONE USUAL  PASS") as $khead
-  | (("MACHINE" | pad($mw)) + " " + ("TAKEN" | lpad($uw)) + "  " + ("" | pad(BAR)) + "  " + ("RUNNING" | pad($rw)) + "  NEXT") as $mhead
+  | (("MACHINE" | pad($mw)) + " " + ("TAKEN" | lpad($uw)) + "  " + ("" | pad(BAR)) + "  NEXT") as $mhead
   | ([$khead] + (if ($kinds | length) > 0 then $kinds else ["no job kind reports"] end)
      + [""] + $pool + [$mhead] + (if ($machines | length) > 0 then $machines else ["no machine reports"] end)
      + (if ($g.pending | length) > 0 then ["waiting for room: " + ([$g.pending[] | ptext] | join(", ")) | esc | paint($yel)] else [] end)
@@ -166,6 +179,14 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
       text: (("CI r:" | paint($lc)) + "\($g.busy) " + ("q:" | paint($lc)) + "\($g.queued)"),
       tooltip: ("<b>CI runners</b>" + (if $cells == "" then "" else "  " + $cells end) + "\n\($head)\nci: \($parts | join(", "))\n"
         + ([$nobody[] | esc | paint($red) | . + "\n"] | join(""))
+        + (if ($g.unplaced // 0) == 0 then ""
+           else ("pod series missing for \($g.unplaced) busy ARC runner" + (if $g.unplaced == 1 then "" else "s" end)
+                 + ": on no machine row or unit" | paint($yel)) + "\n" end)
+        + (if $g.unity == null then ""
+           else "Unity \($g.unity.running) running of \($g.unity.max) max ("
+             + ($g.unity.sets | map("\(.name) \(.running)/\(.max)") | join(", ") | esc) + ")\n" end)
+        + (if ($g.hosted // []) == [] then ""
+           else "github-hosted: " + ($g.hosted | map("\(.repo) \(.n)") | join(", ") | esc) + "\n" end)
         + "<tt>\($body | join("\n"))</tt>"),
       class: "ok"
     }

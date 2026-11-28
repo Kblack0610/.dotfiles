@@ -377,6 +377,9 @@ fn request(cpu: f64) -> String {
     n.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
+/// The suffix of the pod ARC's kubernetes container mode runs a job's steps in, beside its runner.
+const WORKFLOW_POD: &str = "-workflow";
+
 /// The scale set or job that owns a pod: an ARC pod's EphemeralRunner is `<set>-runner-<id>`, a
 /// KEDA pod's Job is `<scaledjob>-<id>`, a reservation pod's DaemonSet is its own name. What
 /// `actions.github.com/scale-set-name` says, from series kube-state-metrics exports without a
@@ -427,6 +430,22 @@ pub fn read(infra: &Infra) -> Vec<JobPod> {
             "cpu" => p.cpu = v,
             "memory" => p.mem = v,
             _ => {}
+        }
+    }
+    // ARC's kubernetes container mode runs each job's steps in a `<runner pod>-workflow` pod with
+    // no owner, on its runner's node (they share the work volume): one job, booked as its runner.
+    let workflow: Vec<&str> = by
+        .keys()
+        .copied()
+        .filter(|n| n.ends_with(WORKFLOW_POD))
+        .collect();
+    for name in workflow {
+        let runner = &name[..name.len() - WORKFLOW_POD.len()];
+        if by.contains_key(runner) {
+            let w = by.remove(name).unwrap_or_default();
+            if let Some(r) = by.get_mut(runner) {
+                (r.cpu, r.mem) = (r.cpu + w.cpu, r.mem + w.mem);
+            }
         }
     }
     by.into_values().collect()
@@ -733,6 +752,58 @@ pub(crate) mod tests {
 
     pub fn node_state(node: &str, state: &str) -> Series {
         one(json!({"node": node, "state": state}), "1")
+    }
+
+    #[test]
+    fn a_container_mode_workflow_pod_is_its_runners_job_and_books_with_it() {
+        let mut i = infra();
+        let runner = "arc-repo-dotfiles-pods-runner-xrvxx";
+        let (p1, r1) = pod(
+            runner,
+            "EphemeralRunner",
+            runner,
+            "ms-a2",
+            "Running",
+            "0.5",
+            "1000000000",
+        );
+        let (p2, r2) = pod(
+            &format!("{runner}-workflow"),
+            "",
+            "",
+            "ms-a2",
+            "Running",
+            "0.01",
+            "64000000",
+        );
+        let (p3, r3) = pod(
+            "lone-workflow",
+            "",
+            "",
+            "ms-a2",
+            "Running",
+            "0.01",
+            "64000000",
+        );
+        i.instant.get_mut("job_pods").unwrap().extend([p1, p2, p3]);
+        i.instant
+            .get_mut("job_requests")
+            .unwrap()
+            .extend([r1, r2, r3].concat());
+        let pods = read(&i);
+        let r = pods.iter().find(|p| p.name == runner).unwrap();
+        assert_eq!(
+            (r.kind.as_str(), r.cpu, r.mem),
+            ("arc-repo-dotfiles-pods", 0.51, 1064000000.0)
+        );
+        assert!(
+            !pods.iter().any(|p| p.name == format!("{runner}-workflow")),
+            "folded into its runner"
+        );
+        assert!(
+            pods.iter().any(|p| p.name == "lone-workflow"),
+            "no runner pod to fold into: kept"
+        );
     }
 
     #[test]

@@ -3,8 +3,9 @@
 # hub-core computes for every CI surface. What these pin: the bar is
 # `CI r:<running> q:<queued>` behind dim labels and nothing else; its class is ok whatever the glance alert or domain level says, since a
 # runner or machine down is the health chip's; the hover is each CI node's cells on the title line, the board's head line with the units taken, jobs by kind, CI POOL as hub-core words it, one row per machine with
-# the CPU and memory its pods take and 4 cells of the fuller share (a part cell as an eighth block), what runs there and the next waiting job that fits it (red past the load chip's HOT_RATIO), the
-# the pods waiting for room on a line, down and long runs; and a failed hub read shows `CI: prom down`, never the last numbers.
+# the CPU and memory its pods take and 4 cells of the fuller share (a part cell as an eighth block) and the next waiting job that fits it (red past the load chip's HOT_RATIO), under it one line per
+# run there in words, the 1h and 5h pass rates in the head, the unplaced ARC runners, the Unity pool and GitHub's own runners under the parts line, the pods waiting for room on a line, down and
+# long runs; and a failed hub read shows `CI: prom down`, never the last numbers.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -37,10 +38,11 @@ glance() {
     pending: [],
     kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, usual: 1260, pass: 0.5},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
-    machines: [{host: "ms-a2", busy: 3, running: ["[arc-org-light] x2", "[forgejo-runner]"], next: null, load: 0.2,
+    machines: [{host: "ms-a2", busy: 3, work: [{"set": "arc-org-light", "repo": "dotfiles", "pr": "3592", "job": "fast tier", "unit": "unit", "of": 24, "n": 2, "ran": 360, "usual": 300}, {"set": "forgejo-runner", "job": "build"}], next: null, load: 0.2,
                 booked: {cpu: 4.38, cpu_alloc: 32, mem: 2700000000, mem_alloc: 98768805888}},
-               {host: "workstation", busy: 2, running: ["[gates]", "[unity] platform"], next: null, load: 0.4, booked: null},
-               {host: "mac-mini", busy: 0, running: [], next: {job: "Checks", repo: "web", n: 1, wait: 300}, load: null, booked: null}],
+               {host: "workstation", busy: 2, work: [{"set": "gates", "repo": "dotfiles", "branch": "agent-9-261127-013802-ci-hover", "job": "gate", "n": 1, "ran": 120},
+                                                {"set": "unity-build", "repo": "platform", "job": "Build iOS", "n": 1, "ran": 600, "usual": 540}], next: null, load: 0.4, booked: null},
+               {host: "mac-mini", busy: 0, work: [], next: {job: "Checks", repo: "web", n: 1, wait: 300}, load: null, booked: null}],
     down: [], long: [], next: []} * $patch)}' > "$FX/ci.json"
 }
 
@@ -48,13 +50,14 @@ glance() {
 # half full on memory with a Unity slot job in the same row, ms-a2 light; the workstation on no CI node.
 cluster() {
   glance '{"machines": [
-    {"host": "deskslim-1", "busy": 13, "running": ["[arc-org-light] x13"], "next": null, "load": 0.2,
+    {"host": "deskslim-1", "busy": 13, "work": [{"set": "arc-org-light", "repo": "dotfiles", "pr": "3592", "job": "fast tier", "unit": "unit", "of": 24, "n": 13, "ran": 360, "usual": 300}], "next": null, "load": 0.2,
      "booked": {"cpu": 22.5, "cpu_alloc": 24, "mem": 12884901888, "mem_alloc": 68719476736}},
-    {"host": "deskslim-2", "busy": 3, "running": ["[unity] unity-core-playground x2", "[forgejo-runner]"], "next": null, "load": 0.2,
+    {"host": "deskslim-2", "busy": 3, "work": [{"set": "arc-unity-test", "repo": "unity-core-playground", "pr": "812", "job": "EditMode", "n": 2, "ran": 900, "usual": 1260},
+                                         {"set": "forgejo-runner", "job": "build"}], "next": null, "load": 0.2,
      "booked": {"cpu": 1, "cpu_alloc": 24, "mem": 34359738368, "mem_alloc": 68719476736}},
-    {"host": "ms-a2", "busy": 3, "running": ["[arc-org-light] x2", "[forgejo-runner]"], "next": null, "load": 0.2,
+    {"host": "ms-a2", "busy": 3, "work": [{"set": "arc-org-light", "repo": "dotfiles", "pr": "3592", "job": "fast tier", "unit": "unit", "of": 24, "n": 2, "ran": 360, "usual": 300}, {"set": "forgejo-runner", "job": "build"}], "next": null, "load": 0.2,
      "booked": {"cpu": 4.38, "cpu_alloc": 32, "mem": 2700000000, "mem_alloc": 98768805888}},
-    {"host": "workstation", "busy": 1, "running": ["[unity] platform"], "next": null, "load": 0.2, "booked": null}]}'
+    {"host": "workstation", "busy": 1, "work": [{"set": "unity-build", "repo": "platform", "job": "Build iOS", "n": 1, "ran": 600}], "next": null, "load": 0.2, "booked": null}]}'
 }
 
 bar()  { jq -r .text <<< "$output"; }
@@ -79,14 +82,15 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 @test "a CI node reads what its job pods book of its CPU and memory, and 4 cells of the fuller share, the part one on the dim colour" {
   cluster
   run "$MODULE"
-  [[ "$(tip)" == *$'\ndeskslim-1  22.5/24 12G/64G  ███<span background=\'#7f7f7f\'>▊</span>  [arc-org-light] x13                                 -\n'* ]]
+  [[ "$(tip)" == *$'\ndeskslim-1  22.5/24 12G/64G  ███<span background=\'#7f7f7f\'>▊</span>  -\n  dotfiles #3592 fast tier: 13 of 24 unit shards, 6m (usual 5m) on arc-org-light\n'* ]]
   # Memory is the fuller share on deskslim-2: half of it is two cells of four.
-  [[ "$(tip)" == *$'\ndeskslim-2   1.0/24 32G/64G  ██<span color=\'#7f7f7f\'>██</span>  [unity] unity-core-playground x2, [forgejo-runner]  -\n'* ]]
+  [[ "$(tip)" == *$'\ndeskslim-2   1.0/24 32G/64G  ██<span color=\'#7f7f7f\'>██</span>  -\n  unity-core-playground #812 EditMode: x2, 15m (usual 21m) on arc-unity-test\n  build on forgejo-runner\n'* ]]
   run plain
-  assert_line "MACHINE               TAKEN        RUNNING                                             NEXT"
-  assert_line "ms-a2       4.4/32 2.5G/92G  ▌███  [arc-org-light] x2, [forgejo-runner]                -"
-  # A machine on no CI node has no cells and reads -; its Unity slot job is in the same row.
-  assert_line "workstation               -        [unity] platform                                    -"
+  assert_line "MACHINE               TAKEN        NEXT"
+  assert_line "ms-a2       4.4/32 2.5G/92G  ▌███  -"
+  # A machine on no CI node has no cells and reads -; its Unity slot job is a line under it.
+  assert_line "workstation               -        -"
+  assert_line "  platform Build iOS, 10m on unity-build"
 }
 
 @test "the title is each CI node's cells, a group per node, so the cells read per machine" {
@@ -96,17 +100,17 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 }
 
 @test "a node with pods but no allocatable read (its CI taint gone) books bare, never against 0" {
-  glance '{"machines": [{"host": "ms-a2", "busy": 1, "running": ["[arc-org-light]"], "next": null, "load": 0.2,
+  glance '{"machines": [{"host": "ms-a2", "busy": 1, "work": [{"set": "arc-org-light", "job": "lint"}], "next": null, "load": 0.2,
     "booked": {"cpu": 1.69, "cpu_alloc": 0, "mem": 1300000000, "mem_alloc": 0}}]}'
   run "$MODULE"
-  [[ "$(plain)" == *"ms-a2"*"1.7 1.2G"*"[arc-org-light]"* ]]
+  [[ "$(plain)" == *"ms-a2"*"1.7 1.2G"*"lint on arc-org-light"* ]]
   [[ "$(plain)" != *"/0 "* ]]
 }
 
 @test "a share rounds to the nearest eighth of a cell, and one that rounds up to 8 is a full cell" {
   glance '{"machines": [
-    {"host": "a", "busy": 1, "running": ["x"], "next": null, "load": 0.2, "booked": {"cpu": 1, "cpu_alloc": 32, "mem": 0, "mem_alloc": 68719476736}},
-    {"host": "b", "busy": 1, "running": ["x"], "next": null, "load": 0.2, "booked": {"cpu": 7.76, "cpu_alloc": 32, "mem": 0, "mem_alloc": 68719476736}}]}'
+    {"host": "a", "busy": 1, "work": [{"job": "x"}], "next": null, "load": 0.2, "booked": {"cpu": 1, "cpu_alloc": 32, "mem": 0, "mem_alloc": 68719476736}},
+    {"host": "b", "busy": 1, "work": [{"job": "x"}], "next": null, "load": 0.2, "booked": {"cpu": 7.76, "cpu_alloc": 32, "mem": 0, "mem_alloc": 68719476736}}]}'
   run "$MODULE"
   [[ "$(tip)" == *$'\na       1.0/32 0B/64G  <span background=\'#7f7f7f\'>▏</span><span color=\'#7f7f7f\'>███</span>'* ]]
   [[ "$(tip)" == *$'\nb       7.8/32 0B/64G  █<span color=\'#7f7f7f\'>███</span>'* ]]
@@ -127,13 +131,14 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 
 @test "with no CI node reporting the units are gone and no cell is drawn, never a runner count as capacity" {
   glance '{"units": null, "machines": [
-    {"host": "workstation", "busy": 2, "running": ["[gates]", "[unity] platform"], "next": null, "load": 0.4, "booked": null}]}'
+    {"host": "workstation", "busy": 2, "work": [{"set": "gates", "job": "gate"}], "next": null, "load": 0.4, "booked": null}]}'
   run "$MODULE"
   assert_equal "$(tip | sed -n 1p)" "<b>CI runners</b>"
   assert_equal "$(plain | sed -n 2p)" "2 running, 2 queued (oldest 15m), 4 done 24h, 75% passed"
   run plain
   refute_output --partial "CI POOL"
-  assert_line "workstation      -        [gates], [unity] platform  -"
+  assert_line "workstation      -        -"
+  assert_line "  gate on gates"
 }
 
 @test "job pods no node has room for are one amber line under the machines, by kind and size" {
@@ -219,13 +224,14 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   refute_output --partial "7/9"
 }
 
-@test "one row per machine: TAKEN and its cells, RUNNING by kind and repo, NEXT the oldest waiting job that fits; no held, no SPACE, no WHERE, no slot counts" {
+@test "one row per machine: TAKEN and its cells, NEXT the oldest waiting job that fits; no held, no SPACE, no WHERE, no slot counts" {
   run "$MODULE"
-  [[ "$(tip)" == *$'\nms-a2       4.4/32 2.5G/92G  <span background=\'#7f7f7f\'>▌</span><span color=\'#7f7f7f\'>███</span>  [arc-org-light] x2, [forgejo-runner]  -\n'* ]]
+  [[ "$(tip)" == *$'\nms-a2       4.4/32 2.5G/92G  <span background=\'#7f7f7f\'>▌</span><span color=\'#7f7f7f\'>███</span>  -\n'* ]]
   run plain
-  assert_line "MACHINE               TAKEN        RUNNING                               NEXT"
-  assert_line "workstation               -        [gates], [unity] platform             -"
-  assert_line "mac-mini                  -        -                                     Checks (web) 5m"
+  assert_line "MACHINE               TAKEN        NEXT"
+  assert_line "workstation               -        -"
+  assert_line "mac-mini                  -        Checks (web) 5m"
+  refute_output --partial "RUNNING  "
   refute_output --partial "held"
   refute_output --partial "WHERE"
   refute_output --partial "SPACE"
@@ -234,16 +240,79 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   refute_output --partial "SLOTS"
 }
 
+@test "under each machine one line per run: repo and PR or else its branch cut to 24, the job, a matrix's shards, its time and usual, its scale set" {
+  run "$MODULE"
+  run plain
+  assert_line "  dotfiles #3592 fast tier: 2 of 24 unit shards, 6m (usual 5m) on arc-org-light"
+  assert_line "  build on forgejo-runner"
+  assert_line "  dotfiles agent-9-261127-013802-c~ gate, 2m on gates"
+  assert_line "  platform Build iOS, 10m (usual 9m) on unity-build"
+  # A matrix with no word reads bare shards, and a run with no repo starts at its job.
+  glance '{"machines": [{"host": "ms-a2", "busy": 3, "work": [{"set": "arc-org-light", "job": "Tests shard", "of": 3, "n": 3}], "next": null, "load": 0.2, "booked": null}]}'
+  run "$MODULE"
+  run plain
+  assert_line "  Tests shard: 3 of 3 shards on arc-org-light"
+  # A runner that names no job reads its repo and count, never a trailing space.
+  glance '{"machines": [{"host": "ms-a2", "busy": 2, "work": [{"set": "arc-repo-dotfiles", "repo": "(not watched)", "job": "", "n": 2}], "next": null, "load": 0.2, "booked": null}]}'
+  run "$MODULE"
+  run plain
+  assert_line "  (not watched): x2 on arc-repo-dotfiles"
+}
+
+@test "the head carries each window's pass rate beside its count, painted like the 24h one, and none with no rate" {
+  glance '{"done_1h": 4, "pass_1h": 0.5, "done_5h": 12, "pass_5h": 0.95}'
+  run "$MODULE"
+  assert_equal "$(tip | sed -n 2p)" "2 running, 2 queued (oldest 15m), taken 4.4/32 units (14%), 4 done 1h (<span color='#ef5734'>50% passed</span>), 12 done 5h (95% passed), 4 done 24h, <span color='#ffcc2f'>75% passed</span>"
+  glance '{"done_1h": 0, "done_5h": 12, "pass_5h": 0.8}'
+  run "$MODULE"
+  assert_equal "$(plain | sed -n 2p)" "2 running, 2 queued (oldest 15m), taken 4.4/32 units (14%), 0 done 1h, 12 done 5h (80% passed), 4 done 24h, 75% passed"
+}
+
+@test "busy ARC runners with no pod series are one amber line under the parts, and the bar stays ok" {
+  glance '{"unplaced": 3}'
+  run "$MODULE"
+  assert_equal "$(jq -r .class <<< "$output")" ok
+  assert_equal "$(tip | sed -n 4p)" "<span color='#ffcc2f'>pod series missing for 3 busy ARC runners: on no machine row or unit</span>"
+  glance '{"unplaced": 1}'
+  run "$MODULE"
+  assert_equal "$(plain | sed -n 4p)" "pod series missing for 1 busy ARC runner: on no machine row or unit"
+  glance '{"unplaced": 0}'
+  run "$MODULE"
+  run plain
+  refute_output --partial "pod series missing"
+}
+
+@test "the Unity pool is one line of jobs running of its most, each set as hub-core sums it, and none with no pool" {
+  glance '{"unity": {"running": 3, "max": 18, "sets": [{"name": "arc-unity-test", "running": 2, "max": 11}, {"name": "unity-build", "running": 1, "max": 7}]}}'
+  run "$MODULE"
+  run plain
+  assert_line "Unity 3 running of 18 max (arc-unity-test 2/11, unity-build 1/7)"
+  glance '{"unity": null}'
+  run "$MODULE"
+  run plain
+  refute_output --partial "Unity "
+}
+
+@test "GitHub's own runners are one line by repo, escaped, and none when nothing runs there" {
+  glance '{"hosted": [{"repo": "web", "n": 3}, {"repo": "pl<a", "n": 1}]}'
+  run "$MODULE"
+  [[ "$(tip)" == *$'\ngithub-hosted: web 3, pl&lt;a 1\n'* ]]
+  glance '{"hosted": []}'
+  run "$MODULE"
+  run plain
+  refute_output --partial "github-hosted:"
+}
+
 @test "a machine at or past the load chip's HOT_RATIO has a red name and booking; under it, or no reading, stays plain" {
   glance '{"machines": [
-    {"host": "ms-a2", "busy": 4, "running": ["[arc-org-light] x4"], "next": null, "load": 1.5,
+    {"host": "ms-a2", "busy": 4, "work": [{"set": "arc-org-light", "job": "lint", "n": 4}], "next": null, "load": 1.5,
      "booked": {"cpu": 4.38, "cpu_alloc": 32, "mem": 2700000000, "mem_alloc": 98768805888}},
-    {"host": "razer", "busy": 1, "running": ["[unity] platform"], "next": null, "load": 1.49, "booked": null},
-    {"host": "mac-mini", "busy": 0, "running": [], "next": null, "load": null, "booked": null}]}'
+    {"host": "razer", "busy": 1, "work": [{"set": "unity-build", "repo": "platform", "job": "Build iOS"}], "next": null, "load": 1.49, "booked": null},
+    {"host": "mac-mini", "busy": 0, "work": [], "next": null, "load": null, "booked": null}]}'
   run "$MODULE"
-  [[ "$(tip)" == *"<span color='#ef5734'>ms-a2    4.4/32 2.5G/92G</span>  <span background='#7f7f7f'>▌</span><span color='#7f7f7f'>███</span>  [arc-org-light] x4  -"* ]]
-  [[ "$(tip)" == *$'\nrazer                  -        [unity] platform    -\n'* ]]
-  [[ "$(tip)" == *$'\nmac-mini               -        -                   -'* ]]
+  [[ "$(tip)" == *"<span color='#ef5734'>ms-a2    4.4/32 2.5G/92G</span>  <span background='#7f7f7f'>▌</span><span color='#7f7f7f'>███</span>  -"* ]]
+  [[ "$(tip)" == *$'\nrazer                  -        -\n'* ]]
+  [[ "$(tip)" == *$'\nmac-mini               -        -\n'* ]]
 }
 
 @test "a down runner host is listed under DOWN" {
@@ -308,10 +377,10 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 }
 
 @test "machine and kind names are escaped for pango after padding, so columns still line up" {
-  glance '{"machines": [{"host": "a<b", "busy": 0, "running": [], "next": null, "load": 0.2, "booked": null}],
+  glance '{"machines": [{"host": "a<b", "busy": 0, "work": [{"repo": "x<y", "job": "a&b"}], "next": null, "load": 0.2, "booked": null}],
            "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
-  [[ "$(tip)" == *"a&lt;b          -        -        -"* ]]
+  [[ "$(tip)" == *$'\na&lt;b          -        -\n  x&lt;y a&amp;b\n'* ]]
   [[ "$(tip)" == *"x&amp;y        -       0      -     1     -  100%"* ]]
 }
 
