@@ -63,7 +63,7 @@ proposing() {
 echo "$* [${CLAUDE_CODE_SESSION_ID:-}]" >> "$CALLS"
 case "$1" in
   log) [ -z "${LOG_FAIL:-}" ] || { echo "$LOG_FAIL" >&2; exit 2; }
-       [ -s "$TRACE" ] || { echo "no event in the record matches '$3' (it keeps 30 days)" >&2; exit 1; }
+       [ -s "$TRACE" ] || { echo "no event in the record matches '$3' (it keeps 7 days)" >&2; exit 1; }
        cat "$TRACE" ;;
   ptask) printf '%s\n' "$ADD_OUT"; exit "$ADD_RC" ;;
 esac
