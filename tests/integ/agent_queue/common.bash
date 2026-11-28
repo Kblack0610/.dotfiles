@@ -139,6 +139,29 @@ STUB
   chmod +x "$SANDBOX/bin/notes"
 }
 
+# notes_lock_probe: after story_notes, the stub appends "locked <args>: <holders>" to underlock.log for each
+# call it gets while the queue lock is held, so a test can prove a writer let the lock go before notes ran
+# (ar-5606, ar-3025). The item's own event record is written under the lock by every writer (item_event), so
+# it is not counted. lock-holders names who held the lock, so a failure says which writer and which process.
+# Only a conflict (flock -E 75) counts: before the first lock the queue dir, and so .lock, may not exist yet,
+# and flock exits 66 on a file it cannot open.
+notes_lock_probe() {
+  cat > "$SANDBOX/bin/lock-holders" <<'EOS'
+#!/usr/bin/env bash
+# <caller pid>: the caller's command line, the kernel's locks on .lock's inode and every fd open on it.
+ino=$(stat -c %i "$AGENT_QUEUE_DIR/.lock")
+printf ' caller=[%s] locks=[%s] fds=[' "$(tr '\0' ' ' < "/proc/$1/cmdline" | cut -c1-120)" "$(grep ":$ino " /proc/locks | tr '\n' ';')"
+for fd in /proc/[0-9]*/fd/*; do
+  [ "$(stat -L -c %i "$fd" 2>/dev/null)" = "$ino" ] || continue
+  p=${fd#/proc/}; p=${p%%/*}
+  printf ' %s:%s' "$p" "$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | cut -c1-120)"
+done
+printf ']'
+EOS
+  chmod +x "$SANDBOX/bin/lock-holders"
+  sed -i '2i [ "$1 $2" = "ingest record" ] || { flock -n -x -E 75 "$AGENT_QUEUE_DIR/.lock" true 2>/dev/null; [ $? != 75 ]; } || printf "locked %s:%s\\n" "$*" "$(lock-holders $PPID)" >> "$NOTES_FIXTURE/underlock.log"' "$SANDBOX/bin/notes"
+}
+
 # queue-held-to-board (ar-3121): no writer leaves a queued item with a pending hold; each gate goes on
 # the item's board row instead. no_held fails on any queued item list --json reads a hold for.
 no_held() {
