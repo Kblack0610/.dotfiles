@@ -140,6 +140,22 @@ EOF
   assert_equal "$(fleet_host razer-laptop | jq -r '"\(.max_live) \(.port)"')" '2 2200'
 }
 
+@test "a container worker is dialed at fleet_ssh_user and fleet_ssh_port, not the box Ansible manages" {
+  cat >> "$FLEET_INVENTORY" <<'EOF'
+        fleet-worker-1:
+          ansible_host: i-0abc
+          ansible_user: ubuntu
+          fleet_ssh_host: fleet-worker-1
+          fleet_ssh_user: kblack0610
+          fleet_ssh_port: 2223
+EOF
+  assert_equal "$(fleet_host fleet-worker-1 | jq -r '"\(.dest) \(.port)"')" 'kblack0610@fleet-worker-1 2223'
+  fleet_host_run fleet-worker-1 true </dev/null
+  assert_called '-p 2223 kblack0610@fleet-worker-1 '
+  # negative control: without the two, it is Ansible's user and port.
+  assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.port)"')" 'kb@192.0.2.30 2222'
+}
+
 @test "cancel closes a worker's session on that worker, never one here; a requeue forgets the host" {
   local q="$REPO_ROOT/.local/bin/agent-queue"
   stub tmux-close-here 'echo "here $*" >> "$NOTES_FIXTURE/calls.log"'

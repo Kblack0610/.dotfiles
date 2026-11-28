@@ -115,7 +115,10 @@ fleet_roster_fresh() {
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
 #   {name, dest: user@host, port, max_live, place, repos: [dir], first: [class], harnesses: [name]}
 # host is fleet_ssh_host when set, else ansible_host: a cloud worker's ansible_host is an instance
-# id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. first is fleet_first,
+# id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. user and port are
+# fleet_ssh_user and fleet_ssh_port over ansible_user and ansible_port the same way: a worker on
+# the fleet-agent image runs its sessions in a container whose sshd (kblack0610, 2223) is not the
+# one Ansible manages the box through (home-config fleet-worker runbook). first is fleet_first,
 # the item classes (canary) this worker takes ahead of the dispatching machine.
 # harnesses is fleet_harnesses, the headless harnesses (nim) it runs besides claude, each only
 # while its probe says it is ready (fleet-dispatch harness-ready).
@@ -177,13 +180,13 @@ for h in members.get(group, []):
     v = dict(base)
     v.update(gmerged.get(h, {}))
     v.update(hmerged.get(h, {}))
-    user = v.get("ansible_user")
+    user = v.get("fleet_ssh_user") or v.get("ansible_user")
     host = v.get("fleet_ssh_host") or v.get("ansible_host", h)
     repos = [os.path.expanduser(str(r.get("dest") if isinstance(r, dict) else r)) for r in (v.get("fleet_repos") or []) + (v.get("fleet_repos_extra") or [])]
     print(json.dumps({
         "name": h,
         "dest": f"{user}@{host}" if user else str(host),
-        "port": int(v.get("ansible_port", 22)),
+        "port": int(v.get("fleet_ssh_port") or v.get("ansible_port", 22)),
         "max_live": int(v.get("fleet_max_live", 1)),
         "place": bool(v.get("fleet_place", True)),
         "repos": repos,
