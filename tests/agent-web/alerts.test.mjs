@@ -131,7 +131,7 @@ test("a rule firing in one place keeps its row and names its alert's summary", (
 test("a firing row names its project, a fleet-wide one a dash, and the watches list carries it too", () => {
   const h = show(data({ watches: [{ ...watch("playground-nightly", "TRIP"), project: "unity-core-playground" }, watch("disk", "OK")] }));
   assert.match(h, /<td class="wrap">playground-nightly<\/td><td class="muted">unity-core-playground<\/td><td class="muted">-<\/td><td class="muted">sentinel<\/td>/);
-  assert.match(h, /<td class="wrap">dream<\/td><td class="muted">-<\/td><td class="muted">sentinel<\/td>/);
+  assert.match(h, /<td class="wrap">dream<\/td><td class="muted">-<\/td><td class="muted">-<\/td><td class="muted">sentinel<\/td>/);
   assert.match(h, /<td>playground-nightly<\/td><td class="bad">TRIP<\/td><td class="muted">normal<\/td><td class="muted">unity-core-playground<\/td>/);
 });
 
