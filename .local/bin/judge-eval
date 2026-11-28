@@ -235,12 +235,14 @@ JQ_EVAL="$JQ_EPOCH"'
    | def prios: (.why // "") | split(" ") | map(select(test("^[+-]#(urgent|high|normal|low)$")));
    def prio_only: .action == "tagged" and (((.why // "") | split(" ") | map(select(length > 0))) as $w
        | ($w | length) > 0 and ($w | length) == (prios | length));
-   # Likewise a re-tag by a pass or session of only size, plan, hold, ask or after words (#pts/N from inbox-size,
-   # #plan #go from dispatch, a hold or an ordering) is gating or sizing the row, not a correction of what the triager filed.
+   # Likewise a re-tag by a pass or session of only size, why, plan, hold, ask or after words (#pts/N from inbox-size,
+   # #why/<x> filled in with the priority by inbox-priority, #plan #go from dispatch, a hold or an ordering) is gating,
+   # sizing or labelling the row, not a correction of what the triager filed. Only adding a why label is ignored:
+   # removing or swapping one changes what the row was filed with.
    # A human re-tag (by human) stays a touch: the triager files a size, and a person changing it corrects it.
    def pass_only: prio_only or (.action == "tagged" and ((.by // "") | IN("", "human") | not)
        and (((.why // "") | split(" ") | map(select(length > 0))) as $w
-       | ($w | length) > 0 and ($w | all(test("^[+-]#(urgent|high|normal|low|pts/[0-9]+|size/[sml]|plan|go|hold/[^ ]+|after/[^ ]+|ask/[^ ]+|desk/[^ ]+)$")))));
+       | ($w | length) > 0 and ($w | all(test("^[+-]#(urgent|high|normal|low|pts/[0-9]+|size/[sml]|plan|go|hold/[^ ]+|after/[^ ]+|ask/[^ ]+|desk/[^ ]+)$|^\\+#why/[^ ]+$")))));
    # A dup is a later line joined to the row: it repeats the row, so it corrects nothing.
    ($ev | map(select((.action | IN("edited", "dropped", "rehomed", "tagged")) and (pass_only | not))) | bykey(.id)) as $touch
    # Priority: each priority the priority pass set (`by` inbox-priority, or inbox-triage on a
