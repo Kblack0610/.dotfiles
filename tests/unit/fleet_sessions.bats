@@ -4040,13 +4040,16 @@ SH
   git clone -q "$SANDBOX/gh-mirror.git" "$SANDBOX/wt" 2>/dev/null
   "${g[@]}" remote add forgejo "$SANDBOX/fj.git"
   mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
-  "${g[@]}" add .forgejo; "${g[@]}" commit -q -m init; "${g[@]}" push -q forgejo HEAD:master 2>/dev/null
-  # the branch changes site.yml; Forgejo squash-merges it as #1084, then master rewrites the same file
+  printf 'a\nb\nc\n' > "$SANDBOX/wt/site.yml"
+  "${g[@]}" add .forgejo site.yml; "${g[@]}" commit -q -m init; "${g[@]}" push -q forgejo HEAD:master 2>/dev/null
+  # the branch changes site.yml; master changes another line of it, Forgejo squash-merges the branch as
+  # #1084 (a 3-way blob the branch never held, so ar-89's blob match misses it), then master rewrites the file
   "${g[@]}" checkout -q -b fix/pxe
-  echo 1 > "$SANDBOX/wt/site.yml"; "${g[@]}" add site.yml; "${g[@]}" commit -q -m 'pxe'
+  printf 'pxe\nb\nc\n' > "$SANDBOX/wt/site.yml"; "${g[@]}" commit -q -am 'pxe'
   local head; head="$("${g[@]}" rev-parse HEAD)"
   "${g[@]}" checkout -q -b m HEAD~1
-  echo 1 > "$SANDBOX/wt/site.yml"; "${g[@]}" add site.yml; "${g[@]}" commit -q -m 'pxe (#1084)'
+  printf 'a\nb\nhost\n' > "$SANDBOX/wt/site.yml"; "${g[@]}" commit -q -am 'host (#1083)'
+  printf 'pxe\nb\nhost\n' > "$SANDBOX/wt/site.yml"; "${g[@]}" commit -q -am 'pxe (#1084)'
   echo 2 > "$SANDBOX/wt/site.yml"; "${g[@]}" commit -q -am 'later (#1090)'
   # the mirror has run too, so origin/master is the same tip
   "${g[@]}" push -q forgejo m:master 2>/dev/null; "${g[@]}" push -q origin m:master 2>/dev/null
