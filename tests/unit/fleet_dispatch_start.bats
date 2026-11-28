@@ -2379,7 +2379,7 @@ EOF
   # NEGATIVE CONTROL: an author holding two phases, or none, gets the bare landing.
   agent-queue set fix-crash phases='2 3' >/dev/null
   run validate_task validate-fix-crash-01234567 fix-crash o/game#12 0123456789ab critical
-  assert_output --partial 'agent-land 12 --repo o/game --item fix-crash` from this worktree'
+  assert_output --partial 'agent-land 12 --repo o/game --item fix-crash --verdict <pass|fail>'
 }
 
 @test "start never runs a validate item as its author: no author item, itself, the author's conversation or session (ar-1689)" {
