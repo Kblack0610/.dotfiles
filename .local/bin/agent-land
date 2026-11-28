@@ -17,7 +17,7 @@
 # checkout; a HEAD that is origin's tip of the PR branch is a fresh push, waited on until the PR reads it), fetch (a head behind origin/<base> is merged up to it, unless its own checks are already pending or green (head_checks_live), each clean submodule checkout on its old pin moved to the merged one (submodule_follow), and pushed, before the checks and again after them if the base moved on during them; a head pushed after them waits on its own checks before it merges, and on a GitHub base without strict checks a second move, or on any base a first that can affect no test the head's run ran (moved_misses_pick), lands that green head behind it unless the base's new commits change a file the head changes (base_touches_head), catch_up), item-line
 # (before the checks, the PR body gets the line "Item: <slug>" unless it has it, so a reader holding
 # only the PR finds its work item; a stale "Item:" line is rewritten, except on a merged PR where another queue item's line stays), review (a tier-3 item's body has a
-# "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer and no copy is added, shape-grow, run by CI where a workflow names it and here otherwise; each "Split:" or "Dup:" escape line names an open row that names what it covers, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a green watch waits while an open run on the head has no check for its jobs yet, a re-run or a workflow with none listed (rerun_pending); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
+# "Review:" line, review_gate), loose (a plan phase's item filed no open agent row its plan does not take, loose_gate), shape (no function over 150 lines gets longer and no copy is added, shape-grow, run by CI where a workflow names it and here otherwise; each "Split:" or "Dup:" escape line names an open row that names what it covers, shape_gate), checks (the PR's checks pass: CI, a required check; a cancelled check is no pass, waited on while a run on the head goes on, and on GitHub so is a failed one while a run of its workflow and event started after it goes on, and a cancelled matrix job of an older run of its workflow is no verdict (pr-ci.sh); a green watch waits while a check the base requires is not listed on the head yet, a push's runs open one by one (required_unlisted), and while an open run on the head has no check for its jobs yet, a re-run or a workflow with none listed (rerun_pending); a tier-3 item, or one landed with --ran-checks, needs checks that ran), validate (critical work by judge.sh judge_work_level merges only on a second agent's pass verdict on this head, validate_gate), merge (--squash, or with --merge-commit a merge commit,
 # for a landing train whose member PRs read MERGED only while their heads stay reachable; --admin adds gh's --admin, which skips a required approving review on a repo whose owner allows it, from a session the human opened only (refused from a dispatched or headless one), never the checks step above; --match-head-commit HEAD, then gh pr view must say MERGED), proof (the PR's merge commit is
 # on origin/<base>, by agent-merge-proof.sh), live (dotfiles-autopull --now --bg fast-forwards, in the background, the stowed
 # checkout when this repo is ~/.dotfiles or ~/.dotfiles-private, links what it added, rebuilds the
@@ -146,6 +146,8 @@ CHECKS_TRIES="${AGENT_LAND_CHECKS_TRIES:-12}"
 # after gh pr create, so a tier-3 land refused "none reported" before the run existed. A land that
 # no_checks would refuse has nothing to lose by waiting, so it reads CHECKS_FIRST_RUN_TRIES more
 # times, CHECKS_QUEUED_POLL apart, before refusing; one that would land on the local gate does not.
+# The same count bounds the wait for a required check to register on a head that lists none of it yet
+# (required_unlisted).
 CHECKS_FIRST_RUN_TRIES="${AGENT_LAND_CHECKS_FIRST_RUN_TRIES:-20}"
 # A read that loses its connection to the API (a reset, a timeout, a 5xx) has seen no check fail:
 # it reads again, up to CHECKS_NET_TRIES times in one wait. It hit binks #1531 three times on
@@ -211,6 +213,26 @@ rerun_pending() {
   echo "checks: green so far, but a run on the head has no check for its jobs yet (a re-run, or a workflow with none listed); waiting on it"
   sleep "$CHECKS_QUEUED_POLL"
 }
+# required_unlisted <checks json>: whether a green watch waits, on a check <base> requires that the head
+# lists none of yet. A push (catch_up's merge-up) opens its workflows' runs one by one, and a run that
+# does not exist yet is no open run for rerun_pending to see, so a watch started seconds later lists
+# only the checks registered so far (gate guard), exits green, and GitHub refuses the merge BLOCKED on
+# the required one (#3671, 2026-11-26, ar-6328). Read after rerun_pending, so an open run is waited
+# on without limit; with none, it waits CHECKS_QUEUED_POLL apart, up to CHECKS_FIRST_RUN_TRIES times
+# per wait_checks call and per open run seen, then stops at checks naming it (a required check no workflow of the
+# head produces would otherwise wait out CHECKS_WAIT_TIMEOUT). Status 1 when each is listed, or the
+# policy names none (unread, Forgejo).
+unlisted=0
+required_unlisted() {
+  local missing
+  checks_policy
+  [ -n "$required_names" ] && [ "$required_names" != '[]' ] || return 1
+  missing=$(jq -r --argjson n "$required_names" '[.[].name] as $l | $n - $l | join(", ")' <<<"$1" 2>/dev/null) || fail checks "reading the checks after the watch: not a check list: $(lastline "$1")"
+  [ -n "$missing" ] || return 1
+  ((++unlisted <= CHECKS_FIRST_RUN_TRIES)) || fail checks "required check $missing never registered on the head $(git rev-parse --short HEAD) in $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s, so $remote/$base would refuse the merge: gh run list --commit $(git rev-parse HEAD) shows whether its workflow ran"
+  echo "checks: green so far, but $remote/$base requires $missing, which the head has not registered yet; waiting on it"
+  sleep "$CHECKS_QUEUED_POLL"
+}
 # gh_read <var> <gh args...>: gh's stdout in <var> and its stderr in gh_err, so a warning gh prints
 # beside an answer is never part of it; returns gh's status.
 gh_err=''
@@ -272,6 +294,7 @@ had_checks=''
 wait_checks() {
   [ -z "$fj" ] || { fj_wait_checks; return; }
   local try out rc left failed listed cancelled names queued rollup read_err stale skipping deadline=$((SECONDS + CHECKS_WAIT_TIMEOUT))
+  unlisted=0
   for ((try = 1; ; try++)); do
     left=$((deadline - SECONDS))
     [ "$left" -gt 0 ] || fail checks "timed out waiting for checks after ${CHECKS_WAIT_TIMEOUT}s"
@@ -295,7 +318,13 @@ wait_checks() {
         continue
       fi
       if [ "$cancelled" = '[]' ]; then
+        # an open run is the pending check: waited on first, and it resets the required-check count
         if rerun_pending "$listed"; then
+          unlisted=0
+          try=0
+          continue
+        fi
+        if required_unlisted "$listed"; then
           try=0
           continue
         fi
@@ -538,7 +567,7 @@ own_head() {
 # refused. required: it names at least one check a head must pass, so a head with none reported
 # cannot merge; only an answer that says so counts (an unreadable one is no), since a wrong yes would
 # block every landing there.
-strict='' required=''
+strict='' required='' required_names='[]'
 checks_policy() {
   [ -z "$strict" ] || return 0
   local repo="${pr_ref%#*}" out
@@ -554,9 +583,11 @@ checks_policy() {
   fi
   out=$(gh api "repos/$repo/rules/branches/$base" 2>/dev/null) || return 0
   ! jq -e 'any(.[]; .type == "required_status_checks" and (.parameters.required_status_checks // [] | length) > 0)' <<<"$out" >/dev/null 2>&1 || required=yes
+  required_names=$(jq -c '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context]' <<<"$out" 2>/dev/null) || required_names='[]'
   jq -e 'all(.[]; .type != "required_status_checks" or .parameters.strict_required_status_checks_policy != true)' <<<"$out" >/dev/null 2>&1 || return 0
   if out=$(gh api "repos/$repo/branches/$base/protection" 2>&1); then
     ! jq -e '(.required_status_checks.contexts // []) + (.required_status_checks.checks // []) | length > 0' <<<"$out" >/dev/null 2>&1 || required=yes
+    required_names=$(jq -c --argjson r "$required_names" '$r + (.required_status_checks.contexts // []) + [(.required_status_checks.checks // [])[]?.context] | unique' <<<"$out" 2>/dev/null) || required_names='[]'
     jq -e '.required_status_checks.strict == true' <<<"$out" >/dev/null 2>&1 || strict=no
   else
     case "$out" in *'(HTTP 404)'*) strict=no ;; esac
@@ -1733,7 +1764,7 @@ if [ "$dry" -eq 1 ]; then
     echo "loose: plan_loose_rows $(jq -r .plan <<<"$it") $item  (notes log, then notes board --json --id: an open agent row $item filed that no phase line takes stops the landing)"
   [ -n "$fj" ] || echo "workflow: gh api repos/<owner>/<repo>/pulls/$pr/files, then gh api -i user  (a PR that changes .github/workflows stops here when the token's X-OAuth-Scopes lack workflow)"
   echo "shape: shape-grow --body - \$(git merge-base HEAD origin/<base>) HEAD, unless a workflow at HEAD runs it  (no long function grows and no copy is added; each \"Split:\" or \"Dup: <row id> <name>...\" line names an open row that names each one)"
-  echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"
+  echo "checks: gh pr checks $pr${repo:+ -R $repo} --watch --fail-fast -i $CHECKS_WATCH_INTERVAL  (must pass, or report none on a tier 1 or 2 item; a land that would refuse none, on a head with workflow files, first waits up to $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s for its first run, and as long for a check the base requires to register once the others are green, AGENT_LAND_CHECKS_FIRST_RUN_TRIES)"
   echo "fetch: git fetch origin && git rev-list --count HEAD..origin/<base of #$pr>  (0 before the checks; after them git merge origin/<base> && git push, then the checks again on that head)"
   [ -z "$fj" ] || echo "fetch: on Forgejo a base that moved on during the checks is merged up and re-checked every time, landed behind only when moved_misses_pick clears it; still moving after $FJ_CATCHUP_MAX merged-up runs exits 3, nothing merged"
   echo "validate: gh api repos/<owner>/<repo>/pulls/$pr/files | judge_work_level  (critical: merges only on a pass verdict from the item's validate item on this head, else fleet-dispatch validate $item and exit $VALIDATE_WAIT)"
