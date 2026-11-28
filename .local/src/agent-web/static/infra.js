@@ -39,14 +39,14 @@ const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
-// hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), booked 4.4/64 cpu, 12/12 runners up,
-// 6 done 1h, 80 done 5h, 759 done 24h, 91% passed`; the windows only once a kind reports them; the booking only once a CI node reports.
+// hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), taken 4.4/64 units (7%), 12/12 runners up,
+// 6 done 1h, 80 done 5h, 759 done 24h, 91% passed`; the windows only once a kind reports them; the units only once a CI node reports.
 // Glance::up_line: `12/12` runners up of the roster, `-/-` with no runner read.
 const upLine = (g) => (g.expected ? `${g.up}/${g.expected}` : "-/-");
 function glanceHead(g) {
   let s = `${g.busy} running, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  if (g.booked) s += `, booked ${cores1(g.booked.cpu)}/${Math.round(g.booked.cpu_alloc)} cpu${g.booked.reserved > 0 ? ` (${cores1(g.booked.reserved)} reserved)` : ""}`;
+  if (g.units) s += `, ${g.units.brief}`;
   s += `, ${upLine(g)} runners up`;
   if (g.done_1h != null) s += `, ${g.done_1h} done 1h`;
   if (g.done_5h != null) s += `, ${g.done_5h} done 5h`;
@@ -65,10 +65,14 @@ const pendingLine = (g) => (g && g.pending && g.pending.length ? `<div class="cl
 // components and watches that cc:overall_status is the max of), so a tile never reads red under
 // an OK OVERALL or green under a RED one (ar-5013); the text keeps the count. A component alone
 // would not do: k3s/nodes, ci/pools and agents/runners stop at 1, and the red comes from the
-// domain's watches row. No domain series is no data, never a guess.
+// domain's watches row. WATCHES spans domains, so its hue is the worst of the rollup's watches
+// rows (cc:component_status{component="watches"}), not a tripped count of its own. No series is
+// no data, never a guess.
 function kpis(cc, g) {
   const one = (n) => (cc[n] || {})[""];
   const hue = (d) => { const [w, c] = statusOf((cc["cc:domain_status"] || {})[d]); return [c, `${d} rollup ${w}`]; };
+  const watchRows = Object.entries(cc["cc:component_status"] || {}).filter(([k]) => k.endsWith("/watches")).map(([, v]) => v);
+  const [ww, hw] = statusOf(watchRows.length ? Math.max(...watchRows) : undefined);
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
   const beats = [one("cc:machines_up"), one("cc:machines_total")];
   const hosted = one("cc:github_hosted_running");
@@ -79,7 +83,7 @@ function kpis(cc, g) {
     tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, hb, tb)}${
     tile("CI RUNNING", g ? `${g.busy}` : "?", hc, [where, tc].filter(Boolean).join("; "))}${
     tile("AGENT RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, hr, `of ${one("cc:runners_total") ?? "?"}; ${tr}`)}${
-    tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`, "#alerts/watches")}${
+    tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, hw, `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale; watches rollup ${ww}`, "#alerts/watches")}${
     tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
     tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
 }
@@ -127,19 +131,31 @@ function diskCell(m) {
   return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
-// hub_core::jobpods::Booked: what job pods book of a CI node, its fuller share and `4.4/32 2.5G/92G`.
+// hub_core::jobpods::Booked: what the pods on a CI node request, its fuller share and `4.4/32 2.5G/92G`.
 // hub_core::jobpods::cores: one place, halves up as Rust rounds them (toFixed rounds 0.15 down).
 const cores1 = (c) => (Math.round(c * 10) / 10).toFixed(1);
 const bookedShare = (b) => Math.max(b.cpu_alloc > 0 ? b.cpu / b.cpu_alloc : 0, b.mem_alloc > 0 ? b.mem / b.mem_alloc : 0);
 // hub_core::machines::Machine::booked_cell, or - on no CI node.
-// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G`, bare `1.7 1.2G` on a node with no allocatable read, `, 7.4 reserved` for a reservation pod's CPU.
+// hub_core::jobpods::Booked::cell: `4.4/32 2.5G/92G` taken of its units, bare `1.7 1.2G` on a node with no allocatable read.
 const bookedCell = (m) => {
   const b = m.booked;
   if (!b) return "-";
-  const rsv = b.reserved > 0 ? `, ${cores1(b.reserved)} reserved` : "";
-  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}${rsv}`;
-  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}${rsv}`;
+  if (!(b.cpu_alloc > 0)) return `${cores1(b.cpu)} ${bytes(b.mem)}`;
+  return `${cores1(b.cpu)}/${Math.round(b.cpu_alloc)} ${bytes(b.mem)}/${bytes(b.mem_alloc)}`;
 };
+// The CI POOL block (hub_core::jobpods::Units): its head, a bar of the share taken beside its line,
+// and the TAKEN BY table, every word and cell Rust's so the hub and the waybar hover print the same.
+function poolSection(u) {
+  if (!u) return "";
+  // hub_core::jobpods::Units::share: the share of the pool taken, 0 with no total.
+  const share = u.total > 0 ? u.taken / u.total : 0;
+  // On a phone each kind leads, its units and share under it (the last two columns), pods and each on a tap.
+  const role = (i) => (i === 0 ? ' data-role="lead"' : i >= u.columns.length - 2 ? ' data-role="glance" data-named' : "");
+  const th = u.columns.map((c, i) => `<th${i ? ' class="n"' : ""}${role(i)} data-label="${esc(c)}">${esc(c)}</th>`).join("");
+  const rows = u.rows.map((r) => `<tr>${r.map((x, i) => td(i ? "n" : "", esc(x))).join("")}</tr>`).join("");
+  return `<div class="cline"><b>${esc(u.head)}</b></div><div class="cline">${meter(share, share >= 1 ? "var(--b-stalled)" : "var(--c1)")} ${esc(u.line)}</div>` +
+    `<div class="panel scroll"><table class="tbl"><tr>${th}</tr>${rows}</table></div>`;
+}
 // hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
 const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;
 // A machine's hover: what its cores and memory go to (hub_core::workload, one line per class),
@@ -316,7 +332,7 @@ function failed24h() {
 function runnersSection(ci) {
   // The head the TUI and the waybar hover read too (hub_core::ci::Glance): each slot once.
   const g = ci.glance, head = g ? `<div class="cline">${esc([glanceHead(g), offLine(g)].filter(Boolean).join("; "))}</div>` : "";
-  let html = secHead("ci", "Runners", infraN("runners"), ci.red.length ? "bad" : bld.data?.counts?.recent_red ? "warn" : "") + head + failed24h();
+  let html = secHead("ci", "Runners", infraN("runners"), ci.red.length ? "bad" : bld.data?.counts?.recent_red ? "warn" : "") + head + poolSection(g && g.units) + failed24h();
   // A waiting job no online runner can take: hub_core::ci words the line, once for both surfaces.
   if (ci.red.length) html += `<div class="panel down">${ci.red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`;
   return html + INFRA_T.runners.html();
@@ -611,19 +627,30 @@ function drawInfra() {
   // As the board blanks: a failed read never leaves the last (maybe green) numbers up.
   if (!d.ok) { paint(el, strip + `<div class="bhead"><span>infra</span><span>${links}</span></div><div class="panel down">${esc(d.error || "Prometheus did not answer")}</div>`); seekSection(); return; }
   const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3, g = governorIndex(inst);
-  const overall = (cc["cc:overall_status"] || {})[""];
-  const [word, color] = statusOf(overall);
   // Home owns what waits on you; Infra shows its count (Home::waiting, the badge's number) as a link to it.
   const w = st.waiting;
   const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
     : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
-  let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
+  let html = strip + `<div class="bhead"><span>${overallPill(cc)}${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
   html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${pendingLine(d.ci.glance)}${governorLine(g)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(d.ci));
   paint(el, html, ist.open);
   seekSection();
+}
+
+// The OVERALL pill is cc:overall_status, the heart: RED when a domain is down, else OK, since a
+// warn never colours it (home-config prometheus-rules-command-center.yaml, the human's
+// 2026-11-12 call). Its warn domains (cc:domain_status 1, hub_core Infra::domains) follow as an
+// amber count naming them in its hover, so an OK heart beside amber tiles says why (ar-5013). It
+// is no link: a record link comes from hub_core::links (links.test.mjs), and none serves health.
+function overallPill(cc) {
+  const [word, color] = statusOf((cc["cc:overall_status"] || {})[""]);
+  const warn = Object.entries(cc["cc:domain_status"] || {}).filter(([, v]) => v === 1).map(([d]) => d).sort();
+  const why = "the health heart: red when a domain is down; a warn domain shows on its tile and Alerts' health chips";
+  const warns = warn.length ? ` <span class="chip sm" style="--c:var(--b-stalled)" title="${esc(`at warn: ${warn.join(", ")}; Alerts' health chips say why`)}">${warn.length} warn</span>` : "";
+  return `<span class="chip" style="--c:${color}" title="${why}">OVERALL ${word}</span>${warns}`;
 }
 
 // A table's search or dropdown in use keeps focus: only that table's rows and chips repaint, and
