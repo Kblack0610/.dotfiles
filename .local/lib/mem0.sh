@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# mem0.sh - the one mem0 client config and the one key reader. Sourced by .ai-rc, agent-propose,
+# mem0.sh - the one mem0 client config, key reader and search. Sourced by .ai-rc, agent-ask, agent-propose,
 # agentctl-dream, agentctl-nightly-sync; the remember commands and the mem0-ops skill point at it.
 #
 # The endpoint, user and secret path stay out of this public repo. They live in
@@ -33,4 +33,33 @@ mem0_key() {
     m0sk_*) printf '%s\n' "$key" ;;
     *) echo "no mem0 key could be read from $MEM0_SECRET" >&2; return 1 ;;
   esac
+}
+
+# mem0_search <query> [top_k]: the text of each memory POST /search returns for MEM0_USER_ID, one per
+# line, best first (run mem0_load first). The scope goes in `filters` and the rows sit at
+# `.results[]` (mem0-ops traps 2 and 3). A search is a read, so a 429 or 5xx is tried again, up to
+# MEM0_TRIES (3) in all, after its Retry-After seconds or 1, 2, 4..., each wait capped at 5 s, and
+# each call at MEM0_TIMEOUT (8) seconds. The key goes to curl on stdin, never in its argv.
+mem0_search() {
+  local q="$1" k="${2:-5}" key body tmp code try=1 wait
+  key="$(mem0_key)" || return 1
+  body="$(jq -cn --arg q "$q" --arg u "$MEM0_USER_ID" --argjson k "$k" '{query: $q, filters: {user_id: $u}, top_k: $k}')" || return 1
+  tmp="$(mktemp -d)" || return 1
+  while :; do
+    code="$(printf 'header = "X-API-Key: %s"\n' "$key" |
+      curl -sS -K - --max-time "${MEM0_TIMEOUT:-8}" -o "$tmp/body" -D "$tmp/headers" -w '%{http_code}' \
+        -X POST -H 'Content-Type: application/json' --data "$body" "$MEM0_BASE_URL/search" 2>/dev/null)"
+    case "$code" in
+      2??) jq -r '.results[]?.memory // empty' "$tmp/body" 2>/dev/null; rm -rf -- "$tmp"; return 0 ;;
+      429|5??)
+        [ "$try" -lt "${MEM0_TRIES:-3}" ] || break
+        wait="$(tr -d '\r' <"$tmp/headers" | awk 'tolower($1) == "retry-after:" { print $2 }' | tail -n1)"
+        [[ "$wait" =~ ^[0-9]+$ ]] || wait=$((1 << (try - 1)))
+        [ "$wait" -le 5 ] || wait=5
+        sleep "$wait"; try=$((try + 1)) ;;
+      *) break ;;
+    esac
+  done
+  echo "mem0 search failed (HTTP ${code:-none})" >&2
+  rm -rf -- "$tmp"; return 1
 }
