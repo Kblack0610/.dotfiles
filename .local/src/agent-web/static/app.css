@@ -235,8 +235,7 @@ details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8
 /* Sessions (static/watch.js, shepherd.js, sessions.js): the overview row, the open session's folded
    facts and its page, the overview's folded sections. */
 #facts { padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); max-height: 45vh; overflow-y: auto; }
-#facts summary { cursor: pointer; font-size: 13px; overflow-wrap: anywhere; }
-#facts .wcard { margin-top: 6px; }
+#facts .facts-line { font-size: 13px; overflow-wrap: anywhere; }
 .pghead { margin-bottom: 10px; overflow-wrap: anywhere; }
 .pgrow { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 8px; padding: 3px 0; font-size: 13px; }
 .pgk { color: var(--muted); }
