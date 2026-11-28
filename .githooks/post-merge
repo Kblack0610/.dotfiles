@@ -1,6 +1,6 @@
 #!/bin/bash
-# Post-merge hook: restart Noctalia when a merge changed its plugins (below), and re-render
-# theme-switch's generated files when a merge removed them.
+# Post-merge hook: reload systemd --user when a merge changed a user unit, restart Noctalia when it
+# changed its plugins (below), and re-render theme-switch's generated files when a merge removed them.
 #
 # THE HAZARD THIS EXISTS FOR
 # --------------------------
@@ -27,7 +27,7 @@
 # which reloads the live Hyprland, on every merge while main lacks a new render
 # (ar-3266).
 #
-# Costs one -ef test, a git diff and ten [ -f ] tests on a merge that changed nothing relevant.
+# Costs one -ef test, two git diffs and ten [ -f ] tests on a merge that changed nothing relevant.
 
 set -euo pipefail
 
@@ -35,6 +35,18 @@ DOTFILES_ROOT="${DOTFILES_ROOT:-$HOME/.dotfiles}"
 # Only the main checkout is stowed, so only a merge there acts; Git runs a hook at the toplevel,
 # so $PWD is it.
 [ "$PWD" -ef "$DOTFILES_ROOT" ] || exit 0
+
+# systemd keeps a loaded unit's old definition until a daemon-reload, and an enabled unit stays loaded,
+# so a pulled edit to one ran as the old unit until the next boot (#3792's session-snapshot-up.service
+# read NeedDaemonReload=yes after its merge, ar-6389). dotfiles-autopull pulls with merge --ff-only,
+# so this fires on every pull. macOS has no systemctl, and a shell with no user manager (ssh without
+# linger) has nothing to reload.
+SYSTEMD_USER=".config/systemd/user"
+if ! git diff --quiet ORIG_HEAD HEAD -- "$SYSTEMD_USER" 2>/dev/null \
+  && command -v systemctl >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
+  echo "post-merge: $SYSTEMD_USER changed, reloading systemd --user"
+  systemctl --user daemon-reload || echo "post-merge: daemon-reload failed; run it by hand" >&2
+fi
 
 # Noctalia's hot reload watches the plugin file it opened, and a merge replaces that file, so a
 # pulled chip.luau never loads until the shell restarts (#2448 sat unloaded on the live bar).
