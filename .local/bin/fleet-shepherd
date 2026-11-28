@@ -2152,7 +2152,10 @@ lean_flags() {
 # with neither does the pass session get a new window. one_pass then closes any other. The
 # launcher carries the runner's environment, since a tmux pane gets the server's, not the caller's.
 # That includes the conf's caps: agentctl-run checks them again in the pane, and without them it
-# holds the pass to lib/budget.sh's defaults, not the caps the shepherd's own check read.
+# holds the pass to lib/budget.sh's defaults, not the caps the shepherd's own check read. It also
+# includes the runner's ssh agent, when its socket is live: a worker takes only an agent key over
+# BatchMode ssh, and a hub pane holds whatever the last client to attach brought (an ssh attach with
+# no forwarding unset it, so 2026-11-27's passes skipped every razer-laptop nudge as unreachable, ar-5878).
 launch_pass() {
   local id="$1" n acct v cmd pane skill model
   skill="$(pass_skill)" || return 1
@@ -2167,6 +2170,8 @@ launch_pass() {
              BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR; do
       [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}"
     done
+    # A dead socket (a hand run from a forwarded ssh shell since closed) would replace the pane's own.
+    [ ! -S "${SSH_AUTH_SOCK:-}" ] || printf 'export SSH_AUTH_SOCK=%q\n' "$SSH_AUTH_SOCK"
     echo 'export FLEET_SHEPHERD_HOLDER=runner'
     # MODEL is this pass's lane (pass_model), not always the conf's
     [ -z "$model" ] || printf 'export MODEL=%q\n' "$model"
