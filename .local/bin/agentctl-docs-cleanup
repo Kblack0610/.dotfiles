@@ -6,7 +6,7 @@
 # Deterministic: no model runs here. It writes tonight's baseline to the inbox (skill-drift over the
 # skills, skill-drift --docs over the global docs, skill-drift --dups --check over every home that
 # restates an instruction, the size of every lessons file, its open correction chains, and
-# `notes knowledge lint` over the knowledge base with the knowledge-retired list), and for each area
+# `notes knowledge lint` over the knowledge base with the knowledge-retired list; it also scans the repos' copy stock, below), and for each area
 # with drift and no pass already open (skills, docs, dups, chains, knowledge) it files one pass that
 # runs the docs-cleanup skill on that area of the baseline, under the slug docs-cleanup-pass-<area>.
 # Only the board fills the queue (QUEUE.md "Admission"), so each pass is a board row (agent-queue
@@ -62,6 +62,18 @@ fi
 # --check exits 1 over the dup_pairs_max baseline in kpi-thresholds and still prints the JSON; with no
 # such row it exits 2 with no JSON, so a lost baseline reads FAILED, never "no drift".
 snap dups --dups --check --json
+# The copy stock of each repo in copy-stock-repos (default: the two dotfiles checkouts) against
+# copy-stock-baseline: `over` lines are the copy_stock_over KPI, not drift a pass fixes. A scan that cannot
+# run (exit 2: a baseline not deployed yet, a missing checkout, the timeout) is no reason to skip the pass:
+# it leaves no stock.txt, so the KPI reads ?, as dup_pairs does, and the error stays in stock.err.
+STOCK_REPOS="${COPY_STOCK_REPOS:-$HOME/.config/agentctl/copy-stock-repos}"
+stock_dirs=
+[ -r "$STOCK_REPOS" ] && stock_dirs="$(sed -e 's/#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e "s#^~/#$HOME/#" "$STOCK_REPOS" | grep .)"
+[ -n "$stock_dirs" ] || stock_dirs="$HOME/.dotfiles
+$HOME/.dotfiles-private"
+mapfile -t stock_args <<<"$stock_dirs"
+timeout "${COPY_STOCK_TIMEOUT:-900}" "$HERE/shape-grow" --stock --check "${stock_args[@]}" > "$dir/stock.txt" 2>"$dir/stock.err"
+[ $? -le 1 ] || rm -f "$dir/stock.txt"
 # A chain whose target is still in the file is archived by script (the corrector stays, its marker goes),
 # so the chains below are the ones a session has to read: a dangling marker.
 sup=; [ "$DRY" = 1 ] && sup=--dry-run

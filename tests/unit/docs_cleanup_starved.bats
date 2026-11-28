@@ -12,6 +12,8 @@ setup() {
   export PATH="$BIN:$PATH" # the runner unit declares ~/.local/bin on PATH; the script no longer does
   mkdir -p "$BIN" "$HOME/.local/lib" "$HOME/.agent/lessons"
   cp "$BATS_TEST_DIRNAME/../../.local/bin/agentctl-docs-cleanup" "$BATS_TEST_DIRNAME/../../.local/bin/lessons" "$BATS_TEST_DIRNAME/../../.local/bin/docs-renamed-paths" "$BIN/"
+  # shape-grow --stock is a stub: STOCK_OUT is its answer, STOCK_RC its exit; it records its arguments.
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" > "$HOME/stock.args"\n[ -z "${STOCK_OUT-}" ] || printf "%%s\\n" "$STOCK_OUT"\nexit "${STOCK_RC:-0}"\n' > "$BIN/shape-grow"
   printf 'proof_outcome() { printf "%%s\\n" "$2" >> "$BATS_TEST_TMPDIR/verdicts"; }\n' > "$HOME/.local/lib/agent-proof.sh" # each night's verdict, one a line
   printf '#!/usr/bin/env bash\necho docs-cleanup\n' > "$BIN/agentctl"
   cat > "$BIN/agent-queue" <<'STUB'

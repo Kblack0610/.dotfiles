@@ -2276,6 +2276,8 @@ ledger_systems() {
 # landed_unverified: open epics whose every leaf is done, waiting on proof of the outcome. doctor_fail: FAIL lines in the last notes doctor.
 # dup_pairs: instructions two homes restate, from the newest nightly docs-cleanup night's dups.json
 # (skill-drift --dups); the bound is dup_pairs_max, the same row skill-drift --dups --check holds.
+# copy_stock_over: the repo copy counts (shape-grow --stock) above their line in copy-stock-baseline, the
+# `over` lines of the newest night's stock.txt; the bound is copy_stock_over_max, the baseline holds the counts.
 # chain_drift, chain_inbox_drift and step_age_p90_<step>: pipeline_json's drift and inbox_drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
@@ -2302,7 +2304,7 @@ ledger_systems() {
 # release_overdue and version_tag_drift are the release link (release_kpis): a project a day past its
 # target date with that version uncut, else a sheet-counter project, or a prod app its tag owns, a day past
 # its cadence due date with done rows and no cut; and a tagged project whose sheet is not its tag plus one patch.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running uncaused_close_share epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old prio_default request_to_live_h wants_unstamped admission_held chain_drift chain_inbox_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running uncaused_close_share epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs copy_stock_over plans_unqueued routes_unresolved reds_unfixed reds_spent requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old prio_default request_to_live_h wants_unstamped admission_held chain_drift chain_inbox_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -2658,15 +2660,16 @@ chain_prio() {
   if pd=$(prio_defaults) && [ -n "$pd" ]; then jq -r '"prio_default=\(.total)"' <<<"$pd"; else echo "prio_default=?"; fi
 }
 
-# chain_local <now> -> doctor_fail, estimated_token_share and dup_pairs, read from local files
+# chain_local <now> -> doctor_fail, estimated_token_share, dup_pairs and copy_stock_over, read from local files
 chain_local() {
-  local t=$1 dups
+  local t=$1 dups night
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
   # older than four tries is an estimator that stopped, not today's share
   echo "estimated_token_share=$(jq -r --argjson oldest "$((t - BENCH_FLEET_COST_EVERY_MIN * 240))" 'if (.as_of_epoch // 0) < $oldest then "?" else .coverage.estimated_token_share // "?" end' "$BENCH_FLEET_COST_FILE" 2>/dev/null || echo '?')"
   # the newest night only: a runner that stopped must read ?, never an older night's count as now
-  dups=$(ls -d "$BENCH_DOCS_CLEANUP_DIR"/*/ 2>/dev/null | tail -1)
-  if [ -n "$dups" ] && dups=$(jq -er '.pairs | numbers' "${dups}dups.json" 2>/dev/null); then echo "dup_pairs=$dups"; else echo "dup_pairs=?"; fi
+  night=$(ls -d "$BENCH_DOCS_CLEANUP_DIR"/*/ 2>/dev/null | tail -1)
+  if [ -n "$night" ] && dups=$(jq -er '.pairs | numbers' "${night}dups.json" 2>/dev/null); then echo "dup_pairs=$dups"; else echo "dup_pairs=?"; fi
+  if [ -n "$night" ] && [ -r "${night}stock.txt" ]; then echo "copy_stock_over=$(grep -c '^over ' "${night}stock.txt")"; else echo "copy_stock_over=?"; fi
 }
 
 # chain_plans -> plans_unqueued
