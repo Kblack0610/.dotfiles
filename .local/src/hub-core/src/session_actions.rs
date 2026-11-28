@@ -63,6 +63,25 @@ impl Action {
         }
     }
 
+    /// The button for the action.
+    pub fn label(self) -> &'static str {
+        match self {
+            Action::Interrupt => "Interrupt",
+            Action::Park => "Park session",
+            Action::Unpark => "Unpark session",
+            Action::Move => "Move to account",
+            Action::Stop => "Stop session",
+            Action::Cancel => "Cancel task",
+            Action::ApprovePlan => "Approve plan",
+        }
+    }
+
+    /// Ends work that cannot be picked back up, so its button and its confirm are drawn as a
+    /// danger (a park or an interrupt can be resumed; a stop or a cancel cannot).
+    pub fn danger(self) -> bool {
+        matches!(self, Action::Stop | Action::Cancel)
+    }
+
     /// What the action does, for a confirm prompt.
     pub fn describe(self) -> &'static str {
         match self {
@@ -76,6 +95,43 @@ impl Action {
                 "accept its plan: press \"Yes, auto-accept edits\" in its plan dialog"
             }
         }
+    }
+}
+
+/// One action as a page words it: its button, its confirm and whether it is a danger.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Described {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub describe: &'static str,
+    pub danger: bool,
+}
+
+/// What a page needs to draw the actions and a move's choice: every action worded once, and the
+/// account names a move can pick (claude-acct's accounts file).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Options {
+    pub actions: Vec<Described>,
+    pub accounts: Vec<String>,
+}
+
+fn account_names() -> Vec<String> {
+    account::load().into_iter().map(|a| a.name).collect()
+}
+
+/// The [`Options`] both surfaces draw from.
+pub fn options() -> Options {
+    Options {
+        actions: Action::ALL
+            .into_iter()
+            .map(|a| Described {
+                name: a.name(),
+                label: a.label(),
+                describe: a.describe(),
+                danger: a.danger(),
+            })
+            .collect(),
+        accounts: account_names(),
     }
 }
 
@@ -439,7 +495,7 @@ pub fn gather_unjoined(runner: &dyn Runner) -> Snapshot {
     }
     Snapshot {
         agents: agents.into_iter().zip(sessions).collect(),
-        accounts: account::load().into_iter().map(|a| a.name).collect(),
+        accounts: account_names(),
     }
 }
 
@@ -451,6 +507,15 @@ impl Snapshot {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_action_is_worded_once_and_only_stop_and_cancel_are_dangers() {
+        let words = Action::ALL.map(|a| (a.name(), a.label(), a.danger()));
+        assert!(words.iter().all(|(_, label, _)| !label.is_empty()));
+        let danger: Vec<_> = words.iter().filter(|w| w.2).map(|w| w.0).collect();
+        assert_eq!(danger, ["stop", "cancel"]);
+        assert_eq!(Action::ApprovePlan.label(), "Approve plan");
+    }
+
     use super::*;
     use std::cell::RefCell;
 
