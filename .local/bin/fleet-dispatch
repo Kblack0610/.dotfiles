@@ -21,7 +21,7 @@
 #                                    an urgent one from the human even under a dispatch hold or load,
 #                                    or board rows no pass has judged in that time (the human here or away; not at a full fleet),
 #                                    or a queue under DISPATCH_LOW_WATER with rows to pick and no start in twice that,
-#                                    or a trainee pool dry that long while a trainee harness has a slot
+#                                    (a trainee pool dry that long is printed, and trips nothing)
 #   fleet-dispatch sprint-stalled    rc 1 naming each agent row of an open sprint with no queue item, session or open gate
 #                                    for DISPATCH_STARVED_MIN (watch sprint-stalled); rc 2 when a read fails
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
@@ -3517,13 +3517,13 @@ trainee_diff_why() {
 }
 
 # row_paths <text> <repo> -> the files and directories a row names, one a line: each word with a slash
-# or a file extension (no URL, no #tag, no id comment, no <placeholder> or glob, no word of digits
+# or a file extension (no URL, no #tag, one in brackets or quotes too, no id comment, no <placeholder> or glob, no word of digits
 # and punctuation such as 0/5 or 11-20/21), and each bare word that is a .local/bin command the repo tracks.
 # A leading ~/ or ./, trailing punctuation and a :line, :line-line or :line:col suffix go, so
 # fleet-sessions:1751 names its file (ar-5747).
 row_paths() {
   local words cmds
-  words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:]])#[A-Za-z0-9_/:.-]+//g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
+  words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:](\[`"'"'"'])#[A-Za-z0-9_/:.-]+/\1/g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
     sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s/(:[0-9]+(-[0-9]+)?)+$//; s#/+$##' | grep -vE '^[a-z]+://|[<>*{}$]|^[0-9/.:-]*$' | sort -u)
   cmds=$(git -C "$2" ls-files -- '.local/bin/*' 2>/dev/null | sed 's#.*/##')
   grep -E '/|\.[A-Za-z0-9]+$' <<<"$words"
@@ -7948,9 +7948,11 @@ cmd_starved() {
     echo "board rows gated on what can never clear: (notes ptask <project> --agent tag --remove <gate> <id>, plus --add the gate that replaced it, or drop the row)"
     sed 's/^/  /' <<<"$dead"
   fi
+  # A dry trainee pool is named but does not trip: only the board's supply clears it, and an idle free
+  # key costs nothing (ask 0BQraJ, 2026-11-27: it re-tripped six times from 11-24 with nothing to fix, ar-5747).
   dry=$(trainee_dry "$cut")
   [ -z "$dry" ] || echo "$dry"
-  side=$dead$dry
+  side=$dead
   # A run start in the window proves the passes move the queue, which clears the high items they work
   # through in order. It does not clear an urgent item they passed over: that one sits first in the
   # order, so a pass that started others and not it is held by something specific to it (2026-11-10:
@@ -8030,7 +8032,7 @@ cmd_starved() {
 
 # trainee_dry <cut epoch> -> one line per harness dry since before <cut>: it had a slot and found no
 # queued or board row it takes on every pass since (TRAINEE_DRY, trainee_dry_mark), so its free key
-# sit idle. A dry pool is a supply fault no run start clears, so starved reports it beside the dead holds.
+# sit idle. A dry pool is a supply level no run start clears: starved prints it beside the dead holds, and it trips nothing.
 trainee_dry() {
   local h since
   [ -s "$TRAINEE_DRY" ] || return 0
