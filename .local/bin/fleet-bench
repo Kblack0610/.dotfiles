@@ -5315,9 +5315,11 @@ upsert_report() {
   fi
 }
 
-# watch_sev <name> -> the severity in its manifest, read through sentinel-watch.sh watch_severity.
+# watch_sev <name> -> the level of its trip now, else the severity in its manifest (sentinel-watch.sh
+# watch_trip_level): a probe's `page:` level (alertmanager-fleet) outranks the manifest's fallback. It
+# sets a row's priority only; the patience below stays the manifest's severity (watch_severity).
 # watch_after <severity> -> seconds it must stay at TRIP before it is a red.
-watch_sev() { watch_severity "$TRIAGE_WATCHES/$1.yaml"; }
+watch_sev() { watch_trip_level "$TRIAGE_WATCHES/$1.yaml" "$TRIAGE_WATCH_STATE"; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
 
 # system_note <watch> <route skill> -> "; system <ids>: load fix-red and <skills>" for a watch whose
@@ -5355,7 +5357,7 @@ watch_tripped_since() {
   ! watch_paused "$1" || return 1
   [ "$(cat "$TRIAGE_WATCH_STATE/$1.state" 2>/dev/null)" = TRIP ] || return 1
   since=$(cat "$TRIAGE_WATCH_STATE/$1.since" 2>/dev/null) || return 1
-  [[ "$since" =~ ^[0-9]+$ ]] && [ $(($2 - since)) -ge "$(watch_after "$(watch_sev "$1")")" ] || return 1
+  [[ "$since" =~ ^[0-9]+$ ]] && [ $(($2 - since)) -ge "$(watch_after "$(watch_severity "$TRIAGE_WATCHES/$1.yaml")")" ] || return 1
   printf '%s\n' "$since"
 }
 
