@@ -972,6 +972,20 @@ pub enum Verb {
     },
 }
 
+/// The write that sets a row's one priority: a `Tag` add of the level, which `ptask tag` swaps
+/// for the tag the row had. None when `level` is not one of `PRIORITIES`.
+pub fn set_priority(raw: &str, level: &str) -> Option<Verb> {
+    let level = level.trim().trim_start_matches('#');
+    PRIORITIES.contains(&level).then(|| Verb::Tag {
+        raw: raw.into(),
+        add: vec![level.into()],
+        remove: vec![],
+    })
+}
+
+/// What a refused `set_priority` says.
+pub const NOT_A_PRIORITY: &str = "priority is urgent, high, normal or low";
+
 /// A tag as a row carries it, without the `#`: one word that cannot read as a flag.
 fn is_tag(t: &str) -> bool {
     let t = t.strip_prefix('#').unwrap_or(t);
@@ -2095,6 +2109,22 @@ mod tests {
             argv(&w("human", edit)).unwrap()[5..],
             ["--exact", "edit", "--text", "-ship it today", "--", RAW]
         );
+    }
+
+    #[test]
+    fn priority_is_a_tag_add_of_one_level_and_refuses_any_other_word() {
+        let verb = |p: &str| set_priority(RAW, p).unwrap();
+        assert_eq!(
+            argv(&w("agent", verb(" #urgent "))).unwrap()[5..],
+            ["--agent", "--exact", "tag", "--add=urgent", "--", RAW]
+        );
+        assert_eq!(
+            argv(&w("human", verb("low"))).unwrap()[5..],
+            ["--exact", "tag", "--add=low", "--", RAW]
+        );
+        for bad in ["", "medium", "p0", "size/s", "high low", "-high"] {
+            assert!(set_priority(RAW, bad).is_none(), "{bad}");
+        }
     }
 
     #[test]
