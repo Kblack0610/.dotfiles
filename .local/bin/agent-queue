@@ -4144,8 +4144,10 @@ close_row_on_item() {
   [ -n "$row" ] && [ -z "$pr" ] || return 0
   case "$lane" in '' | agent) flag=(--agent) ;; esac
   key="${row#*:}"
-  other="$(collect_rows $ACTIVE | jq -r --arg r "${row,,}" --arg s "$slug" \
-    'first(.[] | select((.row // "" | ascii_downcase) == $r and .slug != $s) | .slug) // empty')" ||
+  # The item is in done/ by now, so every active item naming the row is another one, a --repeat rerun under
+  # the same slug included (fleet-dispatch close_row tells that by file).
+  other="$(collect_rows $ACTIVE | jq -r --arg r "${row,,}" \
+    'first(.[] | select((.row // "" | ascii_downcase) == $r) | .slug) // empty')" ||
     { echo "agent-queue: $slug is done, but the queue could not be read, so its board row $key on ${row%%:*} is left open: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} done $key --proof item:$slug" >&2; return 0; }
   if [ -n "$other" ]; then
     echo "$slug: board row $key left open, $other still works it"
