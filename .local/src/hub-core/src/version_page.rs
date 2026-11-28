@@ -13,11 +13,10 @@
 //! `/api/releases/version` and the hub TUI's Releases pane.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::builds::{Run, RunKey};
+use crate::builds::{Paths, Run, RunKey};
 use crate::links::{Kind, Link};
 use crate::queue::{Item, State};
 use crate::release_graph::{self, pr_ref, repo_key, Pr, Shipment};
@@ -485,14 +484,14 @@ pub fn build(project: &str, version: &str, today: &str, i: Inputs) -> Option<Pag
     })
 }
 
-/// Read and build the page: the rows from notes, the PR store, and the job archive at `jobs`
-/// for the runs every cut started. `rel` and `runs` are the caller's current reads.
+/// Read and build the page: the rows from notes, and from `paths` the PR store and the job
+/// archive for the runs every cut started. `rel` and `runs` are the caller's current reads.
 pub fn read(
     runner: &dyn Runner,
     rel: &Releases,
     runs: &[Run],
     items: &[Item],
-    jobs: &Path,
+    paths: &Paths,
     project: &str,
     version: &str,
 ) -> Option<Page> {
@@ -503,8 +502,8 @@ pub fn read(
         Some(argv) => runner.run(&argv).and_then(|j| parse_feed(&j)),
         None => Ok(Feed::default()),
     };
-    let records = release_page::records(jobs, &run_keys(&apps, runs, version));
-    let (prs, pr_errors) = crate::release_graph::read_prs(&crate::release_graph::prs_dir());
+    let records = release_page::records(&paths.jobs, &run_keys(&apps, runs, version));
+    let (prs, pr_errors) = release_graph::read_prs(&paths.prs);
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     let mut page = build(
         project,
