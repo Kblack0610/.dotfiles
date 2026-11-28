@@ -1610,6 +1610,82 @@ MD
   assert_output 1
 }
 
+@test "ahead counts 0 for a squash-merged file the base has changed again since (ar-89)" {
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  echo 0 > "$SANDBOX/wt/f"; echo 0 > "$SANDBOX/wt/d"; "${g[@]}" add f d; "${g[@]}" commit -q -m init
+  "${g[@]}" push -q origin HEAD:main 2>/dev/null
+  "${g[@]}" checkout -q -b feat/x
+  echo 1 > "$SANDBOX/wt/f"; "${g[@]}" rm -q d; "${g[@]}" add f; "${g[@]}" commit -q -m 'feat f'
+  # origin squash-merges the branch, then moves f on and brings d back
+  "${g[@]}" checkout -q -b squash origin/main 2>/dev/null
+  echo 1 > "$SANDBOX/wt/f"; "${g[@]}" rm -q d; "${g[@]}" add f; "${g[@]}" commit -q -m 'feat f (#9)'
+  echo 2 > "$SANDBOX/wt/f"; echo 3 > "$SANDBOX/wt/d"; "${g[@]}" add f d; "${g[@]}" commit -q -m 'main moves f'
+  "${g[@]}" push -q origin squash:main 2>/dev/null
+  "${g[@]}" checkout -q feat/x; "${g[@]}" fetch -q origin
+  # the old read: both differ from the base tip and from the merge base
+  [ "$("${g[@]}" diff --name-only "$("${g[@]}" merge-base origin/main HEAD)" HEAD | wc -l)" -eq 2 ]
+  run ahead_files "$SANDBOX/wt" origin/main
+  assert_output 0
+  # a base that reverted f to the merge base's blob holds none of the branch's work: f counts again
+  "${g[@]}" checkout -q squash; echo 0 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'revert f'
+  "${g[@]}" push -q origin squash:main 2>/dev/null
+  "${g[@]}" checkout -q feat/x; "${g[@]}" fetch -q origin
+  run ahead_paths "$SANDBOX/wt" origin/main
+  assert_output f
+  # negative control: a blob the base never had still counts, by name; the landed deletion does not
+  echo 4 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'f again'
+  run ahead_paths "$SANDBOX/wt" origin/main
+  assert_output f
+}
+
+@test "ahead counts 0 for a submodule pin the base landed or descends from, and counts one it does not (ar-89)" {
+  local g=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always)
+  git init -q --bare "$SANDBOX/sub.git"; git init -q --bare "$SANDBOX/super.git"
+  git clone -q "$SANDBOX/sub.git" "$SANDBOX/subw" 2>/dev/null
+  "${g[@]}" -C "$SANDBOX/subw" commit -q --allow-empty -m s0; "${g[@]}" -C "$SANDBOX/subw" push -q origin HEAD:master 2>/dev/null
+  git clone -q "$SANDBOX/super.git" "$SANDBOX/wt" 2>/dev/null
+  local w="$SANDBOX/wt" sm="$SANDBOX/wt/External/core"
+  "${g[@]}" -C "$w" commit -q --allow-empty -m init
+  "${g[@]}" -C "$w" submodule -q add "$SANDBOX/sub.git" External/core 2>/dev/null
+  "${g[@]}" -C "$w" commit -q -m pin; "${g[@]}" -C "$w" push -q origin HEAD:main 2>/dev/null
+  # pin <msg>: a new submodule commit, pinned by the superproject's current branch
+  pin() { "${g[@]}" -C "$sm" commit -q --allow-empty -m "$1"; "${g[@]}" -C "$w" add External/core; "${g[@]}" -C "$w" commit -q -m "pin $1"; }
+  # the branch pins c1; origin squash-merges that pin, then pins c2 on top of it
+  "${g[@]}" -C "$w" checkout -q -b feat/x
+  pin c1
+  "${g[@]}" -C "$w" checkout -q -b squash origin/main 2>/dev/null
+  "${g[@]}" -C "$w" add External/core; "${g[@]}" -C "$w" commit -q -m 'pin c1 (#9)'
+  pin c2
+  "${g[@]}" -C "$w" push -q origin squash:main 2>/dev/null
+  "${g[@]}" -C "$w" checkout -q feat/x; "${g[@]}" -C "$w" fetch -q origin
+  [ "$("${g[@]}" -C "$w" diff --name-only origin/main HEAD)" = External/core ]   # the old read: 1
+  run ahead_files "$w" origin/main
+  assert_output 0
+  # negative control: a pin the base neither had nor descends from still counts
+  pin c3
+  run ahead_paths "$w" origin/main
+  assert_output External/core
+  # origin pins c4 on top of c3, never c3 itself: c3 is an ancestor of the base's pin, so landed
+  "${g[@]}" -C "$w" checkout -q squash
+  pin c4
+  "${g[@]}" -C "$w" push -q origin squash:main 2>/dev/null
+  "${g[@]}" -C "$w" checkout -q feat/x; "${g[@]}" -C "$w" fetch -q origin
+  run ahead_files "$w" origin/main
+  assert_output 0
+  # a pin moved back below the merge base's is the branch's change, though the base descends from it
+  "${g[@]}" -C "$w" merge -q -m 'take main' origin/main                 # the merge base now pins c4
+  "${g[@]}" -C "$w" checkout -q squash
+  pin c5
+  "${g[@]}" -C "$w" push -q origin squash:main 2>/dev/null
+  "${g[@]}" -C "$w" checkout -q feat/x; "${g[@]}" -C "$w" fetch -q origin
+  git -C "$sm" checkout -q --detach HEAD~3                                # c2, an ancestor of c4 and c5
+  "${g[@]}" -C "$w" add External/core; "${g[@]}" -C "$w" commit -q -m 'pin back to c2'
+  run ahead_paths "$w" origin/main
+  assert_output External/core
+}
+
 @test "the ledger nudges once per fact, and a new fact is nudgeable again" {
   run nudged sid-1 'STALLED PR #9 CI red @feat/x'
   assert_failure
@@ -3964,13 +4040,16 @@ SH
   git clone -q "$SANDBOX/gh-mirror.git" "$SANDBOX/wt" 2>/dev/null
   "${g[@]}" remote add forgejo "$SANDBOX/fj.git"
   mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
-  "${g[@]}" add .forgejo; "${g[@]}" commit -q -m init; "${g[@]}" push -q forgejo HEAD:master 2>/dev/null
-  # the branch changes site.yml; Forgejo squash-merges it as #1084, then master rewrites the same file
+  printf 'a\nb\nc\n' > "$SANDBOX/wt/site.yml"
+  "${g[@]}" add .forgejo site.yml; "${g[@]}" commit -q -m init; "${g[@]}" push -q forgejo HEAD:master 2>/dev/null
+  # the branch changes site.yml; master changes another line of it, Forgejo squash-merges the branch as
+  # #1084 (a 3-way blob the branch never held, so ar-89's blob match misses it), then master rewrites the file
   "${g[@]}" checkout -q -b fix/pxe
-  echo 1 > "$SANDBOX/wt/site.yml"; "${g[@]}" add site.yml; "${g[@]}" commit -q -m 'pxe'
+  printf 'pxe\nb\nc\n' > "$SANDBOX/wt/site.yml"; "${g[@]}" commit -q -am 'pxe'
   local head; head="$("${g[@]}" rev-parse HEAD)"
   "${g[@]}" checkout -q -b m HEAD~1
-  echo 1 > "$SANDBOX/wt/site.yml"; "${g[@]}" add site.yml; "${g[@]}" commit -q -m 'pxe (#1084)'
+  printf 'a\nb\nhost\n' > "$SANDBOX/wt/site.yml"; "${g[@]}" commit -q -am 'host (#1083)'
+  printf 'pxe\nb\nhost\n' > "$SANDBOX/wt/site.yml"; "${g[@]}" commit -q -am 'pxe (#1084)'
   echo 2 > "$SANDBOX/wt/site.yml"; "${g[@]}" commit -q -am 'later (#1090)'
   # the mirror has run too, so origin/master is the same tip
   "${g[@]}" push -q forgejo m:master 2>/dev/null; "${g[@]}" push -q origin m:master 2>/dev/null
