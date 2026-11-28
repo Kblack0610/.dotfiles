@@ -44,6 +44,8 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"
 # shellcheck source=../lib/store-auth.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
+# shellcheck source=../lib/uncomment.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/uncomment.sh"
 NAME=release-state   # the runner refresh publishes under, never an inherited AGENTCTL_NAME
 
 STATE_DIR="${RELEASE_STATE_DIR:-$HOME/.agent/releases}"
@@ -744,10 +746,11 @@ stage_facts() {
         | from_entries)}' <"$labs"
 }
 
-# workflow_code <dir> <ref> <file>: the file at the fetched branch ref without its comment lines.
+# workflow_code <dir> <ref> <file>: the file at the fetched branch ref without its comments (uncomment),
+# a trailing one included: gungan's `runs-on: [...]  # ... home-config ...` names no deploy marker.
 # Match it as a here-string, never piped into `grep -q`: the runner ignores SIGPIPE (systemd), so a
-# matcher that exits on the first hit leaves this grep a write error on stderr.
-workflow_code() { git -C "$1" show "$2:$3" 2>/dev/null | grep -v '^[[:space:]]*#' || true; }
+# matcher that exits on the first hit leaves the writer a write error on stderr.
+workflow_code() { git -C "$1" show "$2:$3" 2>/dev/null | uncomment; }
 
 # link_facts <labs-file> -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
 # with the error that stopped its read. Per app repo (a repo an app or game ships from): the
