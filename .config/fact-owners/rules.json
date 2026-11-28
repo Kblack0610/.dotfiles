@@ -1,0 +1,103 @@
+{
+  "vocab": [
+    {
+      "row": "end-reasons",
+      "name": "end-reason",
+      "source": {
+        "shell_var": [
+          ".local/lib/end-reasons.sh",
+          "UNRATED_ENDS"
+        ]
+      },
+      "home": [
+        ".local/lib/end-reasons.sh"
+      ]
+    },
+    {
+      "row": "agent-verdicts",
+      "name": "agent-verdict",
+      "source": {
+        "shell_var": [
+          ".local/lib/agent-proof.sh",
+          "AGENT_VERDICTS"
+        ]
+      },
+      "home": [
+        ".local/lib/agent-proof.sh"
+      ]
+    },
+    {
+      "row": "kinds",
+      "name": "work-kind",
+      "source": {
+        "json_keys": ".config/fleet-dispatch/kinds.json"
+      },
+      "home": [
+        ".local/src/notes-cli/src/projects.rs"
+      ]
+    },
+    {
+      "row": "buckets",
+      "name": "session-bucket",
+      "source": {
+        "shell_var": [
+          ".local/bin/fleet-sessions",
+          "BUCKET_ORDER"
+        ]
+      },
+      "home": [
+        ".local/bin/fleet-sessions",
+        ".local/src/agent-core/src/vocab.rs"
+      ]
+    },
+    {
+      "row": "accounts",
+      "name": "account",
+      "tests": true,
+      "source": {
+        "tsv_col": [
+          ".config/claude-acct/accounts",
+          0
+        ]
+      },
+      "home": [
+        ".local/bin/claude-acct",
+        ".local/src/agent-core/src/account.rs"
+      ]
+    }
+  ],
+  "raw": [
+    {
+      "row": "landed",
+      "fields": [
+        "status",
+        "pr|merged"
+      ],
+      "writers": [
+        ".local/bin/agent-queue",
+        ".local/src/hub-core/src/queue.rs"
+      ],
+      "window": 10
+    }
+  ],
+  "config_keys": [
+    {
+      "conf": ".config/fleet-dispatch/kinds.json",
+      "key": "rank",
+      "reader": ".local/bin/fleet-dispatch:load_kinds"
+    },
+    {
+      "conf": ".config/fleet-dispatch/kinds.json",
+      "key": "entry",
+      "reader": ".local/bin/fleet-dispatch:load_kinds"
+    },
+    {
+      "conf": ".config/fleet-dispatch/kinds.json",
+      "key": "exit",
+      "reader": ".local/bin/fleet-dispatch:load_kinds"
+    }
+  ],
+  "schema_docs": [
+    ".local/src/docs/fleet-states.md"
+  ]
+}

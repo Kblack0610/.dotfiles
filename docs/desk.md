@@ -4,13 +4,13 @@
 
 | Slot | Parts | Unit |
 |---|---|---|
-| bar | `waybar-classic`, `waybar-modern`, `noctalia` | `waybar.service` (our `launch.sh` drop-in), `noctalia.service` |
-| notify | `dunst`, `swaync` | `dunst.service`, `swaync.service` |
+| bar | `noctalia` (the default), `waybar-classic`, `waybar-modern` | `noctalia.service`, `waybar.service` (our `launch.sh` drop-in) |
+| notify | `dunst` (the default), `swaync` | `dunst.service`, `swaync.service` |
 
 ## Use
 
 ```
-desk current                 # bar=waybar-classic, notify=dunst
+desk current                 # bar=noctalia, notify=dunst
 desk use bar waybar-modern   # record it and switch now
 desk use notify swaync       # the notifier with a control panel
 desk parts                   # every slot's parts and units
@@ -18,7 +18,7 @@ desk parts                   # every slot's parts and units
 
 From the keyboard: Super+A, then d, then `c` waybar-classic, `m` waybar-modern, `n` noctalia, `d` dunst or `s` swaync. Super+A, then b, opens the bar's panels (see "Panel keys"). desk's answer comes back as a notification. `tests/unit/desk.bats` checks that every part has a key and each key runs the part its label names.
 
-The choice lives in `~/.local/state/desk/parts` and survives logout: `desk.service` (wanted by `graphical-session.target`) runs `desk start` at login. A slot with no line runs its first part.
+The choice lives in `~/.local/state/desk/parts` and survives logout: `desk.service` (wanted by `graphical-session.target`) runs `desk start` at login. A slot with no line runs its first part, the default: noctalia for the bar (the human's pick after a day on each, ask 217GgJ, 2026-11-20) and dunst for the notifier. A fresh install gets both, since `packages.conf` installs every part.
 
 Scripts and binds never signal a part directly:
 
@@ -52,16 +52,18 @@ Notifications stay with the notify slot: `config.toml` sets `[notification] enab
 
 ## The control panel
 
-`swaync` adds a panel with Wi-Fi and Bluetooth toggles, the volume, the media player, do-not-disturb and the notifications (`.config/swaync/config.json`). Under swaync the bar shows a bell chip (`custom/notify`): click opens the panel, right click toggles do-not-disturb. `theme-switch` writes `.config/swaync/style.css`, which keeps swaync's own layout and swaps its colours. Agent pages are quiet: `notification-visibility` mutes agent-notify's normal pages (it sends high as normal too, and names them Agents, Health or Needs you), so they wait in the panel, grouped by that name, and the bell shows a dot; urgent pages and every other app still pop up. A page replaces the earlier one with the same title, so the panel holds the newest per title.
+`swaync` adds a panel with Wi-Fi and Bluetooth toggles, the volume, the media player, do-not-disturb and the notifications (`.config/swaync/config.json`). Under swaync the bar shows a bell chip (`custom/notify`): click opens the panel, right click toggles do-not-disturb. `theme-switch` writes `.config/swaync/style.css`, which keeps swaync's own layout and swaps its colours. Agent pages are quiet: `notification-visibility` mutes agent-notify's normal pages (it sends high as normal too, and names them Agents, Health or Needs you), so they wait in the panel, grouped by that name, and the bell reads how many wait in each group, `3 agents, 2 health` (`desk notify bell`; the hover lists each group); urgent pages and every other app still pop up. swaync lists no notification over D-Bus, only a count, so the bell counts the pages `desk notify show` keeps with their app name and forgets one when swaync sends `NotificationClosed` for it (a dismiss or clear-all in the panel). A popup from any other app counts toward the total in the hover, never toward a group. A page replaces the earlier one with the same title, so the panel holds the newest per title.
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| No bar after login | `desk.service` failed (a part did not start) or the graphical session target was not reached | `systemctl --user status desk.service waybar.service`, then `desk start` |
+| No bar after login | `desk.service` failed (a part did not start) or the graphical session target was not reached | `systemctl --user status desk.service noctalia.service waybar.service`, then `desk start` |
+| No bar after a pull on a machine with no `~/.local/state/desk/parts` | the default bar became noctalia (2026-11-24), and this machine has not installed it | `sudo pacman -S noctalia` and `desk start`, or keep waybar with `desk use bar waybar-classic` |
 | `desk use` says a part "needs X, which is not installed" | the part's package is missing | install it (`packages.conf` lists it), then rerun |
 | A chip does not refresh on a keybind | the chip has no `"signal"` key, so `desk signal` exits 2 | add `"signal": N` to the module in `config.base` |
 | swaync shows its default grey look | `~/.config/swaync/style.css` is not there: it is a gitignored render, which stow and `dotfiles-deploy` never link, so theme-switch links it when it writes it | `theme-switch "$(cat ~/.config/theme/current)" --only swaync` renders and links it |
+| The bell's groups disagree with the panel | a page was closed while no bar ran `desk notify bell` (each bar runs one, which forgets a closed page on `NotificationClosed`), so its id stays kept until the panel next empties | `ls $XDG_RUNTIME_DIR/desk/` shows the kept `<id> <notifier> <app>` per page; delete the stale file, or clear the panel, which forgets every kept id |
 | The wrong notifier pops up after one crashed | both own `org.freedesktop.Notifications`, and D-Bus starts whichever it finds first | `desk start` brings back the recorded part, and Conflicts= stops the other |
 | Noctalia shows its own colours, not the theme's | `~/.config/noctalia/palettes/dotfiles.json` is missing, for the same reason | `theme-switch "$(cat ~/.config/theme/current)" --only noctalia` renders and links it |
 | A Noctalia chip reads `custom/<x> ?` in red | `desk chip custom/<x>` failed: the module is not in `config.base`, or desk is not on PATH at `~/.local/bin/desk` | run `desk chip custom/<x>` and fix what it says |

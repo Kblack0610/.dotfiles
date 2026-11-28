@@ -57,3 +57,36 @@ setup() {
   assert_success
   assert_called 'systemctl --user start agentctl@pers.service'
 }
+
+@test "--if-stale writes the drop-in of an event runner with no SCHEDULE, and again when its conf gains START_LIMIT=off" {
+  "$AGENTCTL_BIN" reload
+  drop="$TIMERS/agentctl@evt.service.d/agentctl-oneshot.conf"
+  printf 'NAME=evt\nKIND=oneshot\nSCOPE=singleton\nLANE=maintain\nDESCRIPTION=\047event runner\047\nEFFECT=none\nCOMMAND=/bin/true\n' > "$AGENTCTL_CONF_DIR/evt.conf"
+  run "$AGENTCTL_BIN" reload --if-stale
+  assert_success
+  assert_line 'agentctl: timers lag their confs: evt'
+  run grep -c 'StartLimitIntervalSec' "$drop"
+  assert_output 0
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AGENTCTL_BIN" reload --if-stale
+  assert_success
+  assert_output ''
+  assert_not_called 'daemon-reload'
+  touch -d @1000 "$drop"
+  echo 'START_LIMIT=off' >> "$AGENTCTL_CONF_DIR/evt.conf"
+  run "$AGENTCTL_BIN" reload --if-stale
+  assert_success
+  assert_line 'agentctl: timers lag their confs: evt'
+  grep -q '^StartLimitIntervalSec=0' "$drop"
+}
+
+@test "--if-stale rewrites a drop-in whose RuntimeMaxSec is not its conf's, even when its conf is older (ar-2022)" {
+  "$AGENTCTL_BIN" reload
+  drop="$TIMERS/agentctl@alpha.service.d/agentctl-oneshot.conf"
+  grep -q '^RuntimeMaxSec=' "$drop"
+  sed -i 's/^RuntimeMaxSec=.*/RuntimeMaxSec=1h/' "$drop"   # the cap an older default wrote
+  run "$AGENTCTL_BIN" reload --if-stale
+  assert_success
+  assert_line --regexp '^agentctl: timers lag their confs: .*alpha'
+  grep -q '^RuntimeMaxSec=4h' "$drop"
+}

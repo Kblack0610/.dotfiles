@@ -46,7 +46,7 @@ manifest CRUD; the running service does the watching.
   `~/.local/state/watch-companion/<name>.state`.
 - Runbook (schema, probe types, cost model): `~/.config/agentctl/SENTINEL.md`.
 - Templates: copy the nearest live manifest of the same probe kind in `~/.agent/watches/`; `~/.config/agentctl/sentinel-watches.examples/` keeps only the bake-watch (`pmp-bake.yaml`).
-- One signal per failure: a failed `agentctl@<runner>.service` is reported by `fleet-liveness` (the runner's FAILED outcome), so `systemd-user-failed` skips `agentctl@*` (and desktop `app-*` and transient `run-*` units) and watches every other user unit (`user-units-failed --exclude`).
+- One signal per failure: a failed `agentctl@<runner>.service` is reported by `fleet-liveness` (the runner's FAILED outcome), so `systemd-user-failed` skips `agentctl@*` (and desktop `app-*` units and every transient systemd-run unit: fleet-bench triage resets an auto-named `run-*` one and files a named one as a `fix(unit)` row) and watches every other user unit (`user-units-failed --exclude ... --exclude-transient`).
 
 ## Hard constraints (read first, non-negotiable)
 
@@ -82,9 +82,11 @@ Picking the probe (deterministic-first):
 Always stamp `created:` (current ISO-8601) and `source: user`. Set `severity` (low/normal/high/urgent, meanings in `~/.local/src/docs/priority.md`) and
 `expiry`: a duration like `60m` from `created` or an ISO timestamp for a temporary ask, `null` for a standing watch (`--strict` refuses a missing, bare or `~` expiry).
 
-A standing watch's owner is its line in `~/.config/agentctl/triage-routes` (route, skill, fix), not a manifest field: add that line in the same change, and `fleet-bench triage --coverage` prints `watch <name>` for each standing watch that has none.
+A standing watch's owner is its line in `~/.config/agentctl/triage-routes` (route, skill, fix), not a manifest field: add that line in the same change, and `fleet-bench triage --coverage` prints `watch <name>` for each standing watch that has none, and `watch <name> owned:<row> ...` when an `owned:<row>` route names a row that is not open.
 
-A standing watch also needs a Command Center domain, as its own home-config PR (`~/dev/home/home-config`, Forgejo) opened beside this one: in `apps/monitoring/prometheus-rules-command-center.yaml`, add its name (dashes as underscores) to both the `mqtt_tripped` and the `mqtt_stale` selector of the domain row whose weight fits (1 warns, 2 is down), and add a case to `apps/monitoring/tests/command-center.test.yaml`. That rules file is the only home for a watch's domain and weight. A watch no regex claims lands in `other` at weight 2 and turns the health heart red on its first trip, however minor.
+A standing watch's Command Center domain is its `system:`: home-config's `apps/monitoring/prometheus-rules-command-center.yaml` (`~/dev/home/home-config`, Forgejo) groups watches by the `mqtt_system_<id>` gauge below, one domain per system, so a new watch lands in its system's domain with no edit there. A tripped watch is down and turns the health heart red, unless its manifest says `bookkeeping: true` or `severity: low`, which can only warn (weight 1). A watch that must warn and is neither is a name in a `cc:watch_warn_only` group of that file, with a case in `apps/monitoring/tests/command-center.test.yaml`, as its own home-config PR opened beside this one. That rules file is the only home for a warn-only name, and a manifest field is the only other thing that caps a weight. A watch with no `system:` lands in `other`, down on its first trip unless one of those caps applies.
+
+Each watch's published state also carries its manifest's `system:` and `bookkeeping:` (`agent-mqtt-publish`, read through `sentinel-manifest labels`): `bookkeeping: true` marks work posture (release-links, pts-bands, deploy-drift) rather than the health of a running system, so the Command Center caps it at a warning. mqtt2prom drops text, so Prometheus gets `mqtt_bookkeeping` (0 or 1) and one `mqtt_system_<id>` gauge per id (any character outside a-z, 0-9 and `_` is `_`), 1 on the watches in that system and absent, never 0, on the rest; the `system` text rides only on the MQTT topic. When the manifest read fails the payload carries none of these, so the gap shows.
 
 **Every new manifest must carry the four legibility fields**, one line each - they are what `list`
 renders and what a page carries, and a watch nobody can read is a watch nobody acts on:
@@ -98,7 +100,7 @@ renders and what a page carries, and a watch nobody can read is a watch nobody a
 
 `who` is the existing `source:` field - don't add another.
 
-Add `system: <id>` (an id of `~/.local/src/docs/systems.md`, or a project's own in project-map.json): what the watch is about, so its red loads fix-red plus that system's skills. Add `project: <canonical name>` (project-map.json) when the watch belongs to one project: it is the Alerts tab's project facet and the "N watches, M firing" line on that project's card. Leave it out for fleet machinery (spend, dispatch, liveness), which is fleet-wide. `validate` refuses a name the registry does not hold.
+Add `system: <id>` (an id of `~/.local/src/docs/systems.md`, or a project's own in project-map.json): what the watch is about, so its red loads fix-red plus that system's skills, and it is the Alerts tab's system facet. Add `project: <canonical name>` (project-map.json) when the watch belongs to one project: it is the Alerts tab's project facet and the "N watches, M firing" line on that project's card. Leave it out for fleet machinery (spend, dispatch, liveness), which is fleet-wide. `validate` refuses a name the registry does not hold.
 
 ```yaml
 name: prod-api
@@ -134,11 +136,7 @@ because a runtime failure notifies, and a documentation gap must never page. Use
 
 **Run the command. Do not enumerate the YAML yourself.**
 
-```bash
-watch-companion-loop list             # table: STATE / NAME / AGE / EVERY / WHERE / WHO, tripped first
-watch-companion-loop list --long      # every watch: what / why / where / who / action + the real probe
-watch-companion-loop list <name>      # one watch, long form
-```
+Run `watch-companion-loop list` (`--long` for every field, `<name>` for one watch); its forms and columns are in `~/.config/agentctl/SENTINEL.md` "Reading the registry".
 
 This verb used to say "enumerate the manifests", and the result was a differently-shaped answer
 every time, none of it reproducible, with the one fact a reader wants - *where does this point* -
@@ -160,10 +158,9 @@ Answers "what are you watching / is Sentinel running". Read-only.
 ```sh
 watch-companion-loop recheck <name>...   # probe now, whatever the interval
 watch-companion-loop recheck --tripped   # every TRIP or ERROR watch
-watch-companion-loop resolve <name> --pr OWNER/REPO#N   # its fix merged: the probe counts from the merge, then a recheck
 ```
 
-The same pass as the daemon's (state, evidence, recovery page), so a red clears the minute the work that fixed it is live. It probes only the watches named, prints each one's state, and exits 1 while any is red, 2 for an unknown name, 75 when another pass holds the lock past `SENTINEL_LOCK_WAIT`. A `probe: agent` watch, or a TRIP on an `agent_evaluate` watch, runs its model pass now and spends from the same hourly agent budget, so recheck those by name, not in a loop. `resolve` writes the merge time to `<name>.resolved`, and the loop passes it to a command probe as `SENTINEL_SINCE` (0 for none), so a windowed probe stops counting the events its fix already answered and only a new one trips it again. Operate commands: `~/.config/agentctl/SENTINEL.md`.
+The same pass as the daemon's (state, evidence, recovery page), so a red clears the minute the work that fixed it is live. It probes only the watches named, prints each one's state, and exits 1 while any is red, 2 for an unknown name, 75 when another pass holds the lock past `SENTINEL_LOCK_WAIT`. A `probe: agent` watch, or a TRIP on an `agent_evaluate` watch, runs its model pass now and spends from the same hourly agent budget, so recheck those by name, not in a loop. `watch-companion-loop resolve <name> --pr OWNER/REPO#N` (its fix merged) writes the merge time to `<name>.resolved`, and the loop passes it to a command probe as `SENTINEL_SINCE` (0 for none), so a windowed probe stops counting the events its fix already answered and only a new one trips it again. Operate commands: `~/.config/agentctl/SENTINEL.md`.
 
 ## Verb: `stop` / `remove <name>`
 

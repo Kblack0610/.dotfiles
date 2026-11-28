@@ -20,11 +20,11 @@ tool on that file is checked the same way: after the Bash form was denied, 6 of 
 left (2026-11-06/07, usage-cleanup pass 6) came through Read.
 Fail-open: any error allows the call.
 """
-import json
 import os
 import re
 import subprocess
-import sys
+
+import hooklib
 
 SEP = r"(?:^|[;&|(){}\s])"
 END = r"(?=[;&|(){}\s]|$)"
@@ -101,12 +101,19 @@ def strip_heredocs(cmd):
     return "\n".join(line for _, line, _, _ in heredoc_lines(cmd))
 
 
-def code_texts(cmd, guard=False):
+PLAIN_WORD = re.compile(r"[A-Za-z0-9_.,:@%+=-]+")
+
+
+def code_texts(cmd, guard=False, keep_words=False):
     """The command with quoted text blanked, plus each `-c '<payload>'`, recursively.
 
     guard=True is for a guard that must not miss a search: the quoted string after eval, ssh,
     watch, xargs or su is code too, and an unterminated quote stays visible instead of
     swallowing the rest of the command.
+
+    keep_words=True also leaves a quoted string that is one plain word as that bare word, which
+    is what the shell passes (a quoted kill target is the bare one); a row sees it. A string with
+    a space, `/`, `$`, a backtick or a backslash stays blanked.
     """
     texts, out, i, n = [], [], 0, len(cmd)
     while i < n:
@@ -130,8 +137,12 @@ def code_texts(cmd, guard=False):
                 continue
             prefix = "".join(out)
             if SHELL_C.search(prefix) or (guard and WRAPPER.search(prefix)):
-                texts.extend(code_texts("".join(body), guard))
-            out.append(" Q ")
+                texts.extend(code_texts("".join(body), guard, keep_words))
+                out.append(" Q ")
+            elif keep_words and PLAIN_WORD.fullmatch(cmd[i + 1 : j]):
+                out.append(cmd[i + 1 : j])
+            else:
+                out.append(" Q ")
             i = j + 1
             continue
         out.append(c)
@@ -207,7 +218,7 @@ def live_reason(text):
 # gate: hook-block-poll
 def decide(data):
     """The deny reason for one PreToolUse payload, or None. walker-guards.py calls this for Bash;
-    main() serves the Read hook, which walker-guards does not run on."""
+    run as a script it serves the Read hook, which walker-guards does not run on."""
     tool = data.get("tool_name", "Bash")
     tin = data.get("tool_input") or {}
     if tool == "Read":
@@ -221,16 +232,5 @@ def decide(data):
     return "block-poll: " + reason if reason else None
 
 
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

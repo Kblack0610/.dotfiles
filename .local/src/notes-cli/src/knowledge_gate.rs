@@ -225,7 +225,7 @@ fn chrome_lines(text: &str) -> usize {
 }
 
 /// The text after a `---` frontmatter block, if there is one.
-fn body(text: &str) -> &str {
+pub(crate) fn body(text: &str) -> &str {
     let Some(rest) = text.strip_prefix("---\n") else {
         return text;
     };
@@ -483,7 +483,7 @@ pub fn gate(
         // The daily note's tasks are Focus rows and the inbox has its own triage (`notes
         // inbox`), so only a ref is ever a todo list to route.
         let daily = is_daily(p, file, date);
-        let routable = !daily && !repo && !file.starts_with(&p.inbox);
+        let routable = !daily && !repo && !file.starts_with(&p.captures);
         if let Some(tasks) = todo_items(&raw).filter(|_| routable) {
             let n = tasks.len();
             items.push(Item {
@@ -836,7 +836,7 @@ mod tests {
         let tasks = "- [ ] a\n- [ ] b\n";
         let srcs = [
             (put(&root, "journal/daily/2026-11-19.md", tasks), None),
-            (p.inbox.join("2026-11-19.md"), None),
+            (p.captures.join("2026-11-19.md"), None),
             (
                 put(
                     &root,
@@ -846,7 +846,7 @@ mod tests {
                 None,
             ),
         ];
-        fs::create_dir_all(&p.inbox).unwrap();
+        fs::create_dir_all(&p.captures).unwrap();
         fs::write(&srcs[1].0, tasks).unwrap();
         let g = gate(&p, "2026-11-19", &srcs, &out).unwrap();
         assert!(g

@@ -13,6 +13,7 @@
 # from the private overlay):
 #   CC_PROM_URL=https://prometheus.your.lan
 #   CC_GRAFANA_URL=https://grafana.your.lan/d/kb-ci-runners   a dashboard link; the boards link from its base
+#   CC_KUBE_CONTEXT, CC_VM_SERVICE                             VictoriaMetrics for reads over days (vm_q)
 
 # shellcheck source=/dev/null
 [ -r "$HOME/.config/command-center/env" ] && . "$HOME/.config/command-center/env"
@@ -43,6 +44,21 @@ _prom_get() {
 
 # prom_q <promql> [epoch] -> an instant query's JSON.
 prom_q() { _prom_get query --data-urlencode "query=$1" ${2:+--data-urlencode "time=$2"}; }
+
+# vm_q <promql> [epoch] -> an instant query's JSON from VictoriaMetrics, or rc 1 when it did not answer
+# success. Prometheus keeps about 52 h (its retentionSize evicts first), so a read over days goes here:
+# VM holds every remote-written series for 2y. It has no ingress, so this goes through the API server's
+# service proxy as hub-core's prom::vm does: CC_KUBE_CONTEXT and CC_VM_SERVICE (namespace/name:port) in
+# the env file above. With no kubeconfig (any host but the workstation) it is unreadable.
+vm_q() {
+  local svc="${CC_VM_SERVICE:-}" ns name port out
+  [[ "$svc" =~ ^([a-z0-9-]+)/([a-z0-9-]+):([0-9]+)$ ]] && [ -n "${CC_KUBE_CONTEXT:-}" ] || return 1
+  ns=${BASH_REMATCH[1]} name=${BASH_REMATCH[2]} port=${BASH_REMATCH[3]}
+  out="$(kubectl --context "$CC_KUBE_CONTEXT" --request-timeout="${PROM_TIMEOUT:-10}s" get --raw \
+    "/api/v1/namespaces/$ns/services/$name:$port/proxy/api/v1/query?query=$(jq -rn --arg q "$1" '$q | @uri')${2:+&time=$2}" 2>/dev/null)" || return 1
+  [ "$(jq -r .status <<< "$out" 2>/dev/null)" = success ] || return 1
+  printf '%s' "$out"
+}
 
 # prom_range <promql> <start> <end> <step> -> a range query's JSON (epochs, step in seconds).
 prom_range() {

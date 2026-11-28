@@ -4,7 +4,7 @@
 # to todo. `o` stays stock vim: no markdown map may take it.
 # Runs the real plugin config in a headless nvim with render-markdown stubbed.
 #
-# Skips where nvim is absent (the CI fast tier installs none by design); run it locally.
+# Skips where nvim is absent; the test image pins it (tests/Dockerfile, NVIM_VERSION).
 
 setup() {
   load '../vendor/bats-support/load'

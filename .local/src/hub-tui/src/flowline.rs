@@ -261,6 +261,7 @@ mod tests {
             to: Some(Target {
                 tab: "queue",
                 state: "",
+                section: "",
             }),
             stop: None,
             facts: vec![],

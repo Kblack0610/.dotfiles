@@ -7,12 +7,35 @@
 #       A native host and any image built later run this one definition.
 #   fleet-node signin
 #       what only the human can do here, one line each: each Claude account with no setup
-#       token, gh, the private overlay. Prints nothing and exits 0 when none is left.
+#       token, gh, the private overlay, codex where the roster runs it. Prints nothing and exits 0
+#       when none is left.
 #   fleet-node ready
-#       exit 0 when every Claude account has a token here: fleet-dispatch's sign-in check.
+#       whether this peer can hold the fleet lease and run every singleton lane, checked here
+#       rather than found missing at failover: one line per need it lacks (each signin line,
+#       a dotfiles checkout behind origin/main or one that is shallow or fetches only some
+#       branches, a store remote it cannot reach, a home-k3s call
+#       the lanes make that its kubeconfig may not, agent-web), exit 1; nothing and exit 0 when
+#       it lacks none. It fetches both dotfiles checkouts and asks the store remotes and the
+#       cluster, so it takes seconds.
+#   fleet-node ready claude
+#       exit 0 when every Claude account has a token here: fleet-dispatch's kit check.
+#   fleet-node publish
+#       write what `ready` found to lease-ready/<host> in the store and push it (fleet-node-publish.timer,
+#       every machine), so any peer can count the others.
+#   fleet-node peers [--names]
+#       one line per machine that published: lease-ready, never holds the lease (no-lease), not ready and
+#       why, or silent for too long; then "N lease-ready of M". Exit 1 when N is under FLEET_LEASE_MIN_READY
+#       (2, the Sentinel watch fleet-lease-peers). --names prints only the lease-ready machines.
 #
 # Logins are never copied by this script (Auth-State Safety): the human pushes each token.
 set -euo pipefail
+
+: "${FLEET_LEASE_MIN_READY:=2}"   # lease-ready peers the fleet keeps, so one loss leaves a taker (N+1)
+: "${FLEET_READY_REFRESH_S:=1800}"   # publish rewrites an unchanged record after this long: its `at` is the peer's liveness
+: "${FLEET_READY_STALE_S:=5400}"   # a record older than this (3 refreshes) is a peer that stopped publishing
+STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
+READY_DIR="$STORE/lease-ready"
+HOST="${FLEET_HOST:-$(uname -n | cut -d. -f1)}"
 
 here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 dotfiles=$(cd "$here/../.." && pwd)
@@ -32,16 +55,211 @@ unsigned_accounts() {
   done <"$accounts"
 }
 
+# codex_runs_here -> 0 unless this node is a fleet worker whose inventory fleet_harnesses leaves
+# codex out: codex runs on the workstation only (the human, 2026-11-19, ask LCLhHi).
+codex_runs_here() {
+  # shellcheck source=../lib/fleet-hosts.sh
+  . "$here/../lib/fleet-hosts.sh"
+  local me; me=$(fleet_host "$FLEET_HOST")
+  [ -z "$me" ] || jq -e 'any(.harnesses[]; . == "codex")' <<<"$me" >/dev/null
+}
+
 # missing -> one line per thing the human still has to do on this node.
 missing() {
   unsigned_accounts
   [ -s "${GH_CONFIG_DIR:-$HOME/.config/gh}/hosts.yml" ] || echo "sign in to GitHub: gh auth login"
   [ -d "$HOME/.dotfiles-private/.git" ] ||
     echo "clone the private overlay: gh repo clone Kblack0610/.dotfiles-private ~/.dotfiles-private, then ~/.dotfiles-private/.local/bin/restore-private-state"
+  ! codex_runs_here || [ -s "${CODEX_HOME:-$HOME/.codex}/auth.json" ] || echo "sign in to codex: codex login"
   return 0
 }
 
+# behind -> one line per stowed dotfiles checkout below origin/main, fetched first (a failed fetch
+# reads the last one). dotfiles-drift owns the comparison, including the grace a merge gets while
+# its pull is in flight.
+behind() {
+  local pub="${DOTFILES_DIR:-$HOME/.dotfiles}" priv="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}" repo
+  for repo in "$pub" "$priv"; do
+    [ ! -e "$repo/.git" ] || timeout 30 git -C "$repo" fetch -q origin main >/dev/null 2>&1 || true
+  done
+  command -v jq >/dev/null 2>&1 || { echo "cannot check the dotfiles checkouts: jq is not installed"; return 0; }
+  # --json exits 1 when it finds drift, so its output, not its status, says whether it ran.
+  local drift
+  drift=$(DOTFILES="$pub" DOTFILES_PRIVATE="$priv" "$here/dotfiles-drift" --json 2>/dev/null) || true
+  jq -e '.findings' <<<"$drift" >/dev/null 2>&1 || { echo "cannot check the dotfiles checkouts: dotfiles-drift --json gave no report"; return 0; }
+  jq -r --arg pub "$pub" --arg priv "$priv" '.findings[] | select(.type == "BEHIND")
+    | (if .repo == "public" then $pub else $priv end) as $p
+    | "\($p) is behind origin/main (\(.detail)): dotfiles-autopull --now \($p)"' <<<"$drift"
+}
+
+# clone_shape -> one line per fault in each stowed dotfiles checkout's shape, with the command that fixes
+# it. One that fetches only some branches keeps no remote-tracking ref for a pushed agent branch, so
+# `git branch -r --contains` is empty and fleet-shepherd's takeover reads its commits as not pushed and
+# never hands the stalled session over (ar-5157: razer-laptop's `--depth 1` clone fetched only main,
+# and three sessions sat STALLED 9 to 16h on 2026-11-24). A shallow one stops history at its graft, so
+# a merge base past it reads as missing.
+clone_shape() {
+  local repo q specs
+  for repo in "${DOTFILES_DIR:-$HOME/.dotfiles}" "${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"; do
+    # Not a checkout of its own (missing, or a parent repo's), or no origin to fetch from: what it lacks
+    # is another check's line.
+    [ -e "$repo/.git" ] && [ "$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$repo" && pwd -P)" ] &&
+      git -C "$repo" remote get-url origin >/dev/null 2>&1 || continue
+    q=$(printf %q "$repo") specs=$(git -C "$repo" config --get-all remote.origin.fetch 2>/dev/null) || true
+    grep -qxE '\+?refs/heads/\*:refs/remotes/origin/\*' <<<"$specs" ||
+      echo "$repo fetches only some branches, so a pushed agent branch reads as unpushed: git -C $q remote set-branches --add origin '*' && git -C $q fetch origin"
+    [ "$(git -C "$repo" rev-parse --is-shallow-repository 2>/dev/null)" != true ] ||
+      echo "$repo is a shallow clone, so history stops at its graft: git -C $q fetch --unshallow origin"
+  done
+  return 0
+}
+
+# store_unreachable -> one line per agent store remote this peer cannot reach the way store-sync and
+# fleet-lease do (store-remote.sh): a holder renews the lease and syncs through both.
+store_unreachable() {
+  # shellcheck source=../lib/store-remote.sh
+  . "$here/../lib/store-remote.sh"
+  load_conf
+  [ -n "$STORE_PRIMARY_URL$STORE_BACKUP_URL" ] || { echo "no store remotes in $CONF: stow the private overlay"; return 0; }
+  local p r url
+  for p in "origin|$STORE_PRIMARY_URL" "backup|$STORE_BACKUP_URL"; do
+    r=${p%%|*} url=${p#*|}
+    if [ -z "$url" ]; then echo "no $r store remote in $CONF"
+    # net bounds itself (ssh ConnectTimeout, git's http low-speed limit), as store-sync and fleet-lease run it.
+    elif ! net "$r" ls-remote "$url" HEAD >/dev/null 2>&1; then
+      echo "cannot reach the $r store remote ($url) the way store-sync does"
+    fi
+  done
+  return 0
+}
+
+# The home-k3s calls the singleton lanes make, one of each kind, as "<can-i args>|<who makes it>".
+# home-config grants them to the scoped account (apps/github-runner-exporter/fleet-read-rbac.yaml,
+# apps/binks-api/fleet-read-rbac.yaml, apps/agents/record-rbac.yaml); a call a lane adds gets its
+# grant there and its line here. Only home-k3s: rbw, the cluster login and the prod context stay on the
+# workstation, and the steps that need them (release-state's prod rows) run there.
+KUBE_NEEDS=(
+  "patch endpoints/agents -n agents|agent-web-record points the agents Endpoints at the holder"
+  "get services/victoria-metrics:8428 --subresource=proxy -n monitoring|fleet-bench and agent-web read VictoriaMetrics"
+  "get services/loki:3100 --subresource=proxy -n monitoring|fleet-state's hub needs reads Loki"
+  "get services/github-runner-exporter:9320 --subresource=proxy -n monitoring|schedules-sync reads the runner feed"
+  "get cronjobs/cluster-janitor -n cluster-janitor|the Sentinel cluster-janitor-alive watch"
+  "get services/binks-api:80 --subresource=proxy -n binks-api|the Sentinel binks metrics watches"
+  "get deployments -n binks-api|release-state reads what is deployed"
+  "list nodes|the Sentinel node watches"
+  "list nodes.metrics.k8s.io|the Sentinel node-memory watch (kubectl top nodes)"
+  "list vulnerabilityreports.aquasecurity.github.io -A|the Sentinel trivy-criticals watch"
+)
+
+# kube_needs -> one line per home-k3s call above that this peer's kubeconfig (fleet_kubeconfig)
+# may not make, or one line when it cannot ask at all.
+kube_needs() {
+  command -v kubectl >/dev/null 2>&1 || { echo "kubectl is not installed: the singleton lanes read home-k3s with it"; return 0; }
+  # shellcheck source=../lib/fleet-kubeconfig.sh
+  . "$here/../lib/fleet-kubeconfig.sh"
+  local kcfg need args who out err rc reason
+  kcfg=$(fleet_kubeconfig)
+  [ -r "${kcfg%%:*}" ] || { echo "no kubeconfig for home-k3s at $kcfg: the home-config fleet-worker play writes the scoped one"; return 0; }
+  err=$(mktemp)
+  for need in "${KUBE_NEEDS[@]}"; do
+    args=${need%%|*} who=${need#*|}
+    # can-i answers yes or no on stdout; a warning (a cluster-scoped kind under a namespaced context,
+    # with a blank line after it) or the reason it could not ask goes to stderr, so the two stay apart.
+    rc=0
+    # shellcheck disable=SC2086 # args is a word list
+    out=$(KUBECONFIG="$kcfg" kubectl --context home-k3s --request-timeout=10s auth can-i $args 2>"$err") || rc=$?
+    case "$out" in
+      yes) ;;
+      no*) echo "the kubeconfig at $kcfg may not $args: $who (home-config fleet-read-rbac.yaml)" ;;
+      *)
+        reason=$(grep -m 1 -v -e '^Warning:' -e '^$' "$err") || true
+        echo "cannot ask home-k3s with the kubeconfig at $kcfg: ${reason:-no answer (kubectl exit $rc)}"
+        break
+        ;;
+    esac
+  done
+  rm -f "$err"
+  return 0
+}
+
+# web_needs -> what agent-web lacks here: the holder serves it (home-config fleet-worker tasks/peer.yml).
+web_needs() {
+  # The path its unit runs, not PATH: over ssh, PATH has no ~/.local/bin.
+  [ -x "$HOME/.local/bin/agent-web" ] || echo "agent-web is not installed: the home-config fleet-worker play builds it"
+  [ -s "$HOME/.config/agent-web/oauth.json" ] ||
+    echo "write ~/.config/agent-web/oauth.json (0600) from rbw item agent-web-oauth-client"
+  if [ ! -e "$HOME/.config/systemd/user/agent-web.service" ] || [ ! -e "$HOME/.config/agent-web/env" ]; then
+    echo "agent-web's unit and env file are not stowed: stow the private overlay"
+  fi
+  return 0
+}
+
+# lease_needs -> every line `fleet-node ready` prints.
+lease_needs() {
+  missing
+  behind
+  clone_shape
+  store_unreachable
+  kube_needs
+  web_needs
+}
+
+# publish -> this machine's record in lease-ready/<host>: whether it may hold the lease (no no-lease marker)
+# and what `ready` found lacking. Written whole, and only when it differs from the last or the last is
+# FLEET_READY_REFRESH_S old, so a steady peer costs two store commits an hour.
+publish() {
+  [[ "$HOST" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "fleet-node: this machine's name $HOST cannot name a record" >&2; return 2; }
+  command -v jq >/dev/null 2>&1 || { echo "fleet-node: jq is not installed, so nothing was published" >&2; return 2; }
+  [ -d "$STORE/.sync" ] || { echo "fleet-node: $STORE is no store peer, so nothing was published" >&2; return 2; }
+  local needs cand=true f="$READY_DIR/$HOST" now rec old
+  # fleet-lease renew takes the lease only on a joined clone (.sync/peer) with no no-lease marker.
+  [ -f "$STORE/.sync/peer" ] && [ ! -e "$STORE/.sync/no-lease" ] || cand=false
+  needs=$(lease_needs)
+  now=$(date +%s)
+  rec=$(jq -cn --arg host "$HOST" --argjson cand "$cand" --arg needs "$needs" --argjson at "$now" \
+    '{host: $host, at: $at, candidate: $cand, ready: ($needs == ""), needs: ($needs | split("\n") | map(select(. != "")))}')
+  if [ -f "$f" ] && old=$(jq -c 'del(.at)' "$f" 2>/dev/null) && [ "$old" = "$(jq -c 'del(.at)' <<<"$rec")" ] &&
+    [ $((now - $(jq -r '.at // 0' "$f"))) -lt "$FLEET_READY_REFRESH_S" ]; then
+    return 0
+  fi
+  mkdir -p "$READY_DIR"
+  printf '%s\n' "$rec" >"$READY_DIR/.$HOST.tmp" && mv -f "$READY_DIR/.$HOST.tmp" "$f"
+  store-sync --now --bg || echo "fleet-node: store-sync did not start, so $f reaches the other machines on its next sync" >&2
+}
+
+# peers [--names] -> each published record read as the others see it; rc 1 under FLEET_LEASE_MIN_READY.
+peers() {
+  command -v jq >/dev/null 2>&1 || { echo "fleet-node: jq is not installed, so the peers cannot be counted" >&2; return 2; }
+  local f now line ready=0 total=0 names=()
+  now=$(date +%s)
+  for f in "$READY_DIR"/*; do
+    [ -f "$f" ] || continue
+    total=$((total + 1))
+    # "<host>|<yes or no>|<the line shown>"
+    line=$(jq -r --argjson now "$now" --argjson stale "$FLEET_READY_STALE_S" '
+      (.host // "?") as $h | (($now - (.at // 0)) | if . < 0 then 0 else . end) as $age |
+      if $age > $stale then "\($h)|no|\($h): no report for \($age / 60 | floor) minutes, so it is not counted"
+      elif (.candidate | not) then "\($h)|no|\($h): never holds the lease (its no-lease marker)"
+      elif (.ready | not) then "\($h)|no|\($h): not ready: \(.needs[0] // "no reason given")\(if (.needs | length) > 1 then " (+\((.needs | length) - 1) more)" else "" end)"
+      else "\($h)|yes|\($h): lease-ready" end' "$f" 2>/dev/null) || line="${f##*/}|no|${f##*/}: its record does not parse"
+    case "$line" in *"|yes|"*) ready=$((ready + 1)); names+=("${line%%|*}") ;; esac
+    [ "${1:-}" = --names ] || printf '%s\n' "${line#*|*|}"
+  done
+  if [ "${1:-}" = --names ]; then
+    [ "${#names[@]}" -eq 0 ] || printf '%s\n' "${names[@]}"
+  else
+    [ "$total" -gt 0 ] || echo "no machine has published lease readiness (fleet-node publish)"
+    echo "$ready lease-ready of $total peers (the fleet keeps at least $FLEET_LEASE_MIN_READY)"
+  fi
+  [ "$ready" -ge "$FLEET_LEASE_MIN_READY" ]
+}
+
 case "${1:-}" in
+  publish) publish ;;
+  peers)
+    case "${2:-}" in --names | '') ;; *) echo "usage: fleet-node peers [--names]" >&2; exit 2 ;; esac
+    peers "${2:-}"
+    ;;
   install)
     shift
     exec bash "$dotfiles/.local/src/installation_scripts/install.sh" --yes --only base,fleet,dotfiles "$@"
@@ -51,13 +269,19 @@ case "${1:-}" in
     [ -z "$out" ] || { printf '%s\n' "$out"; exit 1; }
     ;;
   ready)
-    [ -z "$(unsigned_accounts)" ]
+    case "${2:-}" in
+      claude) [ -z "$(unsigned_accounts)" ]; exit ;;
+      '') ;;
+      *) echo "usage: fleet-node ready [claude]" >&2; exit 2 ;;
+    esac
+    out=$(lease_needs)
+    [ -z "$out" ] || { printf '%s\n' "$out"; exit 1; }
     ;;
   -h | --help | help)
     sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"
     ;;
   *)
-    echo "usage: fleet-node install|signin|ready" >&2
+    echo "usage: fleet-node install|signin|ready [claude]|publish|peers [--names]" >&2
     exit 2
     ;;
 esac

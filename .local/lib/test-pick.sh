@@ -8,6 +8,8 @@
 # test runs by bare name, so it stays a word even when .local/bin links it from .local/src or a
 # stub in tests/helpers shadows it.
 _TEST_PICK_REPO="$(git -C "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" rev-parse --show-toplevel 2>/dev/null || echo .)"
+# shellcheck source=uncomment.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/uncomment.sh"
 _test_pick_names() {
   [ "${_TEST_PICK_NAMES_FOR-}" = "$1" ] && return 0
   _TEST_PICK_NAMES_FOR="$1"
@@ -47,9 +49,45 @@ _test_pick_aliases() {
   _TEST_PICK_ALIAS_RE="$(awk 'NF {o=o (o==""?"":"|") $1} END {if (o!="") printf "\\$\\{?(%s)([^A-Za-z0-9_]|$)", o}' <<<"$_TEST_PICK_ALIASES")"
 }
 
+# _test_pick_expand <changed paths>: the list with the scripts that source a changed
+# .local/lib/*.sh added, to any depth (a lib that sources a lib): a test names release-state, not
+# store-auth.sh, so a change to .local/lib/store-auth.sh picked none of store_sales, release_state
+# or store_reviews (ar-2508). A source line is an uncommented `. <path>` or `source <path>` that
+# names the lib's basename; the result is _TEST_PICK_EXT, built once per change list. Limits: it
+# reads the working tree, and a lib sourced through a variable or a glob is not seen.
+_test_pick_expand() {
+  [ -n "${_TEST_PICK_EXT_FOR+x}" ] && [ "$_TEST_PICK_EXT_FOR" = "$1" ] && return 0
+  _TEST_PICK_EXT_FOR="$1" _TEST_PICK_EXT="$1"
+  local libs seen="" new f
+  new="$(grep -E '^\.local/lib/[^/]+\.sh$' <<<"$1" | sed 's#.*/##')" || true
+  while [ -n "$new" ]; do
+    seen+="$new"$'\n'
+    local -a args=()
+    while read -r f; do args+=(-e "$f"); done <<<"$new"
+    libs="$(git -C "$_TEST_PICK_REPO" grep -nIF "${args[@]}" 2>/dev/null |
+      awk -F: -v names="$(tr '\n' '|' <<<"$new")" '
+        BEGIN { n = split(names, nm, "|") }
+        { f = $1; t = substr($0, length($1 ) + length($2) + 3)
+          if (t ~ /^[[:space:]]*#/ || t !~ /(^|[[:space:];&|({])(\.|source)[[:space:]]/) next
+          for (i = 1; i <= n; i++) {
+            if (nm[i] == "") continue
+            # Every occurrence, bounded by a non-name character on both sides (the line is padded).
+            u = " " t " "; off = 0
+            while ((j = index(substr(u, off + 1), nm[i])) > 0) {
+              k = off + j
+              if (substr(u, k - 1, 1) !~ /[A-Za-z0-9_.-]/ && substr(u, k + length(nm[i]), 1) !~ /[A-Za-z0-9_.-]/) { print f; next }
+              off = k
+            }
+          } }' | sort -u)" || true
+    _TEST_PICK_EXT="$(printf '%s\n%s\n' "$_TEST_PICK_EXT" "$libs" | grep -v '^$' | sort -u)"
+    # The next round: dependents that are libs themselves and were not looked up yet.
+    new="$(grep -E '^\.local/lib/[^/]+\.sh$' <<<"$libs" | sed 's#.*/##' | { grep -vxFf <(printf '%s' "$seen") || true; })" || true
+  done
+}
+
 # test_picked <changed paths, one a line> <test path, repo-relative>, the test's text on stdin:
 # status 0 when that test is picked. A test is picked when it or a file it loads from beside it
-# changed, or its text with what it loads names a changed file's basename (not as a stub or a
+# changed, or it names a script that sources a changed .local/lib/*.sh (_test_pick_expand), or its text with what it loads names a changed file's basename (not as a stub or a
 # directory) or a directory a changed file sits under as `<dir>/` or `<dir>/*...` (a glob such as
 # `.claude/hooks/stop-post.d/*.sh`), or a script it runs as `$REPO_ROOT/<path>` (or through a
 # helper's variable for one) names a changed path in its code, or a test-side file it runs as
@@ -80,27 +118,6 @@ _test_pick_unstub() {
     }
     print head out body tail
   }'
-}
-
-# _test_pick_uncomment: stdin to stdout without comments: whole comment lines, and the tail of a
-# line from a `#` that starts a word outside quotes (`"issue #12" | agentctl add` keeps its name).
-# A line whose quotes do not close keeps its tail. fleet_dispatch/common.bash ends a code line with
-# "so no pass asks fleet-bench for canaries", which picked all ten fleet_dispatch*.bats files
-# (~3,500 s of the unit tier) for a fleet-bench change although it stubs fleet-bench (#3104, ar-3036).
-_test_pick_uncomment() {
-  awk '/^[[:space:]]*#/ { next }
-    {
-      q = ""
-      for (i = 1; i <= length($0); i++) {
-        c = substr($0, i, 1)
-        if (q == "'"'"'") { if (c == q) q = ""; continue }
-        if (c == "\\") { i++; continue }
-        if (q == "\"") { if (c == q) q = ""; continue }
-        if (c == "\"" || c == "'"'"'") q = c
-        else if (c == "#" && substr($0, i - 1, 1) ~ /[[:space:]]/) { $0 = substr($0, 1, i - 1); break }
-      }
-      print
-    }'
 }
 
 # _test_pick_otherdir: stdin to stdout without each changed word that ends a path in another
@@ -155,6 +172,12 @@ _test_pick_path_named() {
 
 test_picked() {
   grep -qE '^tests/(helpers|vendor|fixtures/basic)/|^tests/(Makefile|run-bats\.sh)$' <<<"$1" && return 0
+  # The scripts that source a changed lib count as changed files, not as changed directories: the
+  # ancestor-directory check at the end keeps the list as given, or `.local/bin/` in a test would
+  # pick it for every lib change.
+  local given=$1
+  _test_pick_expand "$1"
+  set -- "$_TEST_PICK_EXT" "$2"
   grep -qxF "$2" <<<"$1" && return 0
   local text rel inc new more seen=$'\n'
   text="$(cat)" new=$text
@@ -176,6 +199,22 @@ test_picked() {
     done < <(sed -nE "s/^[[:space:]]*load[[:space:]]+['\"]?([^'\" ]+).*/\1/p" <<<"$new")
     text+=$more new=$more
   done
+  # A shared helper that reads a repo file for the tests that load it names that file as the default
+  # of an expansion (panel.bash: TMUX_CONF="${TMUX_CONF:-$REPO_ROOT/.tmux.conf}", which bind_for
+  # reads; hypr.bash: "${2:-$REPO_ROOT/.config/hypr}"), so a test that loads it names the file:
+  # watch_bind.bats asserts binds only through bind_for, and #2276's .tmux.conf change was not picked
+  # and passed CI against the old bind (ar-2652). Only a default counts: sandbox.bash names every
+  # subject as a plain path, and those are the tests' to name. No helper loads another.
+  while read -r rel; do
+    [ -f "$_TEST_PICK_REPO/tests/helpers/$rel.bash" ] || continue
+    while read -r inc; do
+      # A directory default ends in a slash, so the ancestor-directory check below reads it as one.
+      if [ -d "$_TEST_PICK_REPO/$inc" ]; then inc=${inc%/}/; elif [ ! -f "$_TEST_PICK_REPO/$inc" ]; then continue; fi
+      text+=$'\n'"\$REPO_ROOT/$inc"
+    done < <(grep -oE '\$\{[A-Za-z0-9_]+:?[-=]\$\{?(REPO_ROOT|TESTS_DIR)\}?/[^"}[:space:]]+\}' \
+      "$_TEST_PICK_REPO/tests/helpers/$rel.bash" |
+      sed -E 's#^\$\{[A-Za-z0-9_]+:?[-=]\$\{?##; s#\}$##; s#^TESTS_DIR\}?/#tests/#; s#^REPO_ROOT\}?/##')
+  done < <(sed -nE "s#^[[:space:]]*load[[:space:]]+['\"]?\.\./helpers/([^'\" ]+).*#\1#p" <<<"$text")
   # A test-side file the test runs from a sibling directory of tests/ (`node --test
   # "$BATS_TEST_DIRNAME/../agent-web/readers.test.mjs"`) picks the test when it changes, and the
   # directories it names count as the test's (the last check below): readers.test.mjs reads
@@ -200,7 +239,7 @@ test_picked() {
   # only as "$AGENT_ASK", so #2385's agent-ask change was not picked and went red on main (ar-4309).
   local var ref code
   _test_pick_aliases
-  code="$(_test_pick_uncomment <<<"$text")"
+  code="$(uncomment <<<"$text")"
   if [ -n "$_TEST_PICK_ALIAS_RE" ]; then
     while read -r var ref; do
       code+=$'\n'"\$REPO_ROOT/$ref" text+=$'\n'"\$REPO_ROOT/$ref"
@@ -219,12 +258,12 @@ test_picked() {
       [ -f "$_TEST_PICK_REPO/$ref" ] || continue
       # Not a pipe: grep -q stops at the first match, and under the callers' pipefail sed's SIGPIPE
       # on a large script would turn that match into a failure.
-      grep -qE "$_TEST_PICK_HOP" <(_test_pick_uncomment <"$_TEST_PICK_REPO/$ref") && return 0
+      grep -qE "$_TEST_PICK_HOP" <(uncomment <"$_TEST_PICK_REPO/$ref") && return 0
     done < <(grep -oE '\$\{?REPO_ROOT\}?/[A-Za-z0-9._/-]+' <<<"$code" | sed -E 's#^\$\{?REPO_ROOT\}?/##' | sort -u)
   fi
   # A basename counts where it can name the file. A shared basename (README.md, SKILL.md) is
   # matched as `<parent dir>/<name>` (_test_pick_path_named). For any other, dropped first:
-  # comments (_test_pick_uncomment) and @test titles (prose), `stub <name>` and the fake's own quoted body (a fake
+  # comments (uncomment) and @test titles (prose), `stub <name>` and the fake's own quoted body (a fake
   # stands in for it), `<name>/` (a directory of that name, such as ~/.config/agentctl/), a path
   # in another directory that ends in it (_test_pick_otherdir) and
   # `<name>@` (a systemd unit). Without these, unit/fleet_dispatch.bats, a third of the unit tier,
@@ -232,7 +271,7 @@ test_picked() {
   # picked every fleet_dispatch*.bats file on a store-sync change (ar-3036).
   [ -n "$_TEST_PICK_PATHS" ] && _test_pick_path_named "$1" "$text" && return 0
   [ -n "$_TEST_PICK_WORDS" ] && grep -qE "$_TEST_PICK_WORDS" \
-    <(_test_pick_unstub <<<"$text" | _test_pick_uncomment | _test_pick_otherdir | sed -E 's/^@test[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"')//
+    <(_test_pick_unstub <<<"$text" | uncomment | _test_pick_otherdir | sed -E 's/^@test[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"')//
       s/(^|[[:space:];&|(])stub[[:space:]]+[^[:space:]]+/\1stub/g; s#[A-Za-z0-9._-]+[/@]#/#g') && return 0
   # A fixture is data for the tests that name it, so a change under tests/fixtures/<top> picks
   # those, not the whole tier: a comms-lint fixture ran every file of both tiers (#3040, 6.3 min).
@@ -240,11 +279,11 @@ test_picked() {
   [ -n "$_TEST_PICK_FIXTURES" ] && grep -qE "$_TEST_PICK_FIXTURES" <<<"$text" && return 0
   # Every ancestor directory of a changed path, regex-escaped, as one alternation; a caller
   # loops over every test file with one change list, so it is built once per list.
-  if [ "${_TEST_PICK_FOR-}" != "$1" ]; then
-    _TEST_PICK_FOR="$1"
+  if [ "${_TEST_PICK_FOR-}" != "$given" ]; then
+    _TEST_PICK_FOR="$given"
     _TEST_PICK_DIRS="$(awk -F/ '{p=$1; for (i=2; i<=NF; i++) {if (!(p in s)) {s[p]; e=p
           gsub(/[][\\.*^$+?(){}|]/, "\\\\&", e); o=o (o==""?"":"|") e}; p=p "/" $i}}
-          END {printf "%s", o}' <<<"$1")"
+          END {printf "%s", o}' <<<"$given")"
   fi
   [ -n "$_TEST_PICK_DIRS" ] || return 1
   # A reference starts the path or follows a root: `$VAR/`, `"$VAR"/`, `${VAR}/`, `~/`, `./`,

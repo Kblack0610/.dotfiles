@@ -15,12 +15,12 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, ROW};
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::{clock, Palette};
+use crate::fmt::{clock, dash, heading, Palette};
 use crate::innertabs;
 
 /// `Alert::COLUMNS` in capitals, in its order, the sort mark placed by that index.
-const HEADER: [&str; 7] = [
-    "SEV", "WHAT", "PROJECT", "SOURCE", "SINCE", "OWNER", "STATE",
+const HEADER: [&str; 8] = [
+    "SEV", "WHAT", "PROJECT", "SYSTEM", "SOURCE", "SINCE", "OWNER", "STATE",
 ];
 /// The width of an opened row's labels, as the longest one.
 const LABEL: usize = 14;
@@ -63,13 +63,6 @@ fn status(l: Level) -> Option<f64> {
     }
 }
 
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
-}
-
 impl AlertsView {
     /// The firing rows the view keeps, in its sort or the reader's order.
     pub fn shown<'a>(&self, a: &'a Alerts) -> Vec<&'a Alert> {
@@ -83,8 +76,7 @@ impl AlertsView {
     /// Move the selection to the row with this id after a re-read, or keep the index in range.
     pub fn reselect(&mut self, a: &Alerts, id: Option<RowId>) {
         let rows = self.shown(a);
-        let at = id.and_then(|id| rows.iter().position(|r| row_id(r) == id));
-        self.table.keep(at, rows.len());
+        self.table.reselect(&rows, id, |r, id| row_id(r) == *id);
     }
 
     /// The inner tab shown.
@@ -209,12 +201,12 @@ impl AlertsView {
         let (mut table, starts) = Table {
             header: HEADER.to_vec(),
             rows: cells,
-            keep: vec![1, 6, 5, 0, 4, 2, 3],
+            keep: vec![1, 7, 6, 0, 5, 2, 4, 3],
             flex: Some(1),
             flexmin: 16,
             flexkeep: true,
-            right: vec![4],
-            cap: vec![(5, 22), (2, 16)],
+            right: vec![5],
+            cap: vec![(6, 22), (2, 16), (3, 16)],
             mark: self.table.mark::<Alert>(),
         }
         .fit_wrapped(w, p.head());
@@ -277,6 +269,7 @@ fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line
                 cell(x.state.clone(), style),
                 cell(x.severity.clone(), p.dim()),
                 cell(dash(&x.project), p.dim()),
+                cell(dash(&x.system), p.dim()),
                 at(x.since).into(),
                 at(x.lastrun).into(),
                 cell(x.place.clone(), p.dim()),
@@ -287,11 +280,11 @@ fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line
         out.extend(
             Table {
                 header: vec![
-                    "WATCH", "STATE", "SEVERITY", "PROJECT", "SINCE", "LAST RUN", "WHERE",
+                    "WATCH", "STATE", "SEVERITY", "PROJECT", "SYSTEM", "SINCE", "LAST RUN", "WHERE",
                 ],
                 rows,
-                keep: vec![0, 1, 4, 5, 2, 3, 6],
-                flex: Some(6),
+                keep: vec![0, 1, 5, 6, 2, 3, 7, 4],
+                flex: Some(7),
                 flexmin: 10,
                 ..Default::default()
             }
@@ -305,11 +298,6 @@ fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line
         ));
     }
     out
-}
-
-/// A project cell: its name, or `-` for a fleet-wide watch.
-fn dash(project: &str) -> String {
-    if project.is_empty() { "-" } else { project }.into()
 }
 
 fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
@@ -332,6 +320,7 @@ fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
             many => format!("{} ({} alerts)", r.what, many.len()).into(),
         },
         cell(dash(&r.project), p.dim()),
+        cell(dash(&r.system), p.dim()),
         cell(r.source.clone(), p.dim()),
         r.since
             .map_or("-".into(), |t| hub_core::display::fmt::age(now - t))
@@ -513,7 +502,12 @@ pub fn fixes(a: &Alerts, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
                     } else {
                         format!("  {}", f.project)
                     },
-                    f.slug
+                    // The ticket, the board row the fix works as, then the queue item `i` opens
+                    // when its slug differs; the slug alone when it names no row.
+                    match f.row.as_deref().filter(|r| *r != f.slug) {
+                        Some(row) => format!("{row} ({})", f.slug),
+                        None => f.slug.clone(),
+                    }
                 )),
                 Span::styled(f.age(now), p.dim()),
             ]),
@@ -634,9 +628,7 @@ pub(crate) mod tests {
         )
     }
 
-    fn text(lines: &[Line]) -> String {
-        lines.iter().map(plain).collect::<Vec<_>>().join("\n")
-    }
+    use crate::fit::plain_text as text;
 
     /// A view drawing every inner tab, as a printed `hub --tab alerts` does.
     fn every() -> AlertsView {
@@ -789,7 +781,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_runner_the_governor_powered_off_is_not_firing() {
+    fn an_offline_cloud_runner_is_down() {
         let flat = |v: serde_json::Value| {
             hub_core::prom::flatten(
                 &serde_json::json!({"status": "success", "data": {"result": [v]}}),
@@ -802,34 +794,17 @@ pub(crate) mod tests {
             .unwrap()
             .extend(flat(serde_json::json!({"metric":
             {"host": "aws-burst-1", "name": "aws-1", "state": "offline", "site": "cloud"}, "value": [0, "0"]})));
-        let firing = |i: &hub_core::infra::Infra| {
-            let a = hub_core::alerts::join(
-                i,
-                Ok(vec![]),
-                Ok(Reds::default()),
-                Ok(String::new()),
-                Ok(vec![]),
-                NOW,
-            );
-            page(&AlertsView::default(), &a, 160).0
-        };
-        let power = |state: &str| {
-            flat(
-                serde_json::json!({"metric": {"__name__": "ci_governor_power_state",
-                "host": "aws-burst-1", "state": state}, "value": [0, "1"]}),
-            )
-        };
-        // A cloud host with nothing online and no power series is off, as the governor leaves
-        // its stopped hosts while it publishes none (ar-3326): not down.
-        assert!(!firing(&i).contains("aws-1"), "unmanaged cloud: off");
-        i.instant.insert("power", power("running"));
-        assert!(
-            firing(&i).contains("aws-1 offline"),
-            "governor running: down"
+        let a = hub_core::alerts::join(
+            &i,
+            Ok(vec![]),
+            Ok(Reds::default()),
+            Ok(String::new()),
+            Ok(vec![]),
+            NOW,
         );
-        i.instant.insert("power", power("stopped"));
-        let s = firing(&i);
-        assert!(!s.contains("aws-1"), "{s}");
+        // Nothing holds a runner off on purpose, so an offline one is down wherever it runs.
+        let s = page(&AlertsView::default(), &a, 160).0;
+        assert!(s.contains("aws-1 offline"), "{s}");
         assert!(s.contains("mini-1 offline"), "{s}");
     }
 
@@ -936,8 +911,8 @@ pub(crate) mod tests {
         let mut a = sample();
         a.fixes = reds(&[
             r#"{"slug":"ar-1","red":"watch a","queued":"2026-11-06T10:00:00Z","merged":"x","fix_min":34,"pr":"Kblack0610/.dotfiles#1185","outcome":"fixed"}"#,
-            r#"{"slug":"ar-2","red":"watch playground-nightly","queued":"2026-11-06T11:00:00Z","outcome":"queued"}"#,
-            r#"{"slug":"ar-3","red":"runner dream","queued":"2026-11-05T12:00:00Z","merged":"y","fix_min":60,"pr":"Kblack0610/.dotfiles#1170","outcome":"came back"}"#,
+            r#"{"slug":"red-x-1106","row":"ar-2","red":"watch playground-nightly","queued":"2026-11-06T11:00:00Z","outcome":"queued"}"#,
+            r#"{"slug":"ar-3","row":"ar-3","red":"runner dream","queued":"2026-11-05T12:00:00Z","merged":"y","fix_min":60,"pr":"Kblack0610/.dotfiles#1170","outcome":"came back"}"#,
             r#"{"slug":"ar-4","red":"watch b","queued":"2026-11-06T09:00:00Z","outcome":"cancelled"}"#,
         ]);
         let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T12:00:00Z")
@@ -952,8 +927,8 @@ pub(crate) mod tests {
         );
         assert_eq!(lines[1], "  CAME BACK    runner dream  ar-3  #1170  24h");
         assert_eq!(
-            lines[2],
-            "  QUEUED       watch playground-nightly  ar-2  1h"
+            lines[2], "  QUEUED       watch playground-nightly  ar-2 (red-x-1106)  1h",
+            "the ticket, then the queue item when its slug differs"
         );
         assert_eq!(lines[3], "  +2 settled");
         assert_eq!(lines.len(), 4, "settled rows fold to their count: {s}");
@@ -1019,7 +994,7 @@ pub(crate) mod tests {
         let (s, _) = page(&every(), &a, 160);
         assert!(s.contains("HISTORY  4 pages in 7 days"), "{s}");
         assert!(s.contains("tripped Sentinel: playground-nightly"), "{s}");
-        assert!(s.contains("  +3 older on 2 Log, Actions"), "{s}");
+        assert!(s.contains("  +3 older on 3 Log, Actions"), "{s}");
     }
 
     #[test]

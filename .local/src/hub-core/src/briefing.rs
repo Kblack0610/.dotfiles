@@ -1,6 +1,7 @@
 //! The briefing, two documents from one read. The overview (`markdown`, `hub briefing --md`) is
-//! the human's: headline, Needs you, what landed yesterday (products before fleet tooling), builds
-//! and releases, overnight, money, and one line to the second document. The agent briefing
+//! the human's: headline, Needs you, the daily Decisions, what landed yesterday (products before
+//! fleet tooling), one line per project that moved, builds and releases, overnight, money, and one
+//! line to the second document. The agent briefing
 //! (`agents_markdown`, `--agents-md`) is what the briefing was before the split: Needs you, one
 //! line per area (Infra, Sessions, Workers overnight, Nightly, Delivery, Costs), then the detail.
 //! `agentctl-briefing` writes both; `--json` is the same document for a surface.
@@ -35,6 +36,9 @@ use crate::text::cap;
 /// Needs you holds at most this many items; past it, one less and a "more" line
 /// (`channels.toml [channel.briefing]`).
 pub const NEEDS_SHOWN: usize = 5;
+/// Decisions names at most this many, then a "more" line, then the one-reply line
+/// (`channels.toml [channel.briefing]` caps the section at 8).
+pub const DECISIONS_SHOWN: usize = 6;
 /// How long one line of Landed, Builds, Overnight (but its mail) and Money may be (the same
 /// channel's cap). A Needs you item and an overnight mail line take the `next` role's cap instead.
 pub const ITEM_MAX: usize = 160;
@@ -63,6 +67,8 @@ pub const LANDED_SHOWN: usize = 8;
 pub const OVERNIGHT_EACH: usize = 3;
 /// Builds and releases names at most this many changes, then one line for the rest.
 pub const BUILDS_SHOWN: usize = 12;
+/// Projects names at most this many projects, then one line for the rest.
+pub const PROJECTS_SHOWN: usize = 8;
 /// The day-log area (`.config/areas/groups`, `@<repo> <area>`) that is the fleet's own tooling.
 const FLEET_AREA: &str = "Fleet tooling";
 /// The queue projects that are the fleet's own, so a failed item there is the agent briefing's.
@@ -106,8 +112,14 @@ pub struct Briefing {
     /// The overview's headline: needs, and what yesterday landed.
     pub overview: String,
     pub needs: Vec<String>,
+    /// The daily batch: each ask below critical and each plan approval, with its pick, then the
+    /// one-reply line. Empty when none waits. The overview only (`markdown`).
+    pub decisions: Vec<String>,
     /// Overview sections, one markdown bullet body per line.
     pub landed: Vec<String>,
+    /// One line per project that merged, went red or shipped (`by_project`, not `projects`: the
+    /// page guard reads a field by its name, and other pages carry a `projects` of their own).
+    pub by_project: Vec<String>,
     pub builds: Vec<String>,
     pub overnight: Vec<String>,
     pub money: Vec<String>,
@@ -141,6 +153,9 @@ pub struct Inputs {
     /// Queue items finished since the start of yesterday: the priority and type each landed PR
     /// is ranked by.
     pub landed_items: Option<Vec<Item>>,
+    /// Each project's drill-down, ready to append to its Projects line: its lab summary when it
+    /// has one, else its anchor (`drill_links`).
+    pub drill: BTreeMap<String, String>,
     /// `release-state show --json`: what is deployed where, and what deployed.
     pub releases: Option<Vec<Release>>,
     /// claude-acct's source rows (the Costs tab's Burn rows); None when unread or stale.
@@ -299,6 +314,59 @@ pub fn needs(rows: &[Need], now: i64) -> Vec<String> {
             "{more} more on Home: run hub needs, or open the Home tab."
         ));
     }
+    lines
+}
+
+/// A decision's recommended option as its line states the pick, cut to fit.
+fn pick(n: &Need) -> Option<String> {
+    n.recommend
+        .as_ref()
+        .filter(|r| !r.is_empty())
+        .map(|r| cap(r, 40))
+}
+
+/// One Decisions line: the pick first, then the question and where it is answered.
+fn decision_line(n: &Need, now: i64) -> String {
+    let text = n.text.trim_end_matches('.');
+    if n.kind == Kind::Session {
+        let tail = format!(" (session {})", cap(home::tmux_name(&n.id), 30));
+        return next_line(&format!("Approve the plan: {text}"), &tail);
+    }
+    let mut meta: Vec<String> = vec![];
+    meta.extend((!n.project.is_empty()).then(|| n.project.clone()));
+    meta.extend(n.since.map(|s| age(now - s)));
+    meta.push(format!("ask {}", n.id));
+    let tail = format!(" ({})", meta.join(", "));
+    match pick(n) {
+        Some(r) => next_line(&format!("Take {r} on: {text}"), &tail),
+        None => next_line(&format!("No pick; choose on: {text}"), &tail),
+    }
+}
+
+/// Decisions: what waits on the human and can wait a day (`Need::is_decision`: an ask the judge
+/// levelled below critical, a plan approval), in Home's rank order, one line each with its pick,
+/// then the line that answers them all. `agent-ask batch` (agentctl-briefing, before this reader)
+/// parks the asks the last batch listed and nobody answered, so each shows once, never twice.
+pub fn decisions(rows: &[Need], now: i64) -> Vec<String> {
+    let rows: Vec<&Need> = rows.iter().filter(|n| n.is_decision()).collect();
+    if rows.is_empty() {
+        return vec![];
+    }
+    let mut lines: Vec<String> = rows
+        .iter()
+        .take(DECISIONS_SHOWN)
+        .map(|n| decision_line(n, now))
+        .collect();
+    if rows.len() > DECISIONS_SHOWN {
+        lines.push(format!(
+            "{} more decisions on Home: run hub needs, or open the Home tab.",
+            rows.len() - DECISIONS_SHOWN
+        ));
+    }
+    lines.push(
+        "Reply once: agent-ask batch --take takes each ask's pick; open asks park at the next batch."
+            .into(),
+    );
     lines
 }
 
@@ -794,6 +862,7 @@ fn is_fix(title: &str) -> bool {
 struct Change<'a> {
     title: &'a str,
     area: &'a str,
+    project: &'a str,
     rank: u8,
     fix: bool,
 }
@@ -824,6 +893,7 @@ fn changes<'a>(i: &'a Inputs, rec: &'a Value) -> Vec<Change<'a>> {
             Change {
                 title: plain_title(title),
                 area: r["area"].as_str().unwrap_or_default(),
+                project: r["project"].as_str().unwrap_or_default(),
                 rank,
                 fix,
             }
@@ -890,6 +960,147 @@ fn landed(i: &Inputs) -> (Vec<String>, Option<String>) {
     (lines, Some(summary))
 }
 
+/// One product nightly workflow of a day-log record's CI block that ran.
+struct Nightly<'a> {
+    repo: &'a str,
+    wf: &'a str,
+    green: u64,
+    runs: u64,
+}
+
+/// The record's nightly workflows that ran, the fleet's own repo (`.dotfiles*`) left out: Builds
+/// and Projects both read them from here.
+fn nightlies(rec: &Value) -> Vec<Nightly<'_>> {
+    let mut out = vec![];
+    for (repo, v) in rec["ci"]["repos"].as_object().into_iter().flatten() {
+        let name = repo.rsplit('/').next().unwrap_or(repo);
+        if name.starts_with(".dotfiles") {
+            continue;
+        }
+        for (wf, n) in v["cost"]["nightly"].as_object().into_iter().flatten() {
+            let runs = n["runs"].as_u64().unwrap_or(0);
+            if runs > 0 {
+                out.push(Nightly {
+                    repo: name,
+                    wf,
+                    green: n["green"].as_u64().unwrap_or(0),
+                    runs,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// What one project did in the window: the numbers its Projects line says.
+#[derive(Default)]
+struct Moved<'a> {
+    merged: usize,
+    fixes: usize,
+    red: Vec<&'a str>,
+    deploys: Vec<String>,
+}
+
+/// Projects: one line per project that merged product changes yesterday, has a red nightly, or
+/// deployed in the window, red first, then by merges; the fleet's own tooling is the agents
+/// briefing's. Each line ends with the project's drill-down when it has one. Built from the
+/// data Landed, Builds and Overnight already read; nothing is stored.
+fn projects(i: &Inputs) -> Vec<String> {
+    let Some((rec, _)) = yesterday_and_avg(i, merged) else {
+        return vec![Reading::NotRead("no day-log record for yesterday.".into()).sentence("")];
+    };
+    let mut by: BTreeMap<&str, Moved> = BTreeMap::new();
+    for c in changes(i, rec).iter().filter(|c| c.area != FLEET_AREA) {
+        let m = by
+            .entry(if c.project.is_empty() {
+                "no project"
+            } else {
+                c.project
+            })
+            .or_default();
+        m.merged += 1;
+        m.fixes += usize::from(c.fix);
+    }
+    // The CI block keys a repo, the merge record names its project: join them through the merges.
+    // Any merge in the kept days names the repo's project, so a quiet day still joins; a repo that
+    // never merged in them keeps its own name (and no link).
+    fn project_of<'a>(days: &'a [(String, Value)], repo: &'a str) -> &'a str {
+        days.iter()
+            .rev()
+            .flat_map(|(_, d)| d["merged"].as_array().into_iter().flatten())
+            .find(|r| {
+                r["repo"]
+                    .as_str()
+                    .map(|n| n.rsplit('/').next().unwrap_or(n))
+                    == Some(repo)
+                    && r["project"].as_str().is_some_and(|p| !p.is_empty())
+            })
+            .and_then(|r| r["project"].as_str())
+            .unwrap_or(repo)
+    }
+    for n in nightlies(rec).iter().filter(|n| n.green < n.runs) {
+        by.entry(project_of(&i.days, n.repo))
+            .or_default()
+            .red
+            .push(n.wf);
+    }
+    for r in i.releases.iter().flatten() {
+        if FLEET_PROJECTS.contains(&r.project.as_str()) {
+            continue;
+        }
+        if let Some(d) = r.deploys.last.as_ref().filter(|d| d.at >= i.since) {
+            let what = match d.state.as_str() {
+                "ok" => "deployed",
+                "fail" => "failed to deploy",
+                other => other,
+            };
+            by.entry(r.project.as_str())
+                .or_default()
+                .deploys
+                .push(format!("{} {} {what}", d.version, r.channel));
+        }
+    }
+    let mut rows: Vec<(&str, Moved)> = by.into_iter().collect();
+    rows.sort_by_key(|(name, m)| (m.red.is_empty(), std::cmp::Reverse(m.merged), *name));
+    let mut lines: Vec<String> = rows
+        .iter()
+        .take(PROJECTS_SHOWN)
+        .map(|(name, m)| {
+            let mut parts = vec![];
+            if m.merged > 0 {
+                parts.push(match m.fixes {
+                    0 => format!("{} merged", m.merged),
+                    f => format!("{} merged ({})", m.merged, plural(f, "fix", "fixes")),
+                });
+            }
+            if !m.red.is_empty() {
+                let wfs: Vec<String> = m.red.iter().map(|w| w.to_string()).collect();
+                parts.push(format!("nightly {} red", names(&wfs, 3)));
+            }
+            parts.extend(m.deploys.iter().cloned());
+            let link = i
+                .drill
+                .get(*name)
+                .map_or(String::new(), |l| format!(" {l}"));
+            let room = ITEM_MAX.saturating_sub(link.chars().count());
+            format!(
+                "{}{link}",
+                cap(&format!("{name}: {}.", parts.join(", ")), room)
+            )
+        })
+        .collect();
+    if rows.len() > PROJECTS_SHOWN {
+        lines.push(format!(
+            "and {} more projects: see the shipped list.",
+            rows.len() - PROJECTS_SHOWN
+        ));
+    }
+    if lines.is_empty() {
+        lines.push("No project merged, went red or shipped.".into());
+    }
+    lines
+}
+
 /// Builds and releases: channels whose newest deployment is in the window, channels whose live
 /// version is not what is pinned, and yesterday's product nightlies by name.
 fn builds(i: &Inputs) -> Vec<String> {
@@ -933,26 +1144,14 @@ fn builds(i: &Inputs) -> Vec<String> {
     let mut green = vec![];
     let mut reds = vec![];
     if let Some((rec, _)) = yesterday_and_avg(i, merged) {
-        if let Some(repos) = rec["ci"]["repos"].as_object() {
-            for (repo, v) in repos {
-                let name = repo.rsplit('/').next().unwrap_or(repo);
-                if name.starts_with(".dotfiles") {
-                    continue;
-                }
-                for (wf, n) in v["cost"]["nightly"].as_object().into_iter().flatten() {
-                    let (g, runs) = (
-                        n["green"].as_u64().unwrap_or(0),
-                        n["runs"].as_u64().unwrap_or(0),
-                    );
-                    if runs == 0 {
-                        continue;
-                    }
-                    if g < runs {
-                        reds.push(format!("{name} nightly {wf} is red ({g} of {runs} green)."));
-                    } else {
-                        green.push(format!("{name} {wf}"));
-                    }
-                }
+        for n in nightlies(rec) {
+            if n.green < n.runs {
+                reds.push(format!(
+                    "{} nightly {} is red ({} of {} green).",
+                    n.repo, n.wf, n.green, n.runs
+                ));
+            } else {
+                green.push(format!("{} {}", n.repo, n.wf));
             }
         }
     }
@@ -1152,18 +1351,23 @@ fn agents_line(areas: &[Area]) -> String {
 }
 
 /// "As of Tue 06:50: 4 things need you.", the sentence both documents open with and
-/// notes-cli's Morning block reads.
-fn as_of(i: &Inputs, n: usize) -> String {
+/// notes-cli's Morning block reads. It is the one count of Home's rows, and says how many of them
+/// are the day's Decisions (`d`), listed in a section of their own.
+fn as_of(i: &Inputs, n: usize, d: usize) -> String {
     let needs = match n {
         0 => "nothing needs you".to_string(),
         1 => "1 thing needs you".to_string(),
         n => format!("{n} things need you"),
     };
-    format!("As of {}: {needs}.", day_clock(i.now))
+    let decided = match d {
+        0 => String::new(),
+        d => format!(", {d} of them daily decisions"),
+    };
+    format!("As of {}: {needs}{decided}.", day_clock(i.now))
 }
 
-fn headline(i: &Inputs, n: usize) -> String {
-    let mut s = as_of(i, n);
+fn headline(i: &Inputs, n: usize, d: usize) -> String {
+    let mut s = as_of(i, n, d);
     if let Some((rec, avg)) = yesterday_and_avg(i, spent) {
         let row = crate::boards::day_row("", rec);
         s += &format!(
@@ -1270,7 +1474,16 @@ fn details(i: &Inputs, areas: &[Area]) -> Vec<String> {
 
 pub fn build(i: &Inputs) -> Briefing {
     let n = i.home.waiting().count;
-    let needs = needs(&i.home.needs, i.now);
+    let d = i.home.needs.iter().filter(|r| r.is_decision()).count();
+    let waits: Vec<Need> = i
+        .home
+        .needs
+        .iter()
+        .filter(|r| !r.is_decision())
+        .cloned()
+        .collect();
+    let needs = needs(&waits, i.now);
+    let decisions = decisions(&i.home.needs, i.now);
     let areas = vec![
         infra(i),
         sessions(i),
@@ -1283,13 +1496,15 @@ pub fn build(i: &Inputs) -> Briefing {
     Briefing {
         at: i.now,
         since: i.since,
-        headline: headline(i, n),
+        headline: headline(i, n, d),
         overview: match summary {
-            Some(s) => format!("{} {s}", as_of(i, n)),
-            None => as_of(i, n),
+            Some(s) => format!("{} {s}", as_of(i, n, d)),
+            None => as_of(i, n, d),
         },
         needs,
+        decisions,
         landed,
+        by_project: projects(i),
         builds: builds(i),
         overnight: overnight(i),
         money: money_lines(i),
@@ -1313,6 +1528,17 @@ impl Briefing {
         s
     }
 
+    fn decisions_md(&self) -> String {
+        let mut s = String::from("\n## Decisions\n\n");
+        if self.decisions.is_empty() {
+            s += "- nothing\n";
+        }
+        for d in &self.decisions {
+            s += &format!("- {d}\n");
+        }
+        s
+    }
+
     fn needs_md(&self) -> String {
         let mut s = String::from("## Needs you\n\n");
         if self.needs.is_empty() {
@@ -1324,14 +1550,16 @@ impl Briefing {
         s
     }
 
-    /// The file `agentctl-briefing` writes as `briefing.md`: headline, Needs you, Landed
-    /// yesterday, Builds and releases, Overnight, Money, then one line to the agent briefing.
+    /// The file `agentctl-briefing` writes as `briefing.md`: headline, Needs you, Decisions, Landed
+    /// yesterday, Projects, Builds and releases, Overnight, Money, then one line to the agent briefing.
     /// notes-cli's Morning block reads the `As of ` line and the `- ` items under Needs you.
     pub fn markdown(&self) -> String {
         let mut s = self.top("Briefing", &self.overview, "the agents briefing");
         s += &self.needs_md();
+        s += &self.decisions_md();
         for (title, lines) in [
             ("Landed yesterday", &self.landed),
+            ("Projects", &self.by_project),
             ("Builds and releases", &self.builds),
             ("Overnight", &self.overnight),
             ("Money", &self.money),
@@ -1350,6 +1578,7 @@ impl Briefing {
     pub fn agents_markdown(&self) -> String {
         let mut s = self.top("Agent briefing", &self.headline, "Details");
         s += &self.needs_md();
+        s += &self.decisions_md();
         s += "\n## Areas\n\n";
         for a in &self.areas {
             let line = format!("{}: {}, {}", a.name, a.level.word(), a.line);
@@ -1533,6 +1762,37 @@ fn unread(sources: &[crate::money::Source]) -> impl Iterator<Item = String> + '_
         .filter_map(|s| s.error.as_ref().map(|e| format!("{}: {e}", s.name)))
 }
 
+/// Each project's drill-down as the Projects line ends it: a wiki link to its lab summary
+/// (`lab-status`), else a pointer to its anchor (`project-index`, outside the vault, so a plain
+/// path). A summary in both lab roots is the personal one: the roots are tried in that order
+/// and the first link kept. Read from the directories' listings.
+fn drill_links(home: &Path) -> BTreeMap<String, String> {
+    let list = |dir: PathBuf| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect()
+    };
+    let notes = home.join(".notes");
+    let mut out = BTreeMap::new();
+    for name in list(home.join(".agent/anchors")) {
+        if let Some(p) = name.strip_suffix(".md") {
+            out.insert(p.to_string(), format!("(anchor: ~/.agent/anchors/{name})"));
+        }
+    }
+    let mut linked = std::collections::BTreeSet::new();
+    for root in ["lab/projects/current", "lab/bnb/projects/current"] {
+        for p in list(notes.join(root)) {
+            if notes.join(root).join(&p).join("summary.md").is_file() && linked.insert(p.clone()) {
+                out.insert(p.clone(), format!("[[{root}/{p}/summary]]"));
+            }
+        }
+    }
+    out
+}
+
 /// Every input, read now for the window from `since`.
 pub fn gather(since: i64, now: i64) -> Inputs {
     // Only the briefing reads the stores (Home's "Since last night" renders no Money section),
@@ -1682,6 +1942,7 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
         done,
         landed_items,
         releases,
+        drill: drill_links(&home_dir),
         sources,
         mail_stats: std::fs::read_to_string(comms.join("stats-summary.txt"))
             .ok()
@@ -1987,6 +2248,15 @@ mod tests {
         }
     }
 
+    /// An ask record the judge levelled, for a row that is a decision when the level is below critical.
+    fn levelled(level: &str) -> crate::boards::Ask {
+        crate::boards::Ask {
+            kind: "question".into(),
+            judge_level: level.into(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn needs_fold_by_kind_in_rank_order() {
         let mut rows: Vec<Need> = (0..9)
@@ -2076,8 +2346,15 @@ mod tests {
         ask.recommend = Some("send".into());
         let mut sheet = need(Kind::Sheet, "row", "Call the vet");
         sheet.project = "home".into();
+        let mut batched = need(Kind::Ask, "qRsTuV", "Which repo takes the guard?");
+        batched.recommend = Some("dotfiles".into());
+        batched.ask = Some(levelled("repo"));
+        let mut plan = need(Kind::Session, "lab/dotfiles:4", "Plan: one Decisions batch");
+        plan.need = home::NeedKind::Plan;
         i.home.needs = vec![
             ask,
+            batched,
+            plan,
             need(Kind::Ask, "kLmNoP", "Second question?"),
             need(Kind::Session, "lab/dotfiles:3", "plan awaiting approval"),
             need(Kind::Queue, "ar-4381", "Pick the cap"),
@@ -2102,6 +2379,105 @@ mod tests {
         )
         .iter()
         .any(|c| c == "item-id"));
+    }
+
+    #[test]
+    fn the_daily_batch_lists_decisions_with_their_pick_and_leaves_them_out_of_needs_you() {
+        let mut i = green();
+        let ask = |id: &str, text: &str, level: &str, pick: Option<&str>| {
+            let mut n = need(Kind::Ask, id, text);
+            n.ask = Some(levelled(level));
+            n.recommend = pick.map(String::from);
+            n
+        };
+        let mut plan = need(Kind::Session, "lab/dotfiles:4", "Plan: one batch");
+        plan.need = home::NeedKind::Plan;
+        i.home.needs = vec![
+            ask("crit01", "Send the release post?", "critical", Some("send")),
+            ask(
+                "bat001",
+                "Which repo takes the guard?",
+                "repo",
+                Some("dotfiles"),
+            ),
+            ask("bat002", "Rename the lane?", "fleet", None),
+            plan,
+            need(Kind::Queue, "ar-1", "Pick the cap"),
+        ];
+        let b = build(&i);
+        let waits = b.needs.join("\n");
+        assert!(
+            waits.contains("crit01") && waits.contains("ar-1"),
+            "{waits}"
+        );
+        assert!(
+            !waits.contains("bat00") && !waits.contains("Plan: one batch"),
+            "{waits}"
+        );
+        assert_eq!(b.decisions.len(), 4, "{:?}", b.decisions);
+        assert!(
+            b.decisions[0].starts_with("Take dotfiles on: Which repo takes the guard?"),
+            "{:?}",
+            b.decisions
+        );
+        assert!(b.decisions[0].contains("ask bat001"), "{:?}", b.decisions);
+        assert!(
+            b.decisions[1].starts_with("No pick; choose on: Rename the lane?"),
+            "{:?}",
+            b.decisions
+        );
+        assert!(
+            b.decisions[2].starts_with("Approve the plan: Plan: one batch"),
+            "{:?}",
+            b.decisions
+        );
+        assert!(
+            b.decisions[3].starts_with("Reply once: agent-ask batch --take"),
+            "{:?}",
+            b.decisions
+        );
+        // The one count still counts every row, and says how many are the day's decisions.
+        assert!(
+            b.overview.starts_with(&format!(
+                "As of {}: 5 things need you, 3 of them daily decisions.",
+                day_clock(i.now)
+            )),
+            "{}",
+            b.overview
+        );
+        let md = b.markdown();
+        assert!(md.contains("## Decisions\n\n- Take dotfiles on:"), "{md}");
+        for l in &b.decisions {
+            let f = grader::grade(&["--channel", "ui", "--role", "next"], l);
+            assert!(f.is_empty(), "{l}: {f:?}");
+        }
+        // Negative control: with nothing batched the section says so and no reply line shows.
+        i.home.needs.retain(|n| !n.is_decision());
+        let b = build(&i);
+        assert!(b.decisions.is_empty());
+        assert!(b.markdown().contains("## Decisions\n\n- nothing\n"));
+    }
+
+    #[test]
+    fn a_long_batch_names_six_then_counts_the_rest_inside_the_section_cap() {
+        let rows: Vec<Need> = (0..9)
+            .map(|k| {
+                let mut n = need(Kind::Ask, &format!("bat{k:03}"), &format!("Question {k}?"));
+                n.ask = Some(levelled("self"));
+                n
+            })
+            .collect();
+        let lines = decisions(&rows, NOW);
+        assert_eq!(lines.len(), DECISIONS_SHOWN + 2, "{lines:?}");
+        assert!(
+            lines[DECISIONS_SHOWN].starts_with("3 more decisions on Home"),
+            "{lines:?}"
+        );
+        assert!(lines.last().unwrap().starts_with("Reply once"));
+        assert!(
+            decisions(&[need(Kind::Ask, "a", "Q?")], NOW).is_empty(),
+            "an unlevelled ask is not a decision"
+        );
     }
 
     /// A folded group still names the place of its top row, and a sheet row with no project
@@ -2429,6 +2805,146 @@ mod tests {
         );
     }
 
+    fn project_pr(project: &str, repo: &str, title: &str, area: &str) -> Value {
+        json!({"title": title, "area": area, "project": project, "repo": repo, "by": null})
+    }
+
+    #[test]
+    fn projects_has_one_line_per_project_red_first_with_its_drill_down_link() {
+        let mut i = with_merged(vec![
+            project_pr("orbit", "orbit", "feat(a): one (o-1)", "Apps"),
+            project_pr(
+                "unity-core-playground",
+                "unity-core-playground",
+                "feat(b): two (u-1)",
+                "Games",
+            ),
+            project_pr(
+                "unity-core-playground",
+                "unity-core-playground",
+                "fix(b): three (u-2)",
+                "Games",
+            ),
+            project_pr(
+                "dotfiles",
+                ".dotfiles",
+                "feat(x): fleet (ar-1)",
+                "Fleet tooling",
+            ),
+        ]);
+        let at = i.days.len() - 1;
+        i.days[at].1["ci"] = json!({"repos": {
+            "Acme/unity-core-playground": {"cost": {"nightly": {"Tests": {"green": 0, "runs": 1}, "Multi": {"green": 0, "runs": 1}}}},
+        }});
+        i.releases = Some(vec![release(
+            "shape-city",
+            "beta",
+            Some(("v0.5.0", "ok", NOW - 3600)),
+        )]);
+        i.drill = [
+            (
+                "unity-core-playground",
+                "[[lab/projects/current/unity-core-playground/summary]]",
+            ),
+            ("orbit", "(anchor: ~/.agent/anchors/orbit.md)"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let p = build(&i).by_project;
+        assert_eq!(
+            p,
+            [
+                "unity-core-playground: 2 merged (1 fix), nightly Multi, Tests red. [[lab/projects/current/unity-core-playground/summary]]",
+                "orbit: 1 merged. (anchor: ~/.agent/anchors/orbit.md)",
+                "shape-city: v0.5.0 beta deployed.",
+            ],
+            "{p:#?}"
+        );
+        // the fleet's own repo has no line, and a project with no page ends without a link
+        assert!(!p.iter().any(|l| l.starts_with("dotfiles")), "{p:?}");
+    }
+
+    #[test]
+    fn a_red_nightly_joins_its_project_through_an_earlier_days_merge_and_a_fleet_deploy_is_left_out(
+    ) {
+        let mut i = with_merged(vec![]);
+        // no merge yesterday, but an earlier day's merge says repo "plat" belongs to "bnb-platform"
+        i.days[0].1["merged"] = json!([project_pr(
+            "bnb-platform",
+            "plat",
+            "feat(x): y (x-1)",
+            "Apps"
+        )]);
+        let at = i.days.len() - 1;
+        i.days[at].1["ci"] = json!({"repos": {
+            "Acme/plat": {"cost": {"nightly": {"Tests": {"green": 0, "runs": 1}}}},
+        }});
+        i.releases = Some(vec![release(
+            "dotfiles",
+            "prod",
+            Some(("v1", "ok", NOW - 3600)),
+        )]);
+        i.drill.insert(
+            "bnb-platform".into(),
+            "[[lab/bnb/projects/current/bnb-platform/summary]]".into(),
+        );
+        assert_eq!(
+            build(&i).by_project,
+            ["bnb-platform: nightly Tests red. [[lab/bnb/projects/current/bnb-platform/summary]]"]
+        );
+    }
+
+    #[test]
+    fn projects_names_eight_then_counts_the_rest() {
+        let prs = (0..11)
+            .map(|k| project_pr(&format!("proj-{k:02}"), "r", "feat(x): y (x-1)", "Games"))
+            .collect();
+        let p = build(&with_merged(prs)).by_project;
+        assert_eq!(p.len(), PROJECTS_SHOWN + 1, "{p:?}");
+        assert_eq!(
+            p[PROJECTS_SHOWN],
+            "and 3 more projects: see the shipped list."
+        );
+    }
+
+    #[test]
+    fn a_project_line_is_cut_before_its_link_never_through_it() {
+        let mut i = with_merged(vec![project_pr("p", "p", "feat(x): y (x-1)", "Games")]);
+        let at = i.days.len() - 1;
+        // three long workflow names fill the 160 cap before the link does
+        let wfs: serde_json::Map<String, Value> = (0..3)
+            .map(|k| {
+                (
+                    format!("Workflow{k}{}", "x".repeat(40)),
+                    json!({"green": 0, "runs": 1}),
+                )
+            })
+            .collect();
+        i.days[at].1["ci"] = json!({"repos": {"Acme/p": {"cost": {"nightly": wfs}}}});
+        let link = "[[lab/projects/current/p/summary]]";
+        i.drill.insert("p".into(), link.into());
+        let line = &build(&i).by_project[0];
+        assert!(
+            line.ends_with(link) && line.chars().count() <= ITEM_MAX,
+            "{line}"
+        );
+        assert!(line.contains("..."), "the words were cut: {line}");
+    }
+
+    #[test]
+    fn projects_say_when_nothing_moved_and_never_read_a_missing_record_as_quiet() {
+        let b = build(&with_merged(vec![]));
+        assert_eq!(b.by_project, ["No project merged, went red or shipped."]);
+        // negative control: no day-log record is "not read", not an empty day
+        let mut i = green();
+        i.days.clear();
+        assert_eq!(
+            build(&i).by_project,
+            ["Not read: no day-log record for yesterday."]
+        );
+    }
+
     #[test]
     fn overnight_names_critical_mail_failed_product_work_and_a_red_product_watch() {
         let mut i = green();
@@ -2472,7 +2988,9 @@ mod tests {
         let order = [
             "As of ",
             "## Needs you",
+            "## Decisions",
             "## Landed yesterday",
+            "## Projects",
             "## Builds and releases",
             "## Overnight",
             "## Money",
@@ -2491,7 +3009,7 @@ mod tests {
         assert!(a.contains("## Areas") && a.contains("## Details"), "{a}");
         assert!(!a.contains("## Landed yesterday"), "{a}");
         // both documents open with the sentence the Morning block reads
-        assert!(md.contains(&as_of(&i, 0)) && a.contains(&as_of(&i, 0)));
+        assert!(md.contains(&as_of(&i, 0, 0)) && a.contains(&as_of(&i, 0, 0)));
     }
 
     #[test]

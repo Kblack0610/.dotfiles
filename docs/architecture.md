@@ -26,7 +26,7 @@ This is a stow repo: its tree mirrors `$HOME`, so the table documents the home t
 | `tests/` | The bats suites, their fixtures and helpers, one tier per folder |
 | `.bashrc`, `.zshrc`, `.zprofile`, `.commonrc`, `.tmux.conf`, `.gitconfig`, `.shellcheckrc`, `.ai-rc` | Shell and tool rc files deployed to `$HOME` |
 | `.gitattributes`, `.gitignore`, `.gitmodules`, `.stow-local-ignore` | Git and stow control files |
-| `README.md`, `CHANGELOG.md`, `CLAUDE.md` | Front-door docs; `CLAUDE.md` is excluded from stow |
+| `README.md`, `CHANGELOG.md`, `AGENTS.md`, `CLAUDE.md` | Front-door docs; `AGENTS.md` (the repo rules every CLI reads) and `CLAUDE.md` (imports it) are excluded from stow |
 
 # notes-cockpit
 
@@ -86,7 +86,7 @@ The map of the whole agentic system, every plane with its one producer, document
 
 1. `agent-queue add` files an item (and its board row). `fleet-dispatch run` starts the head as an interactive session through `fleet-dispatch start`, the one start path.
 2. The session works in a worktree under `~/.worktrees/` and opens a PR.
-3. `agent-land <pr>` checks that HEAD contains `origin/<base>`, refuses a PR that makes a function over 150 lines longer unless its body has a `Split: <row id>` line (`shape-grow`), waits for the checks, squash-merges with `--match-head-commit`, proves the merge commit is on the base (`.local/lib/agent-merge-proof.sh`), moves the item to `done/<date>/` and closes the board row.
+3. `agent-land <pr>` checks that HEAD contains `origin/<base>`, refuses a PR that makes a function over 150 lines longer or adds a copy (`shape-grow`, run by CI where a workflow names it, else by agent-land) unless its body has a `Split:` or `Dup: <row id> <name>...` line whose open row names each one, waits for the checks, squash-merges with `--match-head-commit`, proves the merge commit is on the base (`.local/lib/agent-merge-proof.sh`), moves the item to `done/<date>/` and closes the board row.
 4. `fleet-sessions` reads the result into the state document; `agentctl-session-outcomes` and `fleet-bench` score it later.
 
 ## Where it is split

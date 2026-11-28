@@ -150,12 +150,16 @@ setup() {
     > "$HOME/.config/agentctl/agents/judge.conf"
   printf 'NAME=writer\nKIND=oneshot\nLANE=learn\nROLE=curate\nPRIORITY=low\nCOMMAND=true\nSCHEDULE=daily\nENABLED=no\nDESCRIPTION=w\nEFFECT=acts\n' \
     > "$HOME/.config/agentctl/agents/writer.conf"
+  printf 'NAME=mover\nKIND=oneshot\nLANE=deliver\nCOMMAND=true\nSCHEDULE=daily\nDESCRIPTION=m\nEFFECT=acts\nMODEL=x\nROUTE=r\n' \
+    > "$HOME/.config/agentctl/agents/mover.conf"
   run "$AGENTCTL_BIN" list --md
   assert_success
   assert_line --index 0 '| Runner | Lane | Trigger | Role | Priority | Skill | Model | Effect | Purpose |'
   assert_line --index 2 '| judge | deliver | called by its caller | distill | low | - | m1 | shadow | a \| judge |'
   assert_line '| alpha | observe | `daily` | - | - | - | - | none | purpose of alpha |'
   assert_line '| writer | learn | `daily` (disabled) | curate | low | - | not in conf | acts | w |'
+  # no ROLE launches no model, so an acting runner without one shows none, whatever MODEL or ROUTE say (ar-358)
+  assert_line '| mover | deliver | `daily` | - | - | - | - | acts | m |'
 }
 
 # SKILL names the skill or command that owns a runner's job. The roots are fixtures, so the

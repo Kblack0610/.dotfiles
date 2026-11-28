@@ -20,13 +20,7 @@ const READ_GUARD: Duration = Duration::from_secs(1);
 
 /// `$XDG_STATE_HOME/hub` (default `~/.local/state/hub`): the request file and the socket.
 pub fn dir() -> PathBuf {
-    std::env::var_os("XDG_STATE_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/state")
-        })
-        .join("hub")
+    agent_core::vocab::state_home().join("hub")
 }
 
 /// A page to show, and the word it opens with: on Projects a project, an inner tab or a search
@@ -49,7 +43,7 @@ pub fn parse(s: &str) -> Option<Req> {
     let tab = Tab::parse(t)?;
     // A section that moved to another tab (`fleet tokens`) asks for it there, matched by the name
     // as asked so a retired tab's own rows still match; one that opens a table under a chip
-    // (`infra governor`) keeps its word, which the tab knows.
+    // (`infra cloud`) keeps its word, which the tab knows.
     if let Some((to, sec)) = q
         .as_deref()
         .filter(|q| hub_core::layout::moved_chip(t, q).is_none())

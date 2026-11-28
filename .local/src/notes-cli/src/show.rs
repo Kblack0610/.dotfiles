@@ -81,10 +81,15 @@ fn resolve_link(p: &Profile, roots: &[PathBuf], target: &str) -> Option<PathBuf>
     {
         return None;
     }
-    for base in [&p.root, &p.vault] {
-        for cand in [base.join(format!("{target}.md")), base.join(target)] {
-            if let Some(c) = confined(&cand, roots) {
-                return Some(c);
+    // A refs link whose file moved (a day archived under `refs/archive/`, a report moved to the
+    // inbox) resolves where it went.
+    let moved = crate::report::moved_targets(p, target);
+    for t in std::iter::once(target).chain(moved.iter().map(String::as_str)) {
+        for base in [&p.root, &p.vault] {
+            for cand in [base.join(format!("{t}.md")), base.join(t)] {
+                if let Some(c) = confined(&cand, roots) {
+                    return Some(c);
+                }
             }
         }
     }
@@ -374,6 +379,23 @@ mod tests {
         assert_eq!(
             note(&p, "journal/daily/2026-11-04").unwrap()["prev"],
             "2026-11-02"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A daily note's link into a refs day the old monthly mover archived still opens.
+    #[test]
+    fn a_refs_link_into_an_archived_day_resolves() {
+        let (root, p) = vault("archived");
+        let old = root.join("journal/refs/archive/2026/2026-10/2026-10-03");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("audit.md"), "# Audit\n").unwrap();
+        let v = note(&p, "journal/refs/2026-10-03/audit").unwrap();
+        assert_eq!(v["exists"], true);
+        assert_eq!(v["title"], "Audit");
+        assert_eq!(
+            note(&p, "journal/refs/2026-10-04/audit").unwrap()["exists"],
+            false
         );
         fs::remove_dir_all(root).unwrap();
     }

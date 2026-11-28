@@ -92,6 +92,37 @@ watch() {
   assert_output ''
 }
 
+# The fleet-health-coverage watch runs `fleet-bench health --coverage` and trips on its exit 1, so
+# these cases are what it guards: a new Flows row, a watch deleted without a replacement, a renamed row.
+@test "health --coverage guard: a new Flows row with no watch exits 1 and names the part" {
+  watch life-watch OK '[Lifecycle]'
+  printf '| Admission | What caps the queue? | `d.md` | - | none |\n' > "$SANDBOX/row"
+  sed -i "/^| Lifecycle /r $SANDBOX/row" "$FLEET_ARCH_DOC"
+  grep -q '^| Admission ' "$FLEET_ARCH_DOC"
+  run "$SUBJECT" health --coverage
+  assert_failure
+  assert_output 'Admission'
+}
+
+@test "health --coverage guard: a watch deleted without a replacement uncovers its part" {
+  watch life-watch OK '[Lifecycle]'
+  run "$SUBJECT" health --coverage
+  assert_success
+  rm "$TRIAGE_WATCHES/life-watch.yaml" "$TRIAGE_WATCH_STATE/life-watch.state"
+  run "$SUBJECT" health --coverage
+  assert_failure
+  assert_output 'Lifecycle'
+}
+
+@test "health --coverage guard: a Flows row renamed under a watch's tag exits 1 and names the stale tag" {
+  watch life-watch OK '[Lifecycle]'
+  sed -i 's/^| Lifecycle /| Life cycle /' "$FLEET_ARCH_DOC"
+  run "$SUBJECT" health --coverage
+  assert_failure
+  assert_output --partial 'Lifecycle'
+  assert_output --partial 'Life cycle'
+}
+
 @test "health negative control: a tripped watch makes its parts TRIP, the verdict RED, and the exit 1" {
   printf TRIP > "$TRIAGE_WATCH_STATE/queue-watch.state"
   run "$SUBJECT" health
@@ -113,6 +144,19 @@ watch() {
   assert_failure
   assert_line --regexp '^Dispatch +TRIP '
   assert_line --partial '1 TRIP/Q (down: Dispatch) (quarantined: Asks)'
+}
+
+@test "health: a quarantined watch that names a red its quarantine does not cover reads TRIP, not TRIP/Q (ar-3916)" {
+  printf TRIP > "$TRIAGE_WATCH_STATE/queue-watch.state"
+  printf '%s ar-1 %s waits on a fix\n' "$(( $(date +%s) + 3600 ))" "$(date +%s)" > "$TRIAGE_WATCH_STATE/queue-watch.quarantine"
+  printf 'TRIP exit 1\nRED dispatch 3 rows stuck\n' > "$TRIAGE_WATCH_STATE/queue-watch.quarantine.covers"
+  printf 'TRIP exit 1\nRED dispatch 5 rows stuck\n' > "$TRIAGE_WATCH_STATE/queue-watch.out"
+  run "$SUBJECT" health
+  assert_line --regexp '^Dispatch +TRIP/Q +queue-watch=TRIP/Q$'
+  printf 'TRIP exit 1\nRED dispatch 5 rows stuck\nRED asks unread\n' > "$TRIAGE_WATCH_STATE/queue-watch.out"
+  run "$SUBJECT" health
+  assert_failure
+  assert_line --regexp '^Dispatch +TRIP +queue-watch=TRIP$'
 }
 
 @test "health: every part covered with one quarantined reads GAPS, not GREEN, and exits 0; a zero-padded UNTIL is decimal" {

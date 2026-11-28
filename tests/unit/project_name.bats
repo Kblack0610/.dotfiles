@@ -274,25 +274,46 @@ ALPHA='{ "alpha": { "repo": "mono-canon", "path": "apps/alpha" } }'
 
 # -- an unregistered repo must not be app-scoped -----------------------------
 
-@test "a git repo with no map entry falls back to its basename" {
+@test "a git repo with no map entry is _unscoped, never its basename" {
+  # NEGATIVE CONTROL: before ar-5816 this printed `stranger`, the stray ~/.agent key the doctor
+  # fails (a session in ~/.agent filed asks and sessions under `agent`).
   write_map "$APPS"
   mkdir -p "$SANDBOX/repos/stranger"
   git -C "$SANDBOX/repos/stranger" init -q
   run resolve_project_name "$SANDBOX/repos/stranger"
   assert_success
-  assert_output 'stranger'
+  assert_output '_unscoped'
+  # the same under the temp dir, where a lane's `mktemp -d` once minted tmp.XXXXXXXXXX keys
+  mkdir -p "$TMPDIR/tmp.AbC123xyZ/sub"
+  git -C "$TMPDIR/tmp.AbC123xyZ" init -q -b main
+  run resolve_project_name "$TMPDIR/tmp.AbC123xyZ/sub"
+  assert_output '_unscoped'
 }
 
-@test "a worktree or subdir of an unregistered repo resolves to the repo's basename" {
+@test "a worktree or subdir of an unregistered repo is _unscoped too" {
   write_map "$APPS"
   mkdir -p "$SANDBOX/repos/.stranger/sub"
   git -C "$SANDBOX/repos/.stranger" init -q -b main
   git -C "$SANDBOX/repos/.stranger" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
   git -C "$SANDBOX/repos/.stranger" worktree add -q -b wt "$SANDBOX/repos/stranger-wt" >/dev/null 2>&1
   run resolve_project_name "$SANDBOX/repos/stranger-wt"
-  assert_output 'stranger'
+  assert_output '_unscoped'
   run resolve_project_name "$SANDBOX/repos/.stranger/sub"
-  assert_output 'stranger'
+  assert_output '_unscoped'
+}
+
+@test "a registered checkout, its live worktree and a reaped <repo>-<slug> path still resolve to their project" {
+  write_map
+  git_repo
+  export WT_ROOT="$SANDBOX/wt"
+  mkdir -p "$WT_ROOT/mono-agent-8/Logs"
+  git -C "$REPO" worktree add -q "$WT_ROOT/mono-agent-7" -b agent-7
+  run resolve_project_name "$REPO"
+  assert_output 'mono-canon'
+  run resolve_project_name "$WT_ROOT/mono-agent-7"
+  assert_output 'mono-canon'
+  run resolve_project_name "$WT_ROOT/mono-agent-8/Logs"
+  assert_output 'mono-canon'
 }
 
 # -- the inverse relation: project -> repo, and repo -> projects --------------
@@ -731,20 +752,7 @@ EOF
   assert_equal "$(project_slug supercalifragilistic)" supercal
 }
 
-# -- a repo under the temp dir is no project -----------------------------------
-
-@test "an unregistered git repo under the temp dir is _unscoped, never tmp.XXXXXXXXXX" {
-  # A lane that git-inits a mktemp dir and runs codex there minted outcome keys tmp.70ZiGFH1KX,
-  # which the notes doctor failed on. NEGATIVE CONTROL: before the fix this printed the basename.
-  write_map "$APPS"
-  mkdir -p "$TMPDIR/tmp.AbC123xyZ/sub"
-  git -C "$TMPDIR/tmp.AbC123xyZ" init -q -b main
-  run resolve_project_name "$TMPDIR/tmp.AbC123xyZ"
-  assert_success
-  assert_output '_unscoped'
-  run resolve_project_name "$TMPDIR/tmp.AbC123xyZ/sub"
-  assert_output '_unscoped'
-}
+# -- the temp dir is no special case: a registered repo there keeps its project --
 
 @test "a registered repo under the temp dir still resolves to its project" {
   mkdir -p "$TMPDIR/tmp.AbC123xyZ"

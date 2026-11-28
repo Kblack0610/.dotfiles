@@ -43,7 +43,7 @@ setup() {
   done
 
   tmux -L "$OUT" -f /dev/null new-session -d -s o -x 130 -y 45 "$TMX land $SRV a"
-  wait_until 'test "$(where)" = "$SRV a"'
+  wait_until '[[ "$(marks)" == "$SRV a "* ]]'
 }
 
 teardown() {
@@ -60,6 +60,11 @@ where() {
   done
 }
 
+# marks -- "<now>|<before>", each "<server> <session> <window_id>": the two places the arrival
+# hooks recorded for that client. A move shows before its hook's `tmx mark` lands, and L goes
+# to <before>, so a press of L waits on both lines.
+marks() { paste -sd'|' "$XDG_STATE_HOME"/tmx/places/* 2>/dev/null | tr '\t' ' '; }
+
 # window -- the window id that client is on.
 window() {
   local s
@@ -71,34 +76,34 @@ window() {
 @test "after a window jump within a session, L goes back to the window you came from" {
   wait_until 'test "$(window)" = "$W0"'
   tmux -L "$OUT" send-keys -t o C-b j
-  wait_until 'test "$(window)" = "$W1"'
+  wait_until 'test "$(marks)" = "$SRV a $W1|$SRV a $W0"'
   tmux -L "$OUT" send-keys -t o C-b L
-  wait_until 'test "$(where) $(window)" = "$SRV a $W0"'
+  wait_until 'test "$(marks)" = "$SRV a $W0|$SRV a $W1"'
   tmux -L "$OUT" send-keys -t o C-b L
   wait_until 'test "$(where) $(window)" = "$SRV a $W1"'
 }
 
 @test "a hop within one world keeps the client, so L goes back" {
   tmux -L "$OUT" send-keys -t o C-b g
-  wait_until 'test "$(where)" = "$SRV b"'
+  wait_until '[[ "$(marks)" == "$SRV b "*"|$SRV a $W0" ]]'
   tmux -L "$OUT" send-keys -t o C-b L
   wait_until 'test "$(where)" = "$SRV a"'
 }
 
 @test "after a hop to another world, L goes back across it, and again flips forward" {
   tmux -L "$OUT" send-keys -t o C-b h
-  wait_until 'test "$(where)" = "$FAR c"'
+  wait_until '[[ "$(marks)" == "$FAR c "*"|$SRV a $W0" ]]'
   tmux -L "$OUT" send-keys -t o C-b L
-  wait_until 'test "$(where)" = "$SRV a"'
+  wait_until '[[ "$(marks)" == "$SRV a $W0|$FAR c "* ]]'
   tmux -L "$OUT" send-keys -t o C-b L
   wait_until 'test "$(where)" = "$FAR c"'
 }
 
 @test "a window jump, then a hop to another world: L goes back to the jumped-to window" {
   tmux -L "$OUT" send-keys -t o C-b j
-  wait_until 'test "$(window)" = "$W1"'
+  wait_until 'test "$(marks)" = "$SRV a $W1|$SRV a $W0"'
   tmux -L "$OUT" send-keys -t o C-b h
-  wait_until 'test "$(where)" = "$FAR c"'
+  wait_until '[[ "$(marks)" == "$FAR c "*"|$SRV a $W1" ]]'
   tmux -L "$SRV" select-window -t "$W0"
   tmux -L "$OUT" send-keys -t o C-b L
   wait_until 'test "$(where) $(window)" = "$SRV a $W1"'

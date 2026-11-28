@@ -35,6 +35,15 @@ impl From<Option<f64>> for Val {
 }
 
 impl Val {
+    /// A word as a cell: a blank one is no value, so it sorts last and draws as `-`.
+    pub fn word(s: &str) -> Val {
+        if s.is_empty() {
+            Val::None
+        } else {
+            Val::Text(s.to_string())
+        }
+    }
+
     /// The cell as a surface draws it: text as written, a whole number without its `.0`.
     pub fn shown(&self) -> Option<String> {
         match self {
@@ -75,6 +84,10 @@ pub trait Row {
     /// A chip no row is under is left out, unless it is the one in force: for a table with
     /// more kinds than usually have a row.
     const HIDE_EMPTY: bool = false;
+    /// The column whose exact term (`id:=ar-1`) names one record. The first chip keeps a row such
+    /// a term names even when `in_default` leaves it out, so a link to any record finds it there.
+    /// Empty pins nothing.
+    const PIN: &'static str = "";
     /// The column a phone row leads with, full width and wrapping. Empty keeps the plain table.
     const LEAD: &'static str = "";
     /// The few columns under the lead on a phone; the rest wait for a tap.
@@ -127,6 +140,7 @@ impl<T: Row> Row for &T {
     const COLUMNS: &'static [&'static str] = T::COLUMNS;
     const STATES: &'static [&'static str] = T::STATES;
     const FACETS: &'static [&'static str] = T::FACETS;
+    const PIN: &'static str = T::PIN;
     const LEAD: &'static str = T::LEAD;
     const GLANCE: &'static [&'static str] = T::GLANCE;
     const LEGEND: &'static [(&'static str, &'static str)] = T::LEGEND;
@@ -290,6 +304,19 @@ fn keeps<R: Row>(ts: &[Term], r: &R) -> bool {
     })
 }
 
+/// Whether the chip `state` (empty for the first) lists `r`. The first also lists a row a positive
+/// exact term on `R::PIN` names, so a link to one record finds it whatever chip it lives on.
+fn on_chip<R: Row>(ts: &[Term], r: &R, state: &str) -> bool {
+    if !state.is_empty() {
+        return r.in_state(state);
+    }
+    r.in_default()
+        || (!R::PIN.is_empty()
+            && ts
+                .iter()
+                .any(|t| !t.neg && t.exact && t.key == Some(R::PIN) && t.hits(r, &mut None)))
+}
+
 /// A state chip and how many rows the query leaves under it, with its hue while it holds any
 /// row (`vocab::tone`; a chip at zero is plain) and what its word means when the table's
 /// legend defines it (`Row::LEGEND`).
@@ -395,12 +422,14 @@ pub fn phone_tables() -> Vec<PhoneTable> {
     rows.into_iter().chain(cuts).collect()
 }
 
-/// One dropdown value: how many rows it adds, whether it is ticked, and the whole query a
-/// tick on it gives (it joins the column's picks, or leaves them).
+/// One dropdown value: how many rows it adds, its share of the rows the other filters leave
+/// (a whole percent; a row holding two values counts under both), whether it is ticked, and the
+/// whole query a tick on it gives (it joins the column's picks, or leaves them).
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct FacetValue {
     pub value: String,
     pub n: usize,
+    pub pct: u32,
     pub on: bool,
     pub q: String,
 }
@@ -565,14 +594,9 @@ impl View {
     /// The rows the query and chip keep: in the sort, or in the table's own order without one.
     pub fn apply<'a, R: Row>(&self, rows: &'a [R]) -> Vec<&'a R> {
         let ts = terms::<R>(&self.q);
-        let kept = rows.iter().filter(|r| {
-            keeps(&ts, *r)
-                && if self.state.is_empty() {
-                    r.in_default()
-                } else {
-                    r.in_state(&self.state)
-                }
-        });
+        let kept = rows
+            .iter()
+            .filter(|r| keeps(&ts, *r) && on_chip(&ts, *r, &self.state));
         if self.sort.is_empty() {
             return kept.collect();
         }
@@ -600,11 +624,8 @@ impl View {
             .iter()
             .enumerate()
             .map(|(i, s)| {
-                let n = if i == 0 {
-                    kept.iter().filter(|r| r.in_default()).count()
-                } else {
-                    kept.iter().filter(|r| r.in_state(s)).count()
-                };
+                let chip = if i == 0 { "" } else { s };
+                let n = kept.iter().filter(|r| on_chip(&ts, *r, chip)).count();
                 Chip {
                     name: s,
                     n,
@@ -654,9 +675,10 @@ impl View {
                     ..self.clone()
                 };
                 let mut counts = std::collections::BTreeMap::<String, usize>::new();
+                let pool = base.apply(rows);
                 // Each value a row holds counts once, as the filter matches it (`vals`), so a
                 // row in two pools counts under both.
-                for r in base.apply(rows) {
+                for r in &pool {
                     let mut seen = std::collections::BTreeSet::new();
                     for v in r.vals(key).iter().filter_map(Val::text) {
                         if !v.is_empty() && seen.insert(v.clone()) {
@@ -688,6 +710,7 @@ impl View {
                             q: picks.iter().fold(clear.clone(), |q, v| joined(&q, key, v)),
                             on: picked,
                             value,
+                            pct: crate::projects::share(n as u32, pool.len() as u32).unwrap_or(0),
                             n,
                         }
                     })
@@ -1076,6 +1099,33 @@ mod tests {
         assert!(project.on.is_empty());
         assert_eq!(project.values[0].q, "kind:fix nightly project:playground");
         assert_eq!(joined("", "name", "hub sort"), "name:\"hub sort\"");
+    }
+
+    #[test]
+    fn a_facet_value_says_its_share_of_the_rows_the_other_filters_leave() {
+        let shares = |v: &View| -> Vec<(String, usize, u32)> {
+            let fs = v.facets(&rows());
+            let f = fs.iter().find(|f| f.key == "kind").unwrap();
+            f.values
+                .iter()
+                .map(|x| (x.value.clone(), x.n, x.pct))
+                .collect()
+        };
+        let s = |v: &str, n, p| (v.to_string(), n, p);
+        assert_eq!(
+            shares(&q("")),
+            [s("chore", 1, 25), s("feat", 1, 25), s("fix", 2, 50)]
+        );
+        assert_eq!(
+            shares(&q("project:dotfiles")),
+            [s("feat", 1, 50), s("fix", 1, 50)],
+            "a project picked: that project's mix"
+        );
+        assert_eq!(
+            shares(&q("kind:fix")),
+            [s("chore", 1, 25), s("feat", 1, 25), s("fix", 2, 50)],
+            "its own pick does not move the shares"
+        );
     }
 
     #[test]

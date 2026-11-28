@@ -8,7 +8,9 @@ Neither mistake is free. A wrong score toward the human leaves a session waiting
 
 Name the ask's `type` first, from the list below. Then split the ask into its decisions: one entry for a plain ask, one per item when it bundles several. Score every decision on its own, and `agent-ask` takes the worst of them.
 
-For each criterion, quote the words of the ask that show it, then say whether it is met. A criterion with no quote behind it is not met. Read `context`, `option_notes` and `recommend_why` as part of the ask, and `## Past disagreements`, when the input has it, as what the human has decided before.
+A decision is the act the answer you settle on commits the fleet to: the recommendation when it is right, else the option you put in `answer`. With neither, score every option and take the worst. Score external and reversible on that act, never on an option you turn down: in "wait for the stuck check, or merge past it?" with wait picked, the act is a wait, and only picking the merge makes it external. Holding, waiting or parking does nothing outside the fleet, so it is not external unless the ask (its `context` and `option_notes` included) shows the wait itself costs something outside it, such as a missed deadline or a lapsing payment; whether it is reversible is the reversible bullet's call, which keeps a park or hold of 10 or more records bulk unless the ask shows every record kept with its `after:` links. The other criteria still read the whole ask and every option.
+
+For each criterion, quote the words of the ask that show it, then say whether it is met. A criterion with no quote behind it is not met. Read `context`, `option_notes` and `recommend_why` as part of the ask, and `## Past disagreements`, when the input has it, as what the human has decided before. Read `## What the human already said`, when the input has it, as facts the human has told before (mem0 and the project's lessons): a line there that states the fact the ask needs means the fact is written, so `knowledge` is not met for it; quote that line, and give the answer it states.
 
 ## The human's
 
@@ -24,7 +26,7 @@ Any one of these, on any decision, makes the ask the human's.
 
 This must be met on every decision, or the ask is the human's.
 
-- (reversible) A wrong answer can be undone by a revert or a later change, and nothing has reached anyone outside the fleet by then. Not met for a bulk change: closing, moving or deleting 10 or more records (queue items, board rows, files) in one answer, since a revert restores each record but not the links between them (2026-11-12: a 198-item cleanup lost about 40 `after:` chains). A plain `agent-queue return` is not a bulk change at any count: each item goes back to its board row with its brief and takes the items after it along, so none is left dead (ar-2299), and only the `after:` order between them is not restored; a return with `--drop` is. Count the records the ask names or implies. The 10 is provisional, confidence low: 1034 of 4406 queue items carry `after:`, so ten records lose about two chains; revisit once a bulk ask of 10 or more has been answered by the human, or by 2026-12-14.
+- (reversible) A wrong answer can be undone by a revert or a later change, and nothing has reached anyone outside the fleet by then. Not met for a bulk change: closing, moving or deleting 10 or more records (queue items, board rows, files) in one answer, since a revert restores each record but not the links between them (2026-11-12: a 198-item cleanup lost about 40 `after:` chains). A park or hold is not a bulk change at any count when the ask shows every record is kept with its `after:` links, even when it moves them to a parked list, since nothing is lost for a revert to restore; one that moves, closes or drops records without showing that is. A plain `agent-queue return` is not a bulk change at any count: each item goes back to its board row with its brief and takes the items after it along, so none is left dead (ar-2299), and only the `after:` order between them is not restored; a return with `--drop` is. Count the records the ask names or implies. The 10 is provisional, confidence low: 1034 of 4406 queue items carry `after:`, so ten records lose about two chains; revisit once a bulk ask of 10 or more has been answered by the human, or by 2026-12-14.
 
 ## Noted, never a stop
 
@@ -96,13 +98,12 @@ Pick the one that fits the whole ask, or the main decision of a bundle. A type s
 
 ## Answer
 
-Leave `answer` empty when the recommendation is right (a `hold:` settle excepted, below). Fill it, in a few words and using one of the `options` when there are options, only when the recommendation is wrong or missing.
+Leave `answer` empty when the recommendation is right. Fill it, in a few words and using one of the `options` when there are options, only when the recommendation is wrong or missing.
 
 ## Settled already
 
 Score the ask as above either way; `settled_by` says whether something in the input already settles it, and is empty when nothing does. When in doubt, leave it empty: the human answers an ask left open, and a wrong one sends a session the wrong way.
 
-- `hold:<name>`: a hold listed under `## Holds the human set` decides the ask's main decision as written: the ask asks to do what the hold forbids, or whether to wait for what it waits on. A release tag asked for while a hold says no release until an epic lands is one. A hold on a different resource, or one the ask only mentions, is not. Put the option the hold picks in `answer`, always, even when it is the recommendation: a hold answer is never the recommendation by default. When every option does the work the hold forbids, none is the hold's pick, so leave `settled_by` empty and the human answers.
 - `ask:<id>`: an ask listed under `## Older pending asks` asks for the same action on the same target, so one answer serves both. The same login on the same host is one; a related question, the same tool on another host, or a different step of the same work is not.
 
 ## Reason

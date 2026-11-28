@@ -35,6 +35,9 @@ all:
             - dest: ~/.dotfiles
               repo: https://github.com/x/dotfiles.git
             - /abs/game
+          fleet_repos_extra:
+            - dest: ~/big
+              repo: https://github.com/x/big.git
         hp-victus:
           fleet_place: true
 EOF
@@ -52,7 +55,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 @test "the roster is the inventory group, with group, host and all.vars merged and ansible_host from another group" {
   run fleet_hosts
   assert_success
-  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"first\": [], \"harnesses\": [], \"agent_cpus\": \"\", \"local\": false}"
+  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\", \"$HOME/big\"], \"first\": [], \"harnesses\": [], \"agent_cpus\": \"\", \"local\": false}"
   assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.port) \(.max_live) \(.place)"')" 'kb@192.0.2.30 2222 1 true'
   run fleet_host laptop
   assert_failure
@@ -333,7 +336,7 @@ EOF
 exit \"\$(cat \"\$NOTES_FIXTURE/panel.rc\" 2>/dev/null || echo 0)\""
   run wp_main
   assert_success
-  assert_line --index 0 "{\"target\":\"lab/wt:1\",\"cwd\":\"$w\",\"git\":{\"in\":1,\"main\":\"$SANDBOX/r\",\"origin\":\"$o\",\"branch\":\"feat/x\",\"head\":\"$(git -C "$w" rev-parse HEAD)\",\"upstream\":\"main\",\"unpushed\":1,\"ahead\":1,\"dirty\":[\"b.txt\"]}}"
+  assert_line --index 0 "{\"target\":\"lab/wt:1\",\"cwd\":\"$w\",\"git\":{\"in\":1,\"main\":\"$SANDBOX/r\",\"origin\":\"$o\",\"branch\":\"feat/x\",\"head\":\"$(git -C "$w" rev-parse HEAD)\",\"upstream\":\"main\",\"unpushed\":1,\"ahead\":1,\"based\":true,\"head_at\":$(git -C "$w" log -1 --format=%ct HEAD),\"ahead_paths\":[\"a.txt\"],\"dirty\":[\"b.txt\"]}}"
   assert_line --index 1 "$(row gone "$SANDBOX/nowhere" | jq -c '. + {git: {in: "gone"}}')"
   assert_line --index 2 "$(row plain "$SANDBOX" | jq -c '. + {git: {in: 0}}')"
   assert_line --index 3 'not json'

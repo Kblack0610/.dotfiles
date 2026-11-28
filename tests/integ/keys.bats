@@ -69,7 +69,7 @@ EOF
 
 # live_socket <name> -- a real socket file in the tmux dir, answering has-session.
 live_socket() {
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/$1"
+  unix_sock "$TMUX_TMPDIR/tmux-$(id -u)/$1"
   echo "$1" >> "$FX/live"
 }
 
@@ -96,7 +96,7 @@ live_socket() {
 
 @test "with no live tmux server the layer says so, and no list-keys ever runs" {
   # A socket file that does not answer: list-keys on it would boot a server.
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/hub"
+  unix_sock "$TMUX_TMPDIR/tmux-$(id -u)/hub"
   run "$KEYS" --print
   assert_success
   assert_line --regexp $'^tmux\t\t-\tno tmux server is running'

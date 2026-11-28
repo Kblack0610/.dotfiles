@@ -6,7 +6,7 @@ metadata:
   category: monitoring
   tags: [monitoring, overnight, observe-only, sentinel]
   system: [telemetry]
-  reviewed: "2026-11-09"
+  reviewed: "2026-11-24"
 ---
 
 # night-shift
@@ -22,7 +22,7 @@ Not for a standing watch that should outlive the night: that is `sentinel`. Not 
 
 ## The record
 
-One file per night, and it is also the morning's inbox report: `$(notes path refs)/<M>/night-shift.md`, where `<M>` is the morning the human reads it, `M=$(date -d "$( [ "$(date +%H)" -lt 6 ] && echo today || echo tomorrow)" +%F)`. That day's `notes today` links it into the daily note's Refs. `start` writes line 1 `# Night shift, <M>`, line 3 `Morning report pending.`, then `## Bedtime`; `morning` replaces the pending line with the summary and appends `## Morning`. A file that already has `## Morning` is finished: a second `morning` (by hand, then queued) says so and stops. A second `start` on the same night adds focus to the existing file, keeps its start time and does not queue a second morning. Night watches are named `night-<slug>` and carry `source: night-shift`, which is how `status` and `morning` find them.
+One report per night, filed with `notes report add` (`inbox-report`) and revised in place under the same slug: id `<M>-night-shift`, file `$(notes path inbox)/<M>/night-shift.md`, where `<M>` is the morning the human reads it, `M=$(date -d "$( [ "$(date +%H)" -lt 6 ] && echo today || echo tomorrow)" +%F)`. The inbox page lists it under Reports. `start` files it with `--date <M> --slug night-shift --title 'Night shift, <M>' --summary 'Morning report pending.'` and a body that opens with `## Bedtime`; `morning` re-files it with the real summary and `## Morning` appended, passing the stored report back as the body (`{ cat <file>; cat <morning section>; } | notes report add ... --body -`; `add` drops a report's own frontmatter and title, so nothing depends on a scratch copy surviving the night). A report whose body already has `## Morning` is finished: a second `morning` (by hand, then queued) says so and stops. A second `start` on the same night re-files it with the focus added, keeping its start time, and does not queue a second morning. Night watches are named `night-<slug>` and carry `source: night-shift`, which is how `status` and `morning` find them.
 
 ## Verb: `start [focus...]`
 
@@ -48,7 +48,7 @@ One file per night, and it is also the morning's inbox report: `$(notes path ref
 
 ## Verb: `morning`
 
-Open the newest record, `ls -t $(notes path refs)/*/night-shift.md | head -1`, and read the start time `S` from its `## Bedtime`. With no file there was no shift; with `## Morning` already in it the report is done. Either way say so and stop. When the night watches are already gone (expired), say in the report that it ran late and has no live state. Then:
+Open the newest record, `ls -t $(notes path inbox)/*/night-shift.md | head -1`, and read the start time `S` from its `## Bedtime`. With no file there was no shift; with `## Morning` already in it the report is done. Either way say so and stop. When the night watches are already gone (expired), say in the report that it ran late and has no live state. Then:
 
 Log lines read `[<ts>] <watch> <prev> -> <new> <detail>`, so awk on fields works where grep flavours differ (here `grep` is ugrep). For an agent watch the state is OK for a verdict starting HEALTHY and TRIP for anything else, and the detail after the dash is the verdict text.
 
@@ -56,7 +56,7 @@ Log lines read `[<ts>] <watch> <prev> -> <new> <detail>`, so awk on fields works
 2. **What changed.** `awk -v s="[$S" '$(0) >= s && $(4) == "->" && $(3) != $(5) && $(6) != "pending"'` on the same log: every watch that tripped, errored or recovered overnight. Compare `watch-companion-loop tripped` now with the bedtime list: new, cleared, still red.
 3. **Pages.** `agent-notify list` since `S`: what reached the phone and what was held. A low `watch expired and was removed` page for a night watch is expected and needs no line in the report.
 4. **Merges.** For each focus repo, `gh pr list -R <owner/repo> --state merged --limit 100 --search "merged:>=$(date -u -d "$S" +%Y-%m-%dT%H:%M:%SZ)" --json number,title,mergedAt` (UTC, since search reads the offset form unreliably). For the whole fleet's day, `day-log` is the owner.
-5. **Write it** in the record: replace `Morning report pending.` with three to five lines (did the night go as intended, what went wrong and where, what waits on the human), then append `## Morning` with Focus (one line per focus: outcome, PR numbers, times), New reds, Cleared, Needs you. Run `python3 ~/.claude/skills/de-ai-writing/scripts/check.py <record>`. If `<M>` is today, `notes link-refs`. Then page once per `inbox-report` step 5 (normal, so it does not buzz), and say the same in chat when a human is there.
+5. **Write it**: the summary is three to five lines (did the night go as intended, what went wrong and where, what waits on the human); append `## Morning` to the body with Focus (one line per focus: outcome, PR numbers, times), New reds, Cleared, Needs you. Check and re-file it per `inbox-report` steps 4 and 5 (same `--date <M> --slug night-shift`), with `--needs-you` only when Needs you is not "nothing"; that flag also decides whether it pages (`inbox-report` step 6). Say the same in chat when a human is there.
 6. **Clean up.** Remove each `night-*` watch still present per `sentinel` (Verb: `stop`); one that already expired is gone, and its log lines are still the record. A red the report names gets a board row or queue item through its owner (`fix-red`, the session on it), never a fix from here.
 
 ## Do NOT

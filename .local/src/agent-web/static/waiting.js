@@ -59,7 +59,7 @@ function sessionCard(a, here = false) {
   const reply = `<input placeholder="${q.kind === "plan" ? "or tell it what to change" : "reply in this session"}" data-free><button class="btn" data-reply>Send</button>`;
   const p = a.phases;
   const band = needBand(a.need.label, [esc(a.project), a.wrote ? waited(a.wrote) : "", p ? `phase ${p.done}/${p.total}` : "", etaText(p), a.attached ? "you are attached" : ""]);
-  const title = `<div class="ntitle" title="${esc(a.target)}">${esc(a.summary || a.plan || a.short || a.target)}</div>`;
+  const title = `<div class="ntitle" title="${esc(a.target)}">${esc(a.summary?.text || a.plan || a.short || a.target)}</div>`;
   const more = cfold(`ses:${a.target}`, "Details", facts([["target", a.target], ["session", a.session], ["account", a.account],
     ["plan", a.plan], ["next phase", p && p.next]]), askst.open);
   const open = here ? "" : `<button class="btn sm" data-open>Open session</button>`;

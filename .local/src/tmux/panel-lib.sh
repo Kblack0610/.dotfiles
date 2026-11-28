@@ -290,7 +290,7 @@ panel_session_name() {
   printf '%s\n' "${base//./_}"
 }
 
-# panel_focus_session <name> / panel_focus_window <target>
+# panel_focus_session <name>
 # switch-client inside tmux, attach outside. A correct copy also lives in
 # agent-core/src/tmux.rs; this is the shell one.
 panel_focus_session() {
@@ -299,11 +299,6 @@ panel_focus_session() {
   else
     tmux attach -t "$1"
   fi
-}
-
-panel_focus_window() {
-  panel_in_tmux || panel_die "not inside tmux, cannot select a window"
-  tmux select-window -t "$1"
 }
 
 # panel_ensure_session <name> [dir] -- create it detached if it does not exist. Idempotent

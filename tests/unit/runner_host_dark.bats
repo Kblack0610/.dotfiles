@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
-# runner-host-dark, the probe of the Sentinel watch runner-host-dark: a host the governor keeps
-# running trips only when every registered runner has been offline for the whole window.
-# curl is a stub that answers each query from $FIX: online.tsv holds each host's online count as
-# "<host> <from-epoch> <count>" steps, read at every 60s step of the asked range; gaps lists the
-# epochs the exporter gave no reading; reg, gov and stop are "<host> <value>" lines.
+# runner-host-dark, the probe of the Sentinel watch runner-host-dark: a self-hosted runner host
+# trips only when every registered runner has been offline for the whole window.
+# curl is a stub that answers each query from $FIX: a range query from online.tsv, each host's
+# online count as "<host> <from-epoch> <count>" steps, read at every 60s step of the asked range;
+# gaps lists the epochs the exporter gave no reading; an instant query from reg, "<host> <count>"
+# lines. Each query it was asked is appended to $FIX/queries.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -16,11 +17,11 @@ setup() {
 #!/bin/bash
 [ -e "$FIX/down" ] && exit 7
 for a in "$@"; do
-  case $a in query=*) q=${a#query=} ;; start=*) s=${a#start=} ;; end=*) e=${a#end=} ;; step=*) st=${a#step=} ;; esac
+  case $a in query=*) q=${a#query=}; printf '%s\n' "$q" >> "$FIX/queries" ;; start=*) s=${a#start=} ;; end=*) e=${a#end=} ;; step=*) st=${a#step=} ;; esac
 done
 inst() { jq -Rn '{status:"success",data:{resultType:"vector",result:[inputs | select(length > 0) | split(" ") | {metric:{host:.[0]},value:[0,.[1]]}]}}' < "$FIX/$1" 2>/dev/null; }
-case $q in
-  *pool_online*)
+case ${s:-} in
+  ?*)
     awk -v s="$s" -v e="$e" -v st="$st" 'FILENAME == ARGV[1] { gap[$1] = 1; next }
       { h[$1] = 1; n[$1]++; from[$1, n[$1]] = $2; val[$1, n[$1]] = $3 }
       END { for (t = s; t <= e; t += st) { if (t in gap) continue
@@ -28,15 +29,12 @@ case $q in
                              if (v != "") print x, t, v } } }' "$FIX/gaps" "$FIX/online.tsv" \
       | jq -Rn '{status:"success",data:{resultType:"matrix",result:([inputs | split(" ")] | group_by(.[0])
           | map({metric:{host:.[0][0]},values:(map([(.[1] | tonumber), .[2]]) | sort_by(.[0]))}))}}' ;;
-  *github_runner_state*) inst reg ;;
-  *'state!="running"'*) inst stop ;;
-  *rate_usd_per_hour*) inst gov ;;
+  *) inst reg ;;
 esac
 EOF
   chmod +x "$BIN/curl"
   export FIX PATH="$BIN:$PATH" HOME="$BATS_TEST_TMPDIR"
-  : > "$FIX/gaps"; : > "$FIX/stop"
-  printf 'mac-mini 0\nms-a2 0\n' > "$FIX/gov"
+  : > "$FIX/gaps"
   printf 'mac-mini 2\nms-a2 3\n' > "$FIX/reg"
   # Now, for every case: the window is END-600 .. END.
   END=1795000000
@@ -78,38 +76,30 @@ online() {
   assert_line --partial 'dark: mac-mini'
 }
 
-@test "a host the governor has powered off, or is starting, is skipped" {
-  online mac-mini -3600 0
-  online ms-a2 -3600 0
-  printf 'mac-mini 1\nms-a2 1\n' > "$FIX/stop"
-  run "$RHD" --for 10m --at "$END"
-  assert_success
-  assert_line 'skip: mac-mini is powered off by the governor'
-  assert_line 'skip: ms-a2 is powered off by the governor'
-}
-
-@test "a host the governor does not keep running is never named, however dark" {
-  online mac-mini -3600 2
-  online ms-a2 -3600 3
-  online old-box -3600 0
-  echo 'old-box 4' >> "$FIX/reg"
-  run "$RHD" --for 10m --at "$END"
-  assert_success
-  refute_output --partial old-box
-}
-
-@test "a governed host with no registered runner is skipped, not dark" {
+@test "a host with no registered runner is not judged, and the ARC scale sets' hosts are never read" {
   online mac-mini -3600 0
   online ms-a2 -3600 3
   echo 'ms-a2 3' > "$FIX/reg"
   run "$RHD" --for 10m --at "$END"
   assert_success
-  assert_line 'skip: mac-mini has no registered runner'
+  refute_output --partial mac-mini
+  local q
+  while IFS= read -r q; do
+    [[ $q == *'host!~"unknown|arc|arc-.+"'* ]] || fail "a query that reads the ARC hosts: $q"
+  done < "$FIX/queries"
 }
 
-@test "a governed host the exporter has no row for counts as zero online once it answers" {
-  # pool_online lists roster hosts and hosts with a runner online, so a host outside the roster
-  # with every runner offline has no row at all.
+@test "no registered runner host at all says so and passes" {
+  online ms-a2 -3600 3
+  : > "$FIX/reg"
+  run "$RHD" --for 10m --at "$END"
+  assert_success
+  assert_output 'ok: no self-hosted runner host is registered'
+}
+
+@test "a registered host with no online row counts as zero online once the exporter answers" {
+  # The online query adds a 0 row for every registered host, so a host has no row only on a scrape
+  # that dropped it; read as nothing online, never as a skip.
   online ms-a2 -3600 3
   run "$RHD" --for 10m --at "$END"
   assert_failure 1
@@ -140,19 +130,14 @@ online() {
   local t; for t in -60 0; do echo $((END + t)) >> "$FIX/gaps"; done
   run "$RHD" --for 10m --at "$END"
   assert_failure 1
-  assert_output 'unreadable: the runner exporter gave no online count (github_runner_pool_online) now'
+  assert_output 'unreadable: the runner exporter gave no runner state (github_runner_state) now'
 }
 
-@test "Prometheus down, or a governor that reported no host, is unreadable" {
+@test "Prometheus down is unreadable" {
   touch "$FIX/down"
   run "$RHD" --for 10m --at "$END"
   assert_failure 1
   assert_output --partial 'unreadable: Prometheus did not answer'
-  rm "$FIX/down"; : > "$FIX/gov"
-  online mac-mini -3600 0
-  run "$RHD" --for 10m --at "$END"
-  assert_failure 1
-  assert_output --partial 'unreadable: the governor reported no host'
 }
 
 @test "replay: a 45-minute outage like the mac-mini's on 2026-11-12 trips 10 minutes in and clears once one is back" {

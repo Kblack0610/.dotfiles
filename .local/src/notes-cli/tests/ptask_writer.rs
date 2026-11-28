@@ -122,6 +122,13 @@ impl Home {
             .env("NOTES_PROFILE", "personal")
             .env("PROJECT_MAP_FILE", self.0.join("map.json"))
             .env(
+                "NOTES_PRIORITY_REASONS",
+                concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../.config/inbox-triage/rules/priority-reasons.tsv"
+                ),
+            )
+            .env(
                 "PATH",
                 format!(
                     "{}:{}",
@@ -161,6 +168,72 @@ impl Home {
             })
             .collect()
     }
+}
+
+/// `--why` writes a reason and its priority; an unknown reason, one of another priority and a
+/// second reason are refused with the row untouched; the board feed carries `prio_why`.
+#[test]
+fn a_reason_is_written_with_its_priority_and_a_bad_one_is_refused() {
+    let h = Home::new("reasons");
+    ok(&agent(
+        &h,
+        &[
+            "add",
+            "--why",
+            "upkeep",
+            "chore(ci): tidy the cache #size/s",
+        ],
+    ));
+    let first = h.board();
+    assert!(
+        first.contains("chore(ci): tidy the cache")
+            && first.contains("#why/upkeep")
+            && first.contains("#low"),
+        "{first}"
+    );
+    // retag to a high reason: both the reason and the priority change, one reason stays
+    ok(&agent(&h, &["tag", "--why", "red-main", "tidy the cache"]));
+    let board = h.board();
+    assert!(
+        board.contains("#high") && board.contains("#why/red-main"),
+        "{board}"
+    );
+    assert!(
+        !board.contains("#why/upkeep") && !board.contains("#low"),
+        "{board}"
+    );
+    let kept = h.board();
+    // NEGATIVE CONTROLS: nothing is written for each of these
+    for args in [
+        vec!["tag", "--why", "nope", "tidy the cache"],
+        vec!["tag", "--add", "low", "tidy the cache"],
+        vec!["tag", "--add", "why/upkeep", "tidy the cache"],
+        vec![
+            "tag",
+            "--add",
+            "high",
+            "--add",
+            "why/upkeep",
+            "tidy the cache",
+        ],
+        vec!["add", "--why", "upkeep", "chore(ci): another #high #size/s"],
+    ] {
+        let o = agent(&h, &args);
+        assert!(!o.status.success(), "{args:?} was taken");
+        assert!(
+            String::from_utf8_lossy(&o.stderr).contains("reason"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        assert_eq!(h.board(), kept, "{args:?} wrote");
+    }
+    let feed = h.run(&["board", "--json"]);
+    ok(&feed);
+    assert!(
+        String::from_utf8_lossy(&feed.stdout).contains(r#""prio_why":"red-main""#),
+        "{}",
+        String::from_utf8_lossy(&feed.stdout)
+    );
 }
 
 fn agent(h: &Home, verb: &[&str]) -> Output {
@@ -1519,7 +1592,7 @@ fn a_hand_session_files_no_row_without_a_priority_and_no_standing_epic() {
     let o = add_as(&h, &[HAND], &[], "fix(ui): the pause menu flickers #size/s");
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("rules/priority.md"));
-    let o = add_human(&h, &[HAND], "epic(ui): ui to standard #low");
+    let o = add_human(&h, &[HAND], "epic(ui): ui to standard");
     assert_eq!(o.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&o.stderr).contains("standing epic"));
     assert!(ids(&h.board()).is_empty() && ids(&h.sheet()).is_empty());
@@ -1532,8 +1605,8 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
     let h = Home::new("hand-epic-system");
     h.systems(Some(SYSTEMS));
     for text in [
-        "epic(views): no such system #low",
-        "epic(menu): an alias, not the id #low",
+        "epic(views): no such system",
+        "epic(menu): an alias, not the id",
     ] {
         let o = add_human(&h, &[HAND], text);
         assert_eq!(o.status.code(), Some(1), "{text}");
@@ -1544,10 +1617,18 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
         );
     }
     assert!(ids(&h.sheet()).is_empty(), "{}", h.sheet());
+    // An epic takes no priority from a session: it ranks as its most urgent open row.
+    let o = add_human(&h, &[HAND], "epic(docs): every page has an owner #low");
+    assert_eq!(o.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&o.stderr).contains("ranks as its most urgent open row"),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
     ok(&add_human(
         &h,
         &[HAND],
-        "epic(docs): every page has an owner #low",
+        "epic(docs): every page has an owner",
     ));
     assert!(
         h.sheet().contains("epic(docs): every page has an owner"),
@@ -1555,11 +1636,7 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
         h.sheet()
     );
     // A queue item's epic waits in the outbox before any system is looked up.
-    let o = add_human(
-        &h,
-        &[("AGENT_QUEUE_ITEM", "ar-9")],
-        "epic(views): proposed #low",
-    );
+    let o = add_human(&h, &[("AGENT_QUEUE_ITEM", "ar-9")], "epic(views): proposed");
     assert_eq!(o.status.code(), Some(4));
 }
 
@@ -1662,6 +1739,29 @@ fn a_game_with_no_version_of_its_own_is_on_its_parents_version_and_window() {
 }
 
 #[test]
+fn a_game_its_parent_versions_declares_itself_on_its_readme() {
+    let h = Home::new("front-page");
+    // notes prints the canonical path, so compare against it.
+    let game = fs::canonicalize(with_game(&h, "")).unwrap();
+    let front = |h: &Home| {
+        let out = h.run(&["projects", "--front-page", game.to_str().unwrap()]);
+        ok(&out);
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    // The README has no `Version:` line, and its stage tag is still the one the shell reads.
+    assert_eq!(front(&h), game.join("README.md").display().to_string());
+    // NEGATIVE CONTROL: with no version parent in the registry, the same README is no sheet,
+    // and the project declares itself on its summary.
+    fs::write(
+        h.0.join("map.json"),
+        r#"{"trackers": {"demo": {"type": "game", "code": "dm", "tagGlob": "v*"},
+            "game": {"type": "game", "code": "gm"}}}"#,
+    )
+    .unwrap();
+    assert_eq!(front(&h), game.join("summary.md").display().to_string());
+}
+
+#[test]
 fn a_game_that_keeps_its_own_version_stays_out_of_its_parents_window() {
     // NEGATIVE CONTROL for the test above: a game sheet still carrying a `Version:` line is
     // its own number until it is migrated, so nothing reads it twice.
@@ -1704,10 +1804,11 @@ fn a_new_game_row_from_a_session_waits_for_the_next_window_of_a_focus_parent() {
 }
 
 /// A focus is a short push: `--set focus` records its end on a `Focus until:` head line
-/// (`--hours`, default 4, at most 24), any other prio drops the line, and a focus whose end has
-/// passed, or that has none, reads as high in `--prios`.
+/// (`--hours`, default 4, at most 24), `--set normal` drops the tag and the line, and a focus
+/// whose end has passed, or that has none, is not listed by `--prios`. The retired ladder words
+/// are refused.
 #[test]
-fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
+fn a_focus_ends_on_its_hours_and_then_reads_as_none() {
     let h = Home::new("focus-until");
     let readme = h.0.join("notes/projects/current/demo/README.md");
     ok(&h.run(&[
@@ -1720,7 +1821,7 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
     );
     let prios = String::from_utf8(h.run(&["projects", "--prios"]).stdout).unwrap();
     assert!(prios.contains("demo\tfocus"), "{prios}");
-    // Its end passed: the tag stays on the page, the read says high.
+    // Its end passed: the tag stays on the page, the read lists nothing.
     let line = sheet
         .lines()
         .find(|l| l.starts_with("Focus until:"))
@@ -1731,7 +1832,7 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
     )
     .unwrap();
     let prios = String::from_utf8(h.run(&["projects", "--prios"]).stdout).unwrap();
-    assert!(prios.contains("demo\thigh"), "{prios}");
+    assert!(!prios.contains("demo"), "{prios}");
     // NEGATIVE CONTROL: a bare tag with no end is no focus either.
     fs::write(
         &readme,
@@ -1739,13 +1840,19 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
     )
     .unwrap();
     let prios = String::from_utf8(h.run(&["projects", "--prios"]).stdout).unwrap();
-    assert!(prios.contains("demo\thigh"), "{prios}");
-    // Any other prio drops the end; hours past the cap, or on another prio, are refused.
+    assert!(!prios.contains("demo"), "{prios}");
+    // normal drops the tag and the end; the retired ladder words write nothing.
     ok(&h.run(&["projects", "--prio", "demo", "--set", "focus"]));
-    ok(&h.run(&["projects", "--prio", "demo", "--set", "low"]));
+    for retired in ["high", "low"] {
+        let o = h.run(&["projects", "--prio", "demo", "--set", retired]);
+        assert!(!o.status.success(), "--set {retired} is refused");
+        assert!(String::from_utf8_lossy(&o.stderr).contains("retired"));
+    }
+    assert!(fs::read_to_string(&readme).unwrap().contains("#prio/focus"));
+    ok(&h.run(&["projects", "--prio", "demo", "--set", "normal"]));
     let sheet = fs::read_to_string(&readme).unwrap();
     assert!(
-        !sheet.contains("Focus until:") && sheet.contains("#prio/low"),
+        !sheet.contains("Focus until:") && !sheet.contains("#prio/"),
         "{sheet}"
     );
     assert!(!h
@@ -1753,7 +1860,7 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
         .status
         .success());
     assert!(!h
-        .run(&["projects", "--prio", "demo", "--set", "high", "--hours", "2"])
+        .run(&["projects", "--prio", "demo", "--set", "normal", "--hours", "2"])
         .status
         .success());
     assert!(!h.run(&["projects", "--hours", "2"]).status.success());
@@ -1766,4 +1873,386 @@ fn a_focus_ends_on_its_hours_and_then_reads_as_high() {
         .run(&["projects", "--prio", "demo", "--set", "focus", "--hours", "0.001"])
         .status
         .success());
+}
+
+impl Home {
+    /// Gate `demo`'s intake, as `intake_gated` gates agent-runtime's (a top-level key, so it goes
+    /// before the profile table).
+    fn gate(&self) {
+        let path = self.0.join("config.toml");
+        let cfg = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("intake_gated = [\"demo\"]\n{cfg}")).unwrap();
+    }
+}
+
+#[test]
+fn a_gated_board_takes_a_hand_sessions_row_only_as_a_fault_or_the_persons_ask() {
+    let h = Home::new("gate-hand");
+    let polish = "chore(ui): tidy the menu colours #low #size/s";
+    // NEGATIVE CONTROL: with no gate the same add files.
+    ok(&add_as(&h, &[HAND], &[], polish));
+    h.gate();
+    for (flags, text) in [
+        (vec![], "feat(ui): a sparkline on the menu #normal #size/s"),
+        (
+            vec!["--why", "fault"],
+            "fix(ui): the menu logs twice #size/s",
+        ),
+        (
+            vec!["--why", "requested"],
+            "feat(ui): a chip nobody asked for #size/s",
+        ),
+        (
+            vec![],
+            "feat(ui): a badge it tagged itself #high #requested #size/s",
+        ),
+    ] {
+        let o = add_as(&h, &[HAND], &flags, text);
+        assert_eq!(
+            o.status.code(),
+            Some(6),
+            "{text}: {}",
+            String::from_utf8_lossy(&o.stderr)
+        );
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            err.contains("evidenced fault") && err.contains("notes improve demo"),
+            "{err}"
+        );
+    }
+    assert_eq!(
+        ids(&h.board()).len(),
+        1,
+        "nothing more filed: {}",
+        h.board()
+    );
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &["--why", "runtime-fault"],
+        "fix(api): the export times out #size/s",
+    ));
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &["--want", "human"],
+        "feat(cli): a json flag the person asked for #high #size/s",
+    ));
+    // Health work, as `notes improve --check` judges it, whatever reason it names.
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &["--why", "upkeep"],
+        "test(parser): add a regression test for quoted heredoc lines #size/s",
+    ));
+    // A person at a terminal is never gated.
+    ok(&add_as(
+        &h,
+        &[],
+        &[],
+        "docs(readme): typed by a person #size/s",
+    ));
+    assert_eq!(ids(&h.board()).len(), 5, "{}", h.board());
+}
+
+impl Home {
+    /// Set `intake_daily_cap` (a top-level key, so it goes before the profile table).
+    fn daily_cap(&self, n: u32) {
+        let path = self.0.join("config.toml");
+        let cfg = fs::read_to_string(&path).unwrap();
+        fs::write(&path, format!("intake_daily_cap = {n}\n{cfg}")).unwrap();
+    }
+
+    /// `notes ingest cap --json` for today's `demo` line: (admitted, refused).
+    fn cap_today(&self) -> (u64, u64) {
+        let out = self.run(&["ingest", "cap", "--days", "1", "--json"]);
+        let line = String::from_utf8_lossy(&out.stdout).into_owned();
+        let v: serde_json::Value = line
+            .lines()
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+            .find(|v| v["project"] == "demo")
+            .expect("demo is listed");
+        (
+            v["admitted"].as_u64().unwrap(),
+            v["refused"].as_u64().unwrap(),
+        )
+    }
+}
+
+/// Ten distinct rows from the machine filer `fleet-bench`, so none twins another or needs a shortlist.
+fn fill_the_day(h: &Home) {
+    for (i, w) in [
+        "the export stalls",
+        "menus flicker",
+        "saves truncate",
+        "audio pops",
+        "tabs reorder",
+        "logins expire",
+        "fonts blur",
+        "maps lag",
+        "chat drops",
+        "sync loops",
+    ]
+    .iter()
+    .enumerate()
+    {
+        ok(&add_as(
+            h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &[],
+            &format!("fix(a{i}): {w} #size/s"),
+        ));
+    }
+}
+
+#[test]
+fn a_gated_board_takes_ten_new_agent_rows_a_day_and_holds_the_eleventh() {
+    let h = Home::new("gate-cap");
+    h.gate();
+    fill_the_day(&h);
+    assert_eq!(ids(&h.board()).len(), 10, "{}", h.board());
+    // NEGATIVE CONTROL: the eleventh row of a machine filer, a plan's phase and a hand session's
+    // evidenced fault are all held, with the cap named and nothing written.
+    let held = [
+        add_as(
+            &h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &[],
+            "fix(z1): the eleventh breaks #size/s",
+        ),
+        add_from(
+            &h,
+            "agent-queue",
+            &[
+                ("AGENT_QUEUE_ITEM", "ar-9"),
+                ("AQ_ITEM_PLAN", "/tmp/plan.md"),
+            ],
+            &["--agent"],
+            &["--origin", "plan"],
+            "feat(z2): a plan phase past the cap #size/s",
+        ),
+        add_as(
+            &h,
+            &[HAND],
+            &["--why", "runtime-fault"],
+            "fix(z3): a session's evidenced fault #size/s",
+        ),
+        // a high reason is a fault, not an urgent red
+        add_as(
+            &h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &["--why", "red-main"],
+            "check(z4): main is red #high #size/s",
+        ),
+    ];
+    for o in &held {
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(6), "{err}");
+        assert!(
+            err.contains("10 new agent rows") && err.contains("intake_daily_cap"),
+            "{err}"
+        );
+    }
+    assert_eq!(
+        ids(&h.board()).len(),
+        10,
+        "nothing more filed: {}",
+        h.board()
+    );
+    // A retry of the same row (fleet-bench tries its red every pass) is held again, and the record
+    // keeps one refusal for it.
+    let again = add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &[],
+        "fix(z1): the eleventh breaks #size/s",
+    );
+    assert_eq!(again.status.code(), Some(6));
+    // A row that twins an open one joins it (exit 3): it is no new row, so the cap is not asked.
+    let twin = add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &[],
+        "fix(a0): the export stalls #size/s",
+    );
+    assert_eq!(
+        twin.status.code(),
+        Some(3),
+        "{}",
+        String::from_utf8_lossy(&twin.stderr)
+    );
+    // The person's own words and an urgent red are admitted on the full day, and so is a story
+    // row, the board's copy of an item already started.
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &["--want", "human"],
+        "feat(w1): a json flag the person asked for #high #size/s",
+    ));
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &["--why", "outage"],
+        "fix(w2): the board is down #urgent #size/s",
+    ));
+    ok(&add_from(
+        &h,
+        "agent-queue",
+        &[("AGENT_QUEUE_ITEM", "ar-9")],
+        &["--agent"],
+        &["--origin", "agent-queue"],
+        "chore(w3): a story row of an item already started #size/s",
+    ));
+    ok(&add_as(&h, &[], &[], "docs(w4): typed by a person #size/s"));
+    assert_eq!(ids(&h.board()).len(), 14, "{}", h.board());
+    // The record counts the ten, the urgent red, and the four rows the cap turned away.
+    assert_eq!(h.cap_today(), (11, 4));
+}
+
+#[test]
+fn the_daily_cap_is_the_configs_number_and_zero_turns_it_off() {
+    let h = Home::new("gate-cap-conf");
+    h.gate();
+    h.daily_cap(2);
+    for (i, w) in ["the export stalls", "menus flicker"].iter().enumerate() {
+        ok(&add_as(
+            &h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &[],
+            &format!("fix(a{i}): {w} #size/s"),
+        ));
+    }
+    let o = add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &[],
+        "fix(a9): saves truncate #size/s",
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(6),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(String::from_utf8_lossy(&o.stderr).contains("2 new agent rows"));
+    // NEGATIVE CONTROL: 0 is no cap.
+    let off = Home::new("gate-cap-off");
+    off.gate();
+    off.daily_cap(0);
+    fill_the_day(&off);
+    ok(&add_as(
+        &off,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &[],
+        "fix(z1): the eleventh breaks #size/s",
+    ));
+}
+
+#[test]
+fn a_board_off_the_gate_list_is_capped_all_the_same_and_its_gate_stays_off() {
+    let h = Home::new("gate-cap-free");
+    fill_the_day(&h);
+    assert_eq!(ids(&h.board()).len(), 10, "{}", h.board());
+    // NEGATIVE CONTROL: the next machine row, plan phase and hand row are held by the cap alone:
+    // the gate is off for demo, so a hand row with no reason is no evidence-gate refusal.
+    let held = [
+        add_as(
+            &h,
+            &[("AGENTCTL_NAME", "fleet-bench")],
+            &[],
+            "fix(z1): the twelfth breaks #size/s",
+        ),
+        add_from(
+            &h,
+            "agent-queue",
+            &[
+                ("AGENT_QUEUE_ITEM", "ar-9"),
+                ("AQ_ITEM_PLAN", "/tmp/plan.md"),
+            ],
+            &["--agent"],
+            &["--origin", "plan"],
+            "feat(z2): a plan phase past the cap #size/s",
+        ),
+        add_as(&h, &[HAND], &[], "chore(z3): more polish #low #size/s"),
+    ];
+    for o in &held {
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert_eq!(o.status.code(), Some(6), "{err}");
+        assert!(
+            err.contains("10 new agent rows") && !err.contains("evidenced fault"),
+            "{err}"
+        );
+    }
+    // The person's want and an urgent red pass, and `notes ingest cap` lists the board.
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &["--want", "human"],
+        "feat(w1): a json flag the person asked for #high #size/s",
+    ));
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-bench")],
+        &["--why", "outage"],
+        "fix(w2): the board is down #urgent #size/s",
+    ));
+    assert_eq!(ids(&h.board()).len(), 12, "{}", h.board());
+    assert_eq!(h.cap_today(), (11, 3));
+}
+
+#[test]
+fn a_gated_board_files_a_sessions_follow_up_only_as_a_fault_and_the_persons_line_always() {
+    let h = Home::new("gate-file");
+    h.gate();
+    let readme = h.0.join("notes/projects/current/demo/README.md");
+    fs::write(
+        &readme,
+        "# demo\nVersion: v0.1.0\n\n## Inbox\n\
+         - #agent #from/abcdef01 the menu could fade in\n\
+         - #agent #from/abcdef01 the menu drops input on resume\n\
+         - the person wants a pause chip\n\n## Tasks\n",
+    )
+    .unwrap();
+    let file = |pick: &str, row: &str, want: bool| {
+        let mut args = vec![
+            "ptask", "demo", "file", pick, "--lane", "agent", "--as", row,
+        ];
+        if want {
+            args.extend(["--want", "human"]);
+        }
+        h.run(&args)
+    };
+    let o = file(
+        "could fade",
+        "feat(ui): the menu fades in #normal #why/feature #size/s",
+        false,
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(6),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(
+        h.sheet().contains("the menu could fade in"),
+        "left in the inbox: {}",
+        h.sheet()
+    );
+    ok(&file(
+        "drops input",
+        "fix(ui): the menu drops input on resume #high #why/runtime-fault #size/s",
+        false,
+    ));
+    // The person's line carries no #from/ and is filed whatever its reason.
+    ok(&file(
+        "pause chip",
+        "feat(ui): a pause chip #normal #size/s",
+        true,
+    ));
+    let board = h.board();
+    assert!(!board.contains("fades in"), "{board}");
+    assert!(
+        board.contains("drops input on resume") && board.contains("a pause chip"),
+        "{board}"
+    );
 }

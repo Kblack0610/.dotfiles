@@ -70,15 +70,13 @@ document.addEventListener("click", async (e) => {
 
 // Session actions (hub-core session_actions on the server). A button only arms a confirm
 // here in the page; the confirm's own button sends it. Parked rows offer only unpark.
-const DANGER = ["stop", "cancel"];
-// The button for each session action (hub-core session_actions.rs names); an unknown one shows its name.
-const ACT_LABEL = { interrupt: "Interrupt", park: "Park session", unpark: "Unpark session", move: "Move to account",
-  stop: "Stop session", cancel: "Cancel task", "approve-plan": "Approve plan" };
-const actLabel = (n) => ACT_LABEL[n] || n;
+// The words and the dangers come from the server (hub-core session_actions::options): one place names each action.
+const actOpt = (n) => st.opts.actions.find((o) => o.name === n) || { name: n, label: n, describe: "", danger: false };
+const actLabel = (n) => actOpt(n).label;
 st.act = { confirm: null, busy: false, msg: "", err: false };
 // Why the last Approve plan failed, by session target, shown beside its button.
 st.approveErr = {};
-st.opts = { describe: {}, accounts: [] };
+st.opts = { actions: [], accounts: [] };
 api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs(); }).catch((e) => console.warn(e));
 
 // A fold opened on a phone stays open across redraws. Only then: a wide screen has them all open.
@@ -95,14 +93,14 @@ function renderActs() {
     const others = st.opts.accounts.filter((n) => n !== a.account);
     const pick = c.action === "move"
       ? `<select id="act-acct">${others.map((n) => `<option>${esc(n)}</option>`).join("")}</select>` : "";
-    const danger = DANGER.includes(c.action) ? " danger" : "";
-    html += `<span class="q">${esc(actLabel(c.action))}? This will ${esc(st.opts.describe[c.action] || "")}.${a.attached ? " You are attached to it." : ""} (${esc(a.target)})</span>${pick}`
+    const danger = actOpt(c.action).danger ? " danger" : "";
+    html += `<span class="q">${esc(actLabel(c.action))}? This will ${esc(actOpt(c.action).describe)}.${a.attached ? " You are attached to it." : ""} (${esc(a.target)})</span>${pick}`
       + (c.action === "approve-plan" && a.question && a.question.kind === "plan"
         ? `<div class="planpeek md">${md(a.question.text.split("\n").filter((l) => l.trim()).slice(0, 6).join("\n"))}</div>` : "")
       + `<button class="btn primary${danger}" data-go ${st.act.busy || (c.action === "move" && !others.length) ? "disabled" : ""}>Yes, ${esc(actLabel(c.action).toLowerCase())}</button>`
       + `<button class="btn" data-no ${st.act.busy ? "disabled" : ""}>Cancel</button>`;
   } else {
-    const btns = (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
+    const btns = (a.actions || []).map((n) => `<button class="btn${actOpt(n).danger ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
     if (btns) html += pfold("acts", "Actions", `<div class="actrow">${btns}</div>`);
   }
   if (st.act.msg) html += (st.act.err ? errPanel(st.act.msg, { cls: "msg" }) : `<div class="msg">${esc(st.act.msg)}</div>`);
@@ -135,7 +133,7 @@ $("acts").addEventListener("click", async (e) => {
 function renderHead() {
   $("v-seg").hidden = $("d-dot").hidden = false;
   $("d-dot").className = "dot " + st.sel.status;
-  $("d-name").textContent = `${st.sel.name || st.sel.target}  ${st.sel.summary || ""}`;
+  $("d-name").textContent = `${st.sel.name || st.sel.target}  ${st.sel.summary?.text || ""}`;
   // A parked session has no claude to type into or screen to show: only its transcript.
   const noPane = !!(st.sel.parked || st.sel.paneless);
   $("compose").hidden = noPane;
@@ -319,21 +317,22 @@ $("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlK
 
 // hub_core::layout's tabs, in its order (its `TABS`); agent-web's
 // tab_names_are_the_layout test fails when this drifts. RETIRED_TABS is layout::RETIRED: an old `#name` still lands.
-const TAB_NAMES = ["home", "daily", "log", "queue", "sessions", "projects", "releases", "alerts", "infra", "schedules", "costs", "stack"];
+const TAB_NAMES = ["home", "daily", "reports", "log", "queue", "sessions", "projects", "releases", "alerts", "infra", "schedules", "costs", "stack"];
 const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "shepherd": "sessions", "fleet": "sessions", "jobs": "infra", "ci": "infra", "machines": "infra", "today": "log", "history": "log", "actions": "log", "outbox": "daily", "focus": "daily", "numbers": "home", "board": "projects" };
 // layout::MOVED: a section that left its tab (`#fleet/tokens`) opens on its new tab at that section,
 // and a third field is the view it opens with (`#infra/cloud` is Machines under its cloud chip).
 const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "fleet/workers": ["sessions", "fleet"],
   "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
-  "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
+  "infra/governor": ["infra", "machines"], "infra/cloud": ["infra", "machines", "ms=cloud"],
   "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"],
-  "home/running": ["queue", "table"] };
+  "home/running": ["queue", "running"],
+  "queue/table": ["queue", "needs"], "queue/waiting": ["queue", "needs"], "queue/review": ["queue", "pr"], "queue/queued": ["queue", "next"], "queue/done": ["log", "work"] };
 // hub_core::layout's inner tabs: a strip of sub-views inside one tab, each a group of its sections.
 // assets.rs `inner_tabs_are_the_layout` fails when this line drifts.
-const INNER_TABS = {"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"projects":{"tabs":[["list","Projects",["cards"]],["all","Board",["board"]],["sprints","Sprints",["sprints"]],["deliverables","Deliverables",["deliverables"]],["coverage","Coverage",["coverage"]],["ladder","Ladder",["stages","requirements"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]],["flow","Flow",["swimlanes"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","spend","table"]],["limits","Limits",["burn","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"stack":{"tabs":[["flows","Flows",["flows"]],["skills","Skills",["skills"]],["agents","Agents",["agents"]],["hooks","Hooks",["hooks"]],["rules","Rules",["rules"]]]}};
+const INNER_TABS = {"reports":{"tabs":[["today","Today",["needs","stream","digests","captures"]],["archive","Archive",["archive"]]]},"log":{"tabs":[["work","Work",["work"]],["day","Day",["day","history"]],["actions","Actions",["actions"]],["changes","Changes",["changes"]],["rundowns","Rundowns",["rundowns"]],["judges","Judges",["verdicts"]],["ranked","Ranked",["ranked","forecast"]]]},"sessions":{"tabs":[["sessions","Sessions",["sessions","detail"]],["runners","Runners",["fleet"]],["shepherd","Shepherd",["shepherd"]]]},"projects":{"tabs":[["list","Projects",["cards"]],["all","Board",["board"]],["sprints","Sprints",["sprints"]],["deliverables","Deliverables",["deliverables"]],["coverage","Coverage",["coverage"]],["ladder","Ladder",["stages","requirements"]]]},"releases":{"tabs":[["apps","Apps",["table","detail"]],["runs","Release runs",["runs"]],["flow","Flow",["swimlanes"]]]},"alerts":{"tabs":[["firing","Firing",["health","firing"]],["fixes","Fixes",["fixes"]],["watches","Watches",["watches"]],["history","History",["history"]]]},"infra":{"tabs":[["machines","Machines",["machines","pools"]],["runners","Runners",["ci","waiting","local"]],["runs","Runs",["runs"]],["pipelines","Pipelines",["pipelines"]],["tests","Tests",["tests","quarantine"]],["jobs","Jobs",["jobs"]]]},"costs":{"tabs":[["spend","Spend",["totals","sessions","spend","table"]],["limits","Limits",["burn","allowance","pace","consumers"]],["models","Models",["tokens","langfuse","sections"]],["budget","Budget",["budget"]]]},"stack":{"tabs":[["flows","Flows",["flows"]],["skills","Skills",["skills"]],["agents","Agents",["agents"]],["hooks","Hooks",["hooks"]],["rules","Rules",["rules"]]]}};
 // hub_core::layout::PROJECT_PAGE: an opened project's inner tabs (`#projects/<profile>/<name>/<id>`),
 // Overview first. assets.rs `project_page_is_the_layout` fails when this line drifts.
-const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["sprint","Sprint",["p-sprint","p-sprint-queued","p-sprint-past"]],["rows","Rows",["p-rows"]],["deliverables","Deliverables",["p-build"]],["releases","Releases",["p-versions","p-apps","p-legacy"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]],["departments","Departments",["p-departments"]]];
+const PROJECT_PAGE = [["overview","Overview",["p-needs","p-flight","p-systems"]],["sprint","Sprint",["p-sprint","p-sprint-queued","p-sprint-past"]],["rows","Rows",["p-rows"]],["deliverables","Deliverables",["p-build"]],["releases","Releases",["p-versions","p-apps","p-legacy"]],["stage","Stage",["p-stage"]],["activity","Activity",["p-shipped","p-timeline","p-note"]],["knowledge","Knowledge",["p-space-head","p-space-docs","p-space-repo","p-space-adrs","p-space-changelog","p-space-plans","p-space-lessons","p-space-sessions","p-space-outcomes","p-space-notes","p-space-work"]],["departments","Departments",["p-departments"]]];
 // hub_core::layout::PROJECT_DEPTS and PROJECT_RETIRED: the chips of the Departments tab, and an old inner id
 // (a retired department tab lands on `departments/<dept>`) on its new one.
 // assets.rs `project_page_is_the_layout` fails when these lines drift.
@@ -369,9 +368,10 @@ function innerOf(tab, name) {
 const homeOf = (tab, section) => (INNER_TABS[tab] ? INNER_TABS[tab].tabs.find((t) => t[2].includes(section)) : undefined);
 // The inner tab each tab last showed, so a tab button brings it back as it was.
 const lastInner = {};
-// A tab whose arg also names a record (`#projects/<profile>/<name>`) keeps an arg that is not
-// one of its inner tabs: the record's page is under its first inner tab (projects.js).
-const RECORD_ARGS = ["projects"];
+// A tab whose arg also names a record (`#projects/<profile>/<name>`, `#reports/<id or date>`) keeps
+// an arg that is not one of its inner tabs: projects.js draws the record's page under its first
+// inner tab, reports.js opens the report or the day.
+const RECORD_ARGS = ["projects", "reports"];
 // A record page an older link named with no word (`#sessions/<id>`, before a session's page sat
 // under `sessions/` so an id named like an inner tab still opens): any other arg is its id.
 const BARE_PAGES = { sessions: "sessions" };

@@ -80,7 +80,7 @@
 #                        # (its mode footer), answering the folder trust prompt on the way
 #
 # Accounts: ~/.config/claude-acct/accounts, one `name dir` per line (`-` = default).
-# Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [rpm=N run_rpm=N] [run_usd=N] [parent=name] [alert=off] [priority=must|low] [host=a,b]`
+# Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [rpm=N run_rpm=N] [run_usd=N] [rpd=N] [parent=name] [alert=off] [priority=must|low] [host=a,b]`
 # per line (host: the row exists only on those hosts, by hostname; CLAUDE_ACCT_HOST overrides it), for every source that is not a Claude account (read by this script only; cl and
 # agent-panel read accounts). Kinds: codex (ref: the Codex sessions dir; the plan's rate limits come
 # from the newest rollout), agy (ref: an AI Pro quota group's bucket stem; its windows from
@@ -88,7 +88,8 @@
 # (ref: a key file of a member; the team's budget from /team/info). reserve overrides RESERVE_PCT,
 # max_live caps the running queue items on the source; rpm (the provider's request limit) over run_rpm
 # (what one run draws) caps them too, the lower of the two winning; run_usd (what one run costs) paces
-# a route with a deployment budget to the runs that budget carries a window (route_paced); parent names a pool the source spends inside:
+# a route with a deployment budget to the runs that budget carries a window (route_paced); rpd (requests a UTC day) refuses a
+# --model route once its requests since 00:00 UTC reach it (route_rpd); parent names a pool the source spends inside:
 # a source has room only when its parent does. A harness is tied to its source by `source` in
 # harnesses.json. Every kind is normalized to the one usage row, so room, status and the textfile
 # treat all sources alike. Each source is in exactly one of the two files.
@@ -170,12 +171,12 @@ sources_elsewhere() {
         { for (i = 4; i <= NF; i++) if ($i ~ /^host=/) { h = "," substr($i, 6) ","; if (index(h, "," me ",") == 0) print $1 } }' "$SRC_CONF"
 }
 
-# sources -> "name US kind US ref US reserve US max_live US parent US alert US priority US run_usd US basis" per line of the
+# sources -> "name US kind US ref US reserve US max_live US parent US alert US priority US run_usd US basis US rpd" per line of the
 # sources file, max_live the computed cap (cap_of) and basis how it was reached. A
 # line that cannot be read says so on stderr and is skipped, so a typo never becomes a silent row.
 sources() {
     [[ -f "$SRC_CONF" ]] || return 0
-    local name kind ref opts opt reserve max_live parent alert priority rpm run_rpm run_usd basis seen=''
+    local name kind ref opts opt reserve max_live parent alert priority rpm run_rpm run_usd rpd basis seen=''
     while read -r name kind ref opts; do
         [[ -z "$name" || "$name" == \#* ]] && continue
         if [[ ! "$name" =~ ^[A-Za-z0-9_-]+$ || -z "$kind" || -z "$ref" ]]; then
@@ -188,7 +189,7 @@ sources() {
             echo "claude-acct: $SRC_CONF: $name is listed twice; the later line is skipped" >&2; continue
         fi
         seen+=" $name"
-        reserve='' max_live='' parent='' alert='' priority='' host='' rpm='' run_rpm='' run_usd=''
+        reserve='' max_live='' parent='' alert='' priority='' host='' rpm='' run_rpm='' run_usd='' rpd=''
         for opt in $opts; do
             case "$opt" in
                 host=*) host=${opt#host=} ;;
@@ -197,6 +198,7 @@ sources() {
                 rpm=*) rpm=${opt#rpm=} ;;
                 run_rpm=*) run_rpm=${opt#run_rpm=} ;;
                 run_usd=*) run_usd=${opt#run_usd=} ;;
+                rpd=*) rpd=${opt#rpd=} ;;
                 parent=*) parent=${opt#parent=} ;;
                 alert=on|alert=off) alert=${opt#alert=} ;;
                 priority=must|priority=low) priority=${opt#priority=} ;;
@@ -207,9 +209,11 @@ sources() {
         [[ -z "$host" || ",$host," == *",${CLAUDE_ACCT_HOST:-${HOSTNAME%%.*}},"* ]] || continue
         [[ -z "$reserve" || "$reserve" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "claude-acct: $SRC_CONF: $name: reserve is not a number" >&2; reserve=''; }
         [[ -z "$max_live" || "$max_live" =~ ^[0-9]+$ ]] || { echo "claude-acct: $SRC_CONF: $name: max_live is not a whole number" >&2; max_live=''; }
+        [[ -z "$rpd" || "$rpd" =~ ^[1-9][0-9]*$ ]] || { echo "claude-acct: $SRC_CONF: $name: rpd is not a whole number over 0" >&2; rpd=''; }
+        [[ -z "$rpd" || "$kind" == litellm-* ]] || { echo "claude-acct: $SRC_CONF: $name: rpd caps a gateway route, so a $kind source has none" >&2; rpd=''; }
         [[ -z "$run_usd" || "$run_usd" =~ $NUM_RE && ! "$run_usd" =~ ^0*\.?0*$ ]] || { echo "claude-acct: $SRC_CONF: $name: run_usd is not a number over 0" >&2; run_usd=''; }
         IFS=$'\t' read -r max_live basis < <(cap_of "$name" "$max_live" "$rpm" "$run_rpm")
-        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent" "$alert" "$priority" "$run_usd" "$basis"
+        printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent" "$alert" "$priority" "$run_usd" "$basis" "$rpd"
     done < "$SRC_CONF"
 }
 
@@ -236,13 +240,13 @@ cap_of() {
 # priced route's starts a window (route_paced).
 runs_in() { awk -v a="$1" -v b="$2" 'BEGIN { n = int(a / b); print (n < 1 ? 1 : n) }'; }
 
-# rows_in -> "name US kind US ref US reserve US max_live US parent US alert US priority US run_usd US basis" for every row usage_json reads:
+# rows_in -> "name US kind US ref US reserve US max_live US parent US alert US priority US run_usd US basis US rpd" for every row usage_json reads:
 # the Claude accounts (kind claude, ref their dir), then the sources when USAGE_SOURCES=1
 rows_in() {
     local name dir row
     while IFS=$'\037' read -r name dir; do
         usage_wants "$name" || continue
-        printf '%s\037claude\037%s\037\037\037\037\037\037\037\n' "$name" "$dir"
+        printf '%s\037claude\037%s\037\037\037\037\037\037\037\037\n' "$name" "$dir"
     done < <(accounts)
     if [[ "${USAGE_SOURCES:-0}" == 1 ]]; then
         while IFS= read -r row; do
@@ -535,6 +539,22 @@ route_shed() {
     out=$(prom_q "max(litellm_deployment_state{model_id=\"$id\"}) > 0") ||
         { echo "claude-acct: ${1##*/}: Prometheus is unreadable, so whether the gateway sheds $2 is not read" >&2; return 1; }
     jq -e '.data.result | length > 0' <<< "$out" >/dev/null 2>&1
+}
+
+# route_rpd <model> <rpd> -> the requests the gateway took on <model> (requested_model) since 00:00 UTC,
+# read from Prometheus; nothing when it cannot be read, which reads as room and says so on stderr, as
+# route_shed does. room --source refuses a start at <rpd> or more: beam-free 429s past about 2,000
+# requests a UTC day (home-config apps/litellm/README.md), and route_shed sees that only once the
+# upstream already refuses, so starts went in as the quota ran out (ar-5732). increase() extrapolates,
+# and reads nothing in the first scrape or two after midnight (0), so the count is near, not exact:
+# the rpd headroom under the provider's limit covers it.
+route_rpd() {
+    local now secs out n
+    [[ "$1" != *[\"\\]* ]] || return 0
+    now="${CLAUDE_ACCT_NOW:-$(date +%s)}"; secs=$(( now % 86400 )); (( secs > 0 )) || secs=1
+    out=$(prom_q "sum(increase(litellm_proxy_total_requests_metric_total{requested_model=\"$1\"}[${secs}s]))" "$now") ||
+        { echo "claude-acct: Prometheus is unreadable, so today's requests on $1 are not read against its rpd $2" >&2; return 0; }
+    n=$(jq -r '.data.result[0].value[1] // "0" | tonumber | floor' <<< "$out" 2>/dev/null) && [[ "$n" =~ ^[0-9]+$ ]] && printf '%s' "$n"
 }
 
 # route_paced <key file> <model> <source> <run_usd> -> why the route takes no more starts this window,
@@ -882,14 +902,16 @@ token_expiry() {
 
 # check_tokens: one line; exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
 # be read. An account with no token trips it too: the token is its only sign-in, so a session on it
-# stops on "Not logged in". The claude-acct-tokens Sentinel watch runs this hourly.
+# stops on "Not logged in". The claude-acct-tokens Sentinel watch runs this hourly. A locked rbw says
+# `unreadable:`, which the watch reads as UNKNOWN (ERROR past its hold), not a token trip: the
+# 2026-11-24 reboot locked it and the watch paged a token fault with every token good (ar-3611).
 check_tokens() {
     local warn now="${CLAUDE_ACCT_NOW:-$(date +%s)}" name dir exp end days ok=0 out=''
     local -a none=() soon=()
     warn=$(pace_get TOKEN_WARN_DAYS)
-    [[ -n "$warn" ]] || return 2
+    [[ -n "$warn" ]] || { echo "unreadable: TOKEN_WARN_DAYS is not set"; return 2; }
     if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
-        echo "cannot read tokens: rbw is missing or locked"; return 2
+        echo "unreadable: rbw is missing or locked, so no token was checked (rbw unlock)"; return 2
     fi
     while IFS=$'\037' read -r name dir; do
         if ! exp=$(token_expiry "$name"); then none+=("$name"); continue; fi
@@ -899,6 +921,10 @@ check_tokens() {
         elif (( days <= ${warn%.*} )); then soon+=("$name expires $exp, in ${days}d")
         else ok=$((ok + 1)); fi
     done < <(accounts)
+    # A read that failed because rbw locked mid-loop is no missing token.
+    if (( ${#none[@]} )) && ! rbw unlocked >/dev/null 2>&1; then
+        echo "unreadable: rbw locked while tokens were read (rbw unlock)"; return 2
+    fi
     if (( ${#soon[@]} )); then out="token: $(printf '%s; ' "${soon[@]}")"; out="${out%; }"; fi
     if (( ${#none[@]} )); then out+="${out:+; }no token: ${none[*]} (claude-acct setup-token <name>)"; fi
     echo "${out:-$ok tokens good}"
@@ -1020,8 +1046,14 @@ MODEL_WEIGHT_SONNET="$(pace_get MODEL_WEIGHT_SONNET)"
 MODEL_WEIGHT_HAIKU="$(pace_get MODEL_WEIGHT_HAIKU)"
 CLAUDE_SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-$(pace_get CLAUDE_SESSION_RATE)}"
 ACTIVE_MIN="$(pace_get ACTIVE_MIN)"
-# exported: room and FLEET_JQ read it as $ENV.CLAUDE_ACCT_BURN_OVER_PCT (def over)
-export CLAUDE_ACCT_BURN_OVER_PCT="${CLAUDE_ACCT_BURN_OVER_PCT:-$(pace_get BURN_OVER_PCT)}"
+# The allowance in force: a window or standing override set by pace-conf, else the line in pace.conf
+# (pace_get reads all three). Exported for jq: room and FLEET_JQ read it in OVER_JQ.
+export CLAUDE_ACCT_BURN_OVER_PCT="$(pace_get BURN_OVER_PCT)"
+BURN_OVER_SRC="$(pace_source BURN_OVER_PCT)"
+# BURN_OVER_PCT as a factor: how far past what the week sustains the working sessions may burn
+# before room calls an account committed, and the allowance dispatch's spare reads. The one jq
+# prefix room and FLEET_JQ share.
+OVER_JQ='def over: 1 + ($ENV.CLAUDE_ACCT_BURN_OVER_PCT // "0" | tonumber) / 100;'
 [[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$CLAUDE_SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" && -n "$ACTIVE_MIN" && -n "$CLAUDE_ACCT_BURN_OVER_PCT" ]] || exit 1
 RATE_TTL="${CLAUDE_ACCT_RATE_TTL:-3600}"
 # The one bash Prometheus reader (prom_q, PROM_URL from the hub's own env file). A dead endpoint
@@ -1142,7 +1174,7 @@ session_rate() {
 # nospend skips Prometheus, so a `cl` off the LAN does not wait out its timeout.
 usage_json() {
     local name kind dir json rc state now resets start gone used over live spend lives rate slack reserve
-    local own_reserve max_live parent win paced srclive row_reserve email working cost read_at run_usd basis
+    local own_reserve max_live parent win paced srclive row_reserve email working cost read_at run_usd basis rpd
     srclive='{}'; [[ "${USAGE_SOURCES:-0}" == 1 ]] && srclive=$(source_live)
     # The room verdict is for automatic starts, so the machine-mode level scales its slack and reserve;
     # pick's rank, which `cl` uses, keeps the conf's own reserve.
@@ -1150,7 +1182,7 @@ usage_json() {
     now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     if [[ "${1:-}" == nospend ]]; then spend=null; else spend=$(spend_24h); fi
     lives=$(live_of)
-    while IFS=$'\037' read -r name kind dir own_reserve max_live parent alert _ run_usd basis; do
+    while IFS=$'\037' read -r name kind dir own_reserve max_live parent alert _ run_usd basis rpd; do
         case "$kind" in
             claude) json=$(fetch "$name"); rc=$?; rate=$(session_rate "${1:-}") ;;
             litellm-*) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$SESSION_RATE ;; # a dollar budget has no pace
@@ -1181,11 +1213,11 @@ usage_json() {
         row_reserve=$reserve
         [[ -z "$own_reserve" ]] || read -r _ row_reserve < <(level_scale CLAUDE_ACCT_PACE_SLACK_PCT "$PACE_SLACK_PCT" CLAUDE_ACCT_RESERVE_PCT "$own_reserve")
         jq -cn --arg name "$name" --arg dir "$dir" --arg email "$email" --arg state "$state" \
-            --arg kind "$kind" --argjson window "$win" --argjson paced "$paced" --arg parent "$parent" --arg max_live "$max_live" --arg alert "$alert" --arg basis "$basis" --arg run_usd "$run_usd" \
+            --arg kind "$kind" --argjson window "$win" --argjson paced "$paced" --arg parent "$parent" --arg max_live "$max_live" --arg alert "$alert" --arg basis "$basis" --arg run_usd "$run_usd" --arg rpd "$rpd" \
             --argjson usage "$json" --arg used "$used" --arg gone "$gone" \
             --arg resets "$resets" --arg read_at "$read_at" --argjson live "${live:-0}" --argjson working "${working:-0}" --argjson cost "${cost:-0}" --argjson spend "$spend" \
             --argjson now "$now" --argjson reserve "${own_reserve:-$RESERVE_PCT}" --argjson rate "$rate" \
-            --argjson room_slack "$slack" --argjson room_reserve "$row_reserve" '
+            --argjson room_slack "$slack" --argjson room_reserve "$row_reserve" "$OVER_JQ"'
             def num: if . == "" then null else tonumber end;
             # What is left of the week, as points an hour to the reset, less what the live sessions
             # there already burn: lower is better. One hour per spare point, so the account whose
@@ -1193,8 +1225,6 @@ usage_json() {
             # already empty before the reset ranks behind every one with room, and among those the
             # one its sessions empty last goes first. A 5h window near full goes last.
             # Points an hour the rest of the week can carry to the reset, landing at 100% on it.
-            # BURN_OVER_PCT: how far past what the week sustains the working sessions may burn before committed refuses
-            def over: 1 + ($ENV.CLAUDE_ACCT_BURN_OVER_PCT | tonumber) / 100;
             def sustain: (100 - (.week_used // 0)) / (if .resets == null then $window / 3600 else ([(.resets - $now) / 3600, 0.1] | max) end);
             # When used falls back to the week gone plus the slack, the moment room drops `pace`:
             # with no spend the clock catches up at 100 points a week; at this burn, only when burn
@@ -1265,6 +1295,7 @@ usage_json() {
              paced: $paced, window: $window, reserve: $room_reserve, plan: ($usage.plan // null), reached: ($usage.reached // false),
              parent: (if $parent == "" then null else $parent end), alert: ($alert != "off"), max_live: (if $max_live == "" then null else ($max_live | tonumber) end),
              max_live_basis: (if $basis == "" then null else $basis end), run_usd: (if $run_usd == "" then null else ($run_usd | tonumber) end),
+             rpd: (if $rpd == "" then null else ($rpd | tonumber) end),
              usd_used: ($usage.usd_used // null), usd_max: ($usage.usd_max // null),
              five_hour: ($usage.five_hour.utilization // null),
              five_hour_resets: ($usage.five_hour.resets_at // null | if . == null then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null) end),
@@ -1304,8 +1335,14 @@ all_json() {
           else . end'
 }
 
-# day_time <epoch> -> "Thu 19:00", or - when there is none
-day_time() { if [[ -n "$1" && "$1" != null ]]; then date -d "@$1" '+%a %H:%M'; else printf -- -; fi; }
+# day_time <epoch> -> "Thu 19:00", "11-30 16:00" when it is more than 6 days out (a weekday would
+# read as this coming one), or - when there is none
+day_time() {
+    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
+    if [[ -z "$1" || "$1" == null ]]; then printf -- -
+    elif (( $1 - now > 6 * 86400 )); then date -d "@$1" '+%m-%d %H:%M'
+    else date -d "@$1" '+%a %H:%M'; fi
+}
 
 # cmd_run [--acct <name>] [claude args]: exec claude on the account cmd_pick chooses. Main is the
 # unset dir, so an alt account inherited from a parent session is dropped, not passed on. The
@@ -1388,7 +1425,7 @@ cmd_status() {
     fi
     local line state rows
     rows=$(all_json)
-    printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
+    printf '%-8s %-4s %-5s %-5s %-11s %-11s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
         SOURCE 5H WEEK GONE RUNS-OUT RESETS LIVE '24H-$' BURN/H KEEPS/H ON-PACE ROOM KIND DETAIL
     while IFS= read -r line; do
         [[ -n "$line" ]] || continue
@@ -1397,7 +1434,7 @@ cmd_status() {
             printf '%-8s fetch failed (%s live)\n' "$(jq -r .name <<< "$line")" "$(jq -r .live <<< "$line")"
             continue
         fi
-        printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
+        printf '%-8s %-4s %-5s %-5s %-11s %-11s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
             "$(jq -r .name <<< "$line")" \
             "$(jq -r 'if .five_hour == null then "-" else "\(.five_hour | floor)%" end' <<< "$line")" \
             "$(jq -r 'if .week_used == null then "-" else "\(.week_used | floor)%" end' <<< "$line")" \
@@ -1432,9 +1469,6 @@ on_pace_word() {
 # readable paced rows; null when there is none, so an unread fleet publishes no figure rather than a
 # quiet one. `rows` is those rows, for the back-on-pace times; `rate` is the points one working Opus
 # session burns an hour, and `working_cost` the working sessions in Opus-equivalents (weight_of).
-# `spare` is how many more working Opus sessions the pool keeps at pace on top of this burn
-# ((keeps - burn) / rate, below 0 when the burn is past keeps): fleet-dispatch's pace target, so a
-# Sonnet or Haiku session, burning less, leaves room for more (ar-3230).
 # `unread` is each Claude account that could not be read, with its live sessions and when it was last
 # read: those sessions are in no burn figure, so the fleet line names it instead of reading low (bnb
 # was unread five hours on 2026-11-18, and the sum counted 3 of 4 weeks without a word).
@@ -1445,9 +1479,12 @@ on_pace_word() {
 # burn the pool carries without going into the reserve: the lowest of each step's points over its
 # hours from now, and of what the weeks give an hour for good, the reserve kept. `runs_out` is when this burn empties the pool into the reserve, null when it
 # lasts to the last account's reset (the horizon: past it every week is fresh, and keeps says whether
-# the burn fits). `spare` is the sessions more that keeps times BURN_OVER_PCT's allowance carries. 2026-11-10: keeps was each account's points left over its own reset, which read
-# 1.9/h with no reset counted, while the four weeks carried 2.1/h (ar-1529).
-FLEET_JQ='def over: 1 + ($ENV.CLAUDE_ACCT_BURN_OVER_PCT | tonumber) / 100;
+# the burn fits). `spare` is how many more working Opus sessions the pool carries on top of this
+# burn at the allowance ((keeps x over - burn) / rate, below 0 when the burn is past it):
+# fleet-dispatch's pace target, so a Sonnet or Haiku session, burning less, leaves room for more
+# (ar-3230). 2026-11-10: keeps was each account's points left over its own reset, which read 1.9/h
+# with no reset counted, while the four weeks carried 2.1/h (ar-1529).
+FLEET_JQ="$OVER_JQ"'
 def fleet($now): [.[] | select(.kind == "claude")] as $c
     | [$c[] | select(.state == "ok" and .week_used != null and .paced)] as $a
     | ([$a[] | select(.resets != null)
@@ -1464,27 +1501,39 @@ def fleet($now): [.[] | select(.kind == "claude")] as $c
     | {live: ([$c[].live] | add // 0), working: ([$c[].working] | add // 0), working_cost: ([$c[].working_cost] | add // 0),
        rows: $a, rate: $rate, burn: $burn, keeps: $keeps,
        unread: [$c[] | select(.state == "unread") | {name, working, since: .read_at}],
+       allowed: (if $keeps == null then null else $keeps * over end),
        spare: (if $keeps == null or $burn == null or ($rate // 0) <= 0 then null else ($keeps * over - $burn) / $rate | floor end),
        runs_out: (if $p == [] or $burn == null or $burn <= 0 then null
                   else first($steps[] | select(.has / $burn < .at) | $now + .has / $burn * 3600 | floor) // null end)};'
 
+# allowance_text -> the allowance in force and where it comes from, for the fleet line: "400%
+# (default)", "300% (override)", or "300% to Tue 22:00" for a window
+allowance_text() {
+    case "$BURN_OVER_SRC" in
+        window\ *) printf '%s%% to %s' "$CLAUDE_ACCT_BURN_OVER_PCT" "$(date -d "@${BURN_OVER_SRC#window }" '+%a %H:%M')" ;;
+        *) printf '%s%% (%s)' "$CLAUDE_ACCT_BURN_OVER_PCT" "$BURN_OVER_SRC" ;;
+    esac
+}
+
 # fleet_line <usage rows> -> the Claude accounts in one line (FLEET_JQ): live sessions, burn against
-# what the windows can carry, how many sessions that is, and when the first one is back on pace, at
-# this burn and with every session stopped.
+# what the windows can carry, how many sessions that is at the allowance in force, and when the
+# first one is back on pace, at this burn and with every session stopped.
 fleet_line() {
     local j now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     j=$(jq -sc --argjson now "$now" "$FLEET_JQ"' fleet($now)
         | {live, working, working_cost, rate, burn: (.burn // 0), keeps: (.keeps // 0), spare, runs_out, unread,
            burn_at: ([.rows[] | select(.on_pace_burn != null) | {name, t: .on_pace_burn}] | min_by(.t)),
            idle_at: ([.rows[] | select(.on_pace_idle != null) | {name, t: .on_pace_idle}] | min_by(.t))}' <<< "$1") || return 0
-    jq -r --argjson now "$now" '
+    jq -r --argjson now "$now" --arg allow "$(allowance_text)" '
         def at: if .t <= $now then "\(.name) now" else "\(.name) \(.t | strflocaltime("%a %H:%M"))" end;
         "fleet: \(.live) live (\(.working) working"
         + (if (.working_cost * 10 | round) != .working * 10 then ", \(.working_cost * 10 | round / 10) at Opus cost" else "" end)
         + "), burn \(.burn * 10 | round / 10)/h vs \(.keeps * 10 | round / 10)/h sustainable"
-        + (if .keeps > 0 then " (\(.burn / .keeps * 10 | round / 10)x" else " (" end)
-        + (if .rate != null and .rate > 0 then ", carries ~\(.keeps / .rate | floor) Opus" else "" end)
-        + (if .spare == null then ")" elif .spare > 0 then ", room for ~\(.spare) more)" else ", no room)" end)
+        + " (" + ([if .keeps > 0 then "\(.burn / .keeps * 10 | round / 10)x" else empty end,
+                  if .rate != null and .rate > 0 then "carries ~\(.keeps / .rate | floor) Opus" else empty end,
+                  "allowance \($allow)",
+                  if .spare == null then empty elif .spare > 0 then "room for ~\(.spare) more" else "no room" end]
+                 | join(", ")) + ")"
         + (if .runs_out != null then ", into the reserve \(.runs_out | strflocaltime("%a %H:%M")) before the resets"
            else ", lasts to the resets" end)
         + ", back on pace: "
@@ -1546,6 +1595,10 @@ cmd_textfile() {
             "claude_fleet_live_sessions \(.live)",
             (.burn // empty | "claude_fleet_burn_points_per_hour \(.)"),
             (.keeps // empty | "claude_fleet_sustain_points_per_hour \(.)"),
+            # the allowance in force times what the pool sustains, and the sessions more it carries
+            # (spare, the pace target of dispatch), so a surface shows them without a second formula
+            (.allowed // empty | "claude_fleet_allowed_points_per_hour \(.)"),
+            (.spare // empty | "claude_fleet_spare_sessions \(.)"),
             (.runs_out // empty | "claude_fleet_run_out_timestamp_seconds \(.)")),
         (rows("claude_account_cost_24h_usd"; .usd_24h)),
         (rows("claude_account_usd_used"; .usd_used)),
@@ -1662,9 +1715,19 @@ room_source() {
         why=$(route_paced "$ref" "$model" "$name" "$run_usd") && [[ -n "$why" ]]; then
         row=$(jq -c --arg w "$why" '.room += {ok: false, reason: "route_pace", reasons: ((.room.reasons // []) + ["route_pace"]), why: $w}' <<< "$row")
     fi
+    # The route's daily request cap: rpd requests since 00:00 UTC (route_rpd); the count rides on the row.
+    local rpd n
+    rpd=$(jq -r '.rpd // empty' <<< "$row")
+    if [[ -n "$model" && -n "$rpd" && "$kind" == litellm-* ]] && jq -e .room.ok <<< "$row" >/dev/null &&
+        n=$(route_rpd "$model" "$rpd") && [[ -n "$n" ]]; then
+        row=$(jq -c --argjson n "$n" --arg m "$model" '.rpd_used = $n | if $n >= .rpd then .room += {ok: false, reason: "route_rpd",
+            reasons: ((.room.reasons // []) + ["route_rpd"]),
+            why: "\($n) requests on \($m) since 00:00 UTC, at its rpd of \(.rpd); it takes starts again after midnight UTC"} else . end' <<< "$row")
+    fi
     if [[ -n "$json" ]]; then jq -c . <<< "$row"
     else jq -r '"\(.name): " + (if .room.ok then "room, \(.week_used // 0 | floor)% of its window used"
         + (if .usd_max != null then " ($\(.usd_used * 100 | round / 100) of $\(.usd_max | floor))" else "" end)
+        + (if .rpd_used != null then ", \(.rpd_used) of its rpd \(.rpd) requests today" else "" end)
         else .room.why end)' <<< "$row"
     fi
     jq -e '.room.ok' <<< "$row" >/dev/null && return 0
@@ -1698,9 +1761,10 @@ cmd_room() {
     # ranks behind every paced one, so naming the closest alone hid why a mostly unused week was
     # refused. Only a committed one carries the week clock, which is what refuses it. \x1f, not a
     # tab: read collapses a run of tabs, so an empty field would shift the rest.
-    IFS=$'\x1f' read -r pick pdir pline unread closest cwhy within < <(jq -r '
-        def tail: if .run_out != null then ", runs out \(.run_out | strflocaltime("%a %H:%M")) at this rate"
-                  elif .resets != null then ", lasts to its reset \(.resets | strflocaltime("%a %H:%M"))" else "" end;
+    IFS=$'\x1f' read -r pick pdir pline unread closest cwhy within < <(jq -r --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" '
+        def at: if . - $now > 518400 then strflocaltime("%m-%d %H:%M") else strflocaltime("%a %H:%M") end;
+        def tail: if .run_out != null then ", runs out \(.run_out | at) at this rate"
+                  elif .resets != null then ", lasts to its reset \(.resets | at)" else "" end;
         ([.[] | select(.room.ok)] | sort_by(.rank) | first) as $p
         | ([.[] | select(.state != "unread")] | sort_by(.rank) | first) as $c
         | [($p.name // ""), ($p.dir // ""),
@@ -2037,13 +2101,19 @@ await() {
 }
 
 # exited <server> <pane> <pid> <stop shells 0|1> -- the claude is gone; with --stop-shells
-# it answers the background-shell dialog on the way with "Exit and stop tasks".
+# it answers the background-shell dialog on the way with "Exit and stop tasks", once per claude:
+# the dialog stays on screen until claude is gone, and a second answer would be typed into the
+# pane's shell ahead of the resume (ar-5592). A dialog that closes and comes back is answered
+# again; an answer lost while it stays drawn is not resent, and the move times out on it.
+# EXIT_ANSWERED lives across polls only because await runs exited in this shell, never a subshell.
+EXIT_ANSWERED=""
 exited() {
     [[ -d "$PROC/$3" ]] || return 0
     [[ "$4" == 1 ]] || return 1
     local n
     n=$(dialog_choice "$(tmux -L "$1" capture-pane -p -t "$2" 2>/dev/null)")
-    [[ -n "$n" ]] && tmux -L "$1" send-keys -t "$2" "$n"
+    [[ -n "$n" ]] || { EXIT_ANSWERED=""; return 1; }
+    [[ "$EXIT_ANSWERED" != "$3" ]] && tmux -L "$1" send-keys -t "$2" "$n" && EXIT_ANSWERED=$3
     return 1
 }
 

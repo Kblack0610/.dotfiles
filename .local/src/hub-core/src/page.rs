@@ -144,6 +144,9 @@ pub struct Page {
     pub check_groups: Vec<String>,
     /// The Timeline fold; None when `project-timeline` could not be read (named in `errors`).
     pub timeline: Option<crate::timeline::Timeline>,
+    /// The Knowledge tab: the project's docs, plans, lessons, notes, asks and queue items in one
+    /// place (`crate::space`); None when `notes projects <name> --json` could not be read.
+    pub space: Option<crate::space::Space>,
     pub errors: Vec<String>,
 }
 
@@ -683,6 +686,9 @@ pub fn read_with(
     let (timeline, errors) = crate::timeline::read(runner, name, channels, now);
     p.timeline = timeline;
     p.errors.extend(errors);
+    p.space = crate::space::read(runner, name)
+        .map_err(|e| p.errors.push(e))
+        .ok();
     let chain = chain().map_err(|e| p.errors.push(e)).ok();
     if let Some(c) = &chain {
         p.flow_line = Some(epics::flow_line(&c.flow));
@@ -702,12 +708,17 @@ pub fn read_with(
     {
         p.systems_says += &format!(" ({n} rows with no epic)");
     }
-    p.shipped_says = match p.shipped.len() {
+    p.shipped_says = shipped_says(p.shipped.len());
+    p
+}
+
+/// The Activity tab's count of shipped versions in words.
+fn shipped_says(n: usize) -> String {
+    match n {
         0 => "none yet".into(),
         1 => "1 version".into(),
         n => format!("{n} versions"),
-    };
-    p
+    }
 }
 
 /// The page for a name alone, as `hub projects --page` and agent-web read it: its stage from
@@ -934,6 +945,13 @@ mod tests {
                     stage.into(),
                 ),
                 ("notes projects --roadmap game", 0, roadmap.into()),
+                (
+                    "notes projects game --json",
+                    0,
+                    r#"{"project":"game","stage":"alpha","lab":{"core":[{"path":"README.md","title":"Game"}]}}"#.into(),
+                ),
+                ("agent-ask list", 0, String::new()),
+                ("agent-queue list", 0, String::new()),
                 (
                     "notes projects --sprints game",
                     0,
@@ -1238,7 +1256,7 @@ mod tests {
                     "progress":{"open":4,"done":6,"open_weight":4,"done_weight":6,"closed_weight_28d":28},
                     "target_version":"v0.2.0","target_on":"2026-11-12",
                     "target_work":{"open_weight":4,"closed_weight_28d":28,"filed_weight_28d":0},
-                    "window":{"version":"v0.2.0","opened":"2026-11-05","due":"2026-11-12","committed":5,"delivered":2,"open":3,"dropped":0,"interrupted":0}}]"#
+                    "window":{"version":"v0.2.0","opened":"2026-11-05","due":"2026-11-12","committed":5,"delivered":2,"open":3,"open_weight":3,"dropped":0,"interrupted":0}}]"#
                     .into(),
             ),
         );
@@ -1263,7 +1281,7 @@ mod tests {
              rows, due 11-12 (3 days left). On time: target v0.2.0 by 11-12: late 1 day (ETA \
              ~11-13). Gate to beta: 4 of 12 met. Playtests waiting: 3.",
             "the playtests are this profile's, the window's days are counted from the feed's day, \
-             and no close in 28 days cannot close the 3 rows open in 3 days"
+             and a target ETA a day late is at risk though the window's 3 open fit its 3 days"
         );
         assert!(line.is_ascii() && !line.contains("  "), "{line}");
     }

@@ -11,26 +11,18 @@ Each simple command of the line is matched as written and past each wrapper word
 `sudo`, `env`), walked with forge-guard's splitter, `bash -c` and `eval` included. An entry with
 a pipe or a redirect is matched against the whole line. Fail-open: any error allows the command.
 """
-import importlib.util
 import json
 import os
 import re
-import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import hooklib
+
 OPERATORS = set("|<>")
 
 MSG = (
     "deny-list-guard: Claude's settings.json denies Bash({entry}), and a Codex run is held to the "
     "same list. Do it another way, or stop and ask the human."
 )
-
-
-def _forge():
-    spec = importlib.util.spec_from_file_location("forge_guard", os.path.join(HERE, "forge-guard.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def squeeze(s):
@@ -85,29 +77,21 @@ def reason(cmd, settings):
     for e, rx, whole in rules:
         if whole and rx.search(line):
             return MSG.format(entry=e)
-    words = list(walk(_forge(), cmd))
+    words = list(walk(hooklib.load("forge-guard"), cmd))
     for e, rx, whole in rules:
         if not whole and any(rx.fullmatch(w) for w in words):
             return MSG.format(entry=e)
     return None
 
 
-def main():
-    data = json.load(sys.stdin)
+# gate: hook-deny-list-guard
+def decide(data):
     if data.get("tool_name", "Bash") != "Bash":
-        return
+        return None
     cmd = (data.get("tool_input") or {}).get("command") or ""
     settings = os.path.join(os.environ.get("CLAUDE_HOME", os.path.expanduser("~/.claude")), "settings.json")
-    r = cmd.strip() and reason(cmd, settings)
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            # gate: hook-deny-list-guard
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
+    return reason(cmd, settings) if cmd.strip() else None
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

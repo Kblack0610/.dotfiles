@@ -16,7 +16,7 @@
 //! A look word marks a question (`md::look_tag`): `#ask` for a quick answer, `#investigate` for a
 //! longer look. The sweep answers it with one read-only model call and `notes outbox answer`
 //! takes the line out of the outbox and writes the question and answer to today's
-//! `inbox/<date>.md`, so it never reaches a project's inbox or becomes a row.
+//! `captures/<date>.md`, so it never reaches a project's inbox or becomes a row.
 //!
 //! Every tag a line may carry is one row of `md::INTAKE_TAGS`, which the skeleton's header,
 //! `notes outbox tags` and `show --json` (agent-web's legend) print.
@@ -24,7 +24,8 @@
 //! The section is also a doc the human edits from agent-web's Daily outbox view: `notes outbox show`
 //! gives its path, its items and their hash, and `notes outbox put --base <hash>` replaces them only when
 //! nothing wrote the file since (compare-and-swap), so a page never clobbers a sweep's move.
-//! Every write here holds one lock (`.outbox.lock` beside the file).
+//! Every write here holds one lock (`.outbox.lock` beside the file); `move_line`, which writes a
+//! ptask sheet too, takes the ptask lock before it, the order every ptask verb takes them in.
 
 use crate::config::Profile;
 use crate::ingest::{self, Event};
@@ -304,10 +305,11 @@ pub fn move_line(
     why: Option<&str>,
     raw: &str,
 ) -> Result<i32> {
-    let _lock = lock(p)?;
-    // The project sheet is a ptask sheet, so its write holds the ptask lock too (always taken
-    // after the outbox's: no ptask verb takes the outbox lock, so the order cannot invert).
+    // The project sheet is a ptask sheet, so its write holds the ptask lock too, taken before the
+    // outbox's as every ptask verb takes them (`ptask --agent add` appends here under its ptask
+    // lock). Taken the other way round, a triage move and an agent add deadlock.
     let _sheet = project_tasks::lock(p)?;
+    let _lock = lock(p)?;
     let content = read(p)?;
     let Some((rest, line)) = sheet::take_in(&content, HEADING, |l| l.raw == raw) else {
         eprintln!("no outbox line is '{raw}'");
@@ -346,7 +348,7 @@ fn question(text: &str) -> String {
 }
 
 /// `notes outbox answer -- <raw>`, the answer on stdin: take the outbox line that is `raw` byte
-/// for byte out of the outbox and write it, with the answer, to today's `inbox/<date>.md` as
+/// for byte out of the outbox and write it, with the answer, to today's `captures/<date>.md` as
 /// `- HH:MM <look>: <question> - <answer's first line>` (`ask` or `investigate`, the line's tag;
 /// a line with neither is an `ask`), the answer's other lines indented under it.
 /// The capture is written first, so a failed second write leaves the question in both places
@@ -505,10 +507,6 @@ mod tests {
             None
         );
         assert_eq!(
-            md::without_look_tag("#investigate why slow #p:demo"),
-            "why slow #p:demo"
-        );
-        assert_eq!(
             answer(
                 &p,
                 &log,
@@ -521,7 +519,7 @@ mod tests {
         let left: Vec<String> = lines(&p).unwrap().into_iter().map(|l| l.text).collect();
         assert_eq!(left, ["stays"]);
         let day = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let note = fs::read_to_string(p.inbox.join(format!("{day}.md"))).unwrap();
+        let note = fs::read_to_string(p.captures.join(format!("{day}.md"))).unwrap();
         assert!(
             note.contains("ask: is my mac ok? - Yes, up 3 days.\n  * load 0.2\n"),
             "{note}"
@@ -549,7 +547,7 @@ mod tests {
         fs::write(&p.outbox, format!("{}{raw}\n", skeleton())).unwrap();
         assert_eq!(answer(&p, &log, raw, "Disk 3 is resyncing.").unwrap(), 0);
         let day = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let note = fs::read_to_string(p.inbox.join(format!("{day}.md"))).unwrap();
+        let note = fs::read_to_string(p.captures.join(format!("{day}.md"))).unwrap();
         assert!(
             note.contains("investigate: why is the nas slow - Disk 3 is resyncing."),
             "{note}"

@@ -161,9 +161,7 @@ pub(crate) fn aimed(line: &str, today: NaiveDate, aim: Option<&Aim>) -> Rank {
         Some(n) if n <= DUE_SOON_DAYS => 2,
         _ => DUE_LATER,
     };
-    let prio = md::task_priority(line)
-        .and_then(|t| md::PRIORITIES.iter().position(|(_, hash, _)| *hash == t))
-        .unwrap_or(md::DEFAULT_PRIORITY) as u8;
+    let prio = md::priority_index(line).unwrap_or(md::DEFAULT_PRIORITY) as u8;
     let head = line.split("<!--").next().unwrap_or(line);
     let req = u8::from(!head.split_whitespace().any(|t| t == REQUESTED));
     let created = md::find_created(line, today).unwrap_or(today);
@@ -179,9 +177,7 @@ pub(crate) fn aimed(line: &str, today: NaiveDate, aim: Option<&Aim>) -> Rank {
 mod tests {
     use super::*;
 
-    fn d(s: &str) -> NaiveDate {
-        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
-    }
+    use crate::md::date as d;
 
     const TODAY: &str = "2026-11-09";
 

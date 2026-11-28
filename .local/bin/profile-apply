@@ -69,63 +69,6 @@ fi
 
 log_info "Profile: ${PROFILE_NAME:-unknown}"
 
-# Setup Wayland/Hyprland environment variables
-setup_wayland_env() {
-    export XDG_SESSION_TYPE=wayland
-    export XDG_CURRENT_DESKTOP=Hyprland
-    export XDG_SESSION_DESKTOP=Hyprland
-
-    # Mozilla/Firefox Wayland
-    export MOZ_ENABLE_WAYLAND=1
-
-    # Qt Wayland
-    export QT_QPA_PLATFORM=wayland
-    export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
-
-    # SDL Wayland
-    export SDL_VIDEODRIVER=wayland
-
-    # Clutter (GNOME apps)
-    export CLUTTER_BACKEND=wayland
-
-    # Detect GPU and set WLR environment variables
-    if [[ -x "$HOME/.local/bin/detect-gpu" ]]; then
-        local gpu_info
-        gpu_info=$("$HOME/.local/bin/detect-gpu" 2>/dev/null)
-
-        if [[ -n "$gpu_info" ]]; then
-            # Parse GPU info
-            local gpu_type gpu_card gpu_render
-            gpu_type=$(echo "$gpu_info" | grep "^TYPE=" | cut -d'=' -f2)
-            gpu_card=$(echo "$gpu_info" | grep "^CARD=" | cut -d'=' -f2)
-            gpu_render=$(echo "$gpu_info" | grep "^RENDER=" | cut -d'=' -f2)
-
-            log_info "GPU: $gpu_type ($gpu_card)"
-
-            # Set WLR device if we have a specific card
-            if [[ "$gpu_card" != "none" && -e "/dev/dri/$gpu_card" ]]; then
-                export WLR_DRM_DEVICES="/dev/dri/$gpu_card"
-            fi
-
-            # GPU-specific settings
-            case "$gpu_type" in
-                nvidia)
-                    export WLR_NO_HARDWARE_CURSORS=1
-                    export LIBVA_DRIVER_NAME=nvidia
-                    export __GLX_VENDOR_LIBRARY_NAME=nvidia
-                    export GBM_BACKEND=nvidia-drm
-                    ;;
-                amd)
-                    export LIBVA_DRIVER_NAME=radeonsi
-                    ;;
-                intel)
-                    export LIBVA_DRIVER_NAME=iHD
-                    ;;
-            esac
-        fi
-    fi
-}
-
 # Start Sunshine if enabled in profile (runs after Hyprland starts)
 start_sunshine_if_enabled() {
     if [[ "${PROFILE_START_SUNSHINE:-false}" == "true" ]]; then

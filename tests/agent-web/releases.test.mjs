@@ -420,7 +420,7 @@ test("a builds event re-reads Release runs (scope=release, its own view keys) an
 
 test("opening a release run reads its jobs and log inside the Releases page", async () => {
   showRuns();
-  detail = { key: {}, title: "#77 Deploy green", header: "end to end 2m", coverage: "full", coverage_text: "full", attempts: [1], jobs: [], rates_error: null };
+  detail = { key: {}, title: "#77 Deploy green", header: "end to end 2m", coverage: "full", coverage_text: "full", attempts: [1], jobs: [] };
   asked.length = 0;
   fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === "tr.br" ? { dataset: { bkey: "github.com|o/binks|77|1" } } : null) } });
   await settled();

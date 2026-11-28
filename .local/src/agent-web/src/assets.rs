@@ -83,6 +83,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("work.js", JS, include_bytes!("../static/work.js")),
     ("actions.js", JS, include_bytes!("../static/actions.js")),
     ("fleet.js", JS, include_bytes!("../static/fleet.js")),
+    ("reports.js", JS, include_bytes!("../static/reports.js")),
     ("focus.js", JS, include_bytes!("../static/focus.js")),
     (
         "inter.woff2",
@@ -141,7 +142,7 @@ fn built() -> &'static Built {
     })
 }
 
-/// The sidebar's tabs under their group headings, from `hub_core::layout`. Three tabs carry a
+/// The sidebar's tabs under their group headings, from `hub_core::layout`. Four tabs carry a
 /// count that their own script fills in.
 fn nav_html() -> String {
     let mut html = String::new();
@@ -153,6 +154,7 @@ fn nav_html() -> String {
         }
         let badge = match t.id {
             "home" => "<span id=\"ask-badge\"></span>",
+            "reports" => "<span id=\"reports-badge\"></span>",
             "queue" => "<span id=\"queue-badge\"></span>",
             "sessions" => "<span id=\"wait-badge\"></span>",
             _ => "",
@@ -416,8 +418,12 @@ mod tests {
             .filter_map(|p| p.split_once(':').map(|(k, _)| k.trim()))
             .filter(|k| !k.contains('"') && !k.is_empty())
             .collect();
-        let columns = hub_core::session_table::SessionRow::COLUMNS;
-        assert_eq!(keys, columns[..columns.len() - 3]);
+        let columns: Vec<&str> = hub_core::session_table::SessionRow::COLUMNS
+            .iter()
+            .copied()
+            .filter(|c| !["item", "source", "session"].contains(c))
+            .collect();
+        assert_eq!(keys, columns);
     }
 
     #[test]
@@ -430,6 +436,66 @@ mod tests {
             !queue.contains("qfl.data.flow"),
             "/api/flow carries the line now"
         );
+    }
+
+    #[test]
+    fn queue_sections_are_the_layout() {
+        // queue.js keeps each section's view-key prefix (`Section::pre`), and every section is a
+        // layout section of the tab, in the same order, with its own page size.
+        use hub_core::queue::Section;
+        let js = include_str!("../static/queue.js");
+        let line = js
+            .lines()
+            .find_map(|l| l.strip_prefix("const Q_PRE = "))
+            .expect("queue.js has Q_PRE");
+        let got: serde_json::Value =
+            serde_json::from_str(line.trim_end_matches(';')).expect("Q_PRE is JSON");
+        let want: serde_json::Map<String, serde_json::Value> = Section::ALL
+            .iter()
+            .map(|s| (s.id().to_string(), s.pre().into()))
+            .collect();
+        assert_eq!(got, serde_json::Value::Object(want));
+        let tab = hub_core::layout::resolve("queue").expect("queue");
+        let ids: Vec<&str> = Section::ALL.iter().map(|s| s.id()).collect();
+        let at = tab
+            .sections
+            .iter()
+            .position(|s| *s == ids[0])
+            .expect("needs");
+        assert_eq!(tab.sections[at..at + ids.len()], ids[..]);
+        for id in ids {
+            assert!(
+                hub_core::layout::PAGE_ROWS
+                    .iter()
+                    .any(|(s, _)| *s == format!("queue/{id}")),
+                "{id} has its own page size"
+            );
+        }
+        // Each section's columns are real queue columns (`#` is quoted in the map).
+        use hub_core::table::Row;
+        for sec in ["needs", "stuck", "running", "pr", "next"] {
+            let head = format!("  {sec}: {{");
+            let line = js
+                .lines()
+                .find(|l| l.starts_with(&head))
+                .unwrap_or_else(|| panic!("no Q_COLS row for {sec}"));
+            let keys: Vec<&str> = line
+                .split(": [")
+                .filter_map(|p| p.rsplit([' ', '{']).next())
+                .map(|k| k.trim_matches('"'))
+                .filter(|k| !k.is_empty() && !k.contains(']') && !k.contains('}'))
+                .collect();
+            assert!(keys.contains(&"title"), "{sec}: {keys:?}");
+            for key in keys {
+                assert!(
+                    hub_core::queue::QueueRow::<'static>::COLUMNS
+                        .iter()
+                        .copied()
+                        .any(|c| c == key),
+                    "{sec}: {key}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -651,6 +717,7 @@ mod tests {
                 include_str!("../static/projects.js").to_string(),
             ),
             ("stack", include_str!("../static/stack.js").to_string()),
+            ("reports", include_str!("../static/reports.js").to_string()),
         ];
         for t in hub_core::layout::TABS
             .iter()

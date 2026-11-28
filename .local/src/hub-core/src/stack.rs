@@ -162,19 +162,19 @@ impl Row for Skill {
     fn val(&self, col: &str) -> Val {
         match col {
             "skill" => Val::Text(self.name.clone()),
-            "category" => text(&self.category),
-            "repo" => text(&self.repo),
+            "category" => Val::word(&self.category),
+            "repo" => Val::word(&self.repo),
             "calls" => self.calls.map(|n| n as f64).into(),
-            "runners" => text(&self.runners.join(", ")),
-            "drift" => text(&self.drift_words().join(", ")),
+            "runners" => Val::word(&self.runners.join(", ")),
+            "drift" => Val::word(&self.drift_words().join(", ")),
             _ => Val::None,
         }
     }
 
     fn vals(&self, col: &str) -> Vec<Val> {
         match col {
-            "runners" => self.runners.iter().map(|r| text(r)).collect(),
-            "drift" => self.drift_words().iter().map(|w| text(w)).collect(),
+            "runners" => self.runners.iter().map(|r| Val::word(r)).collect(),
+            "drift" => self.drift_words().iter().map(|w| Val::word(w)).collect(),
             _ => vec![self.val(col)],
         }
     }
@@ -239,13 +239,13 @@ impl Row for Agent {
     fn val(&self, col: &str) -> Val {
         match col {
             "agent" => Val::Text(self.name.clone()),
-            "model" => text(if self.model.is_empty() {
+            "model" => Val::word(if self.model.is_empty() {
                 "inherit"
             } else {
                 &self.model
             }),
-            "tools" => text(&self.tools),
-            "repo" => text(&self.repo),
+            "tools" => Val::word(&self.tools),
+            "repo" => Val::word(&self.repo),
             _ => Val::None,
         }
     }
@@ -299,15 +299,15 @@ impl Row for Hook {
 
     fn val(&self, col: &str) -> Val {
         match col {
-            "harness" => text(&self.harness),
-            "event" => text(&self.event),
-            "matcher" => text(if self.matcher.is_empty() {
+            "harness" => Val::word(&self.harness),
+            "event" => Val::word(&self.event),
+            "matcher" => Val::word(if self.matcher.is_empty() {
                 "*"
             } else {
                 &self.matcher
             }),
             "script" => Val::Text(self.script.clone()),
-            "from" => text(&self.from),
+            "from" => Val::word(&self.from),
             "rules" => Val::Num(self.rules as f64),
             _ => Val::None,
         }
@@ -315,8 +315,8 @@ impl Row for Hook {
 
     fn vals(&self, col: &str) -> Vec<Val> {
         match col {
-            "matcher" if self.matcher.is_empty() => vec![text("*")],
-            "matcher" => self.matcher.split('|').map(text).collect(),
+            "matcher" if self.matcher.is_empty() => vec![Val::word("*")],
+            "matcher" => self.matcher.split('|').map(Val::word).collect(),
             _ => vec![self.val(col)],
         }
     }
@@ -342,8 +342,9 @@ pub struct Rule {
     pub number: String,
     pub confidence: String,
     /// fleet-bench's one verdict: `ok`, `stale` (its anchor is gone from its source), `absent`
-    /// (the source is not on this machine, or its gh measure was rate limited), `dead` (its measure printed no number), `restates`
-    /// (its bound is a copy of the number its measure reads) or `moved` (its measured number
+    /// (the source is not on this machine, or the API its measure reads did not answer), `dead` (its measure printed no number), `restates`
+    /// (its bound is a copy of the number its measure reads), `layer` (a global row that applies to fewer than two repos, or a repo
+    /// row restating a global one) or `moved` (its measured number
     /// disagrees with its recorded confidence).
     pub state: String,
     pub today: String,
@@ -355,6 +356,7 @@ pub const OK: &str = "ok";
 pub const STALE: &str = "stale";
 pub const MOVED: &str = "moved";
 pub const RESTATES: &str = "restates";
+pub const LAYER: &str = "layer";
 pub const ABSENT: &str = "absent";
 pub const DEAD: &str = "dead";
 /// The chip Rules opens on, the rules a session reads; mechanisms are one chip away.
@@ -366,7 +368,7 @@ impl Row for Rule {
     const COLUMNS: &'static [&'static str] =
         &["rule", "kind", "number", "confidence", "state", "source"];
     const STATES: &'static [&'static str] = &[
-        RULES_FORM, MECHANISMS, ALL, STALE, MOVED, RESTATES, DEAD, ABSENT,
+        RULES_FORM, MECHANISMS, ALL, STALE, MOVED, RESTATES, LAYER, DEAD, ABSENT,
     ];
     const FACETS: &'static [&'static str] = &["kind", "confidence", "state"];
     const HIDE_EMPTY: bool = true;
@@ -390,21 +392,25 @@ impl Row for Rule {
             RESTATES,
             "its bound is a copy of the number its measure reads from its own source; the reading is the number",
         ),
+        (
+            LAYER,
+            "a global-file row that applies to fewer than two repos, or a repo row restating a global one; it belongs in one layer",
+        ),
         (DEAD, "its measure printed no number"),
         (
             ABSENT,
-            "its source file is not on this machine, or its measure was rate limited, so nothing here checked it",
+            "its source file is not on this machine, or the API its measure reads did not answer, so nothing here checked it",
         ),
     ];
 
     fn val(&self, col: &str) -> Val {
         match col {
             "rule" => Val::Text(self.rule.clone()),
-            "kind" => text(&self.kind),
-            "number" => text(&self.number),
-            "confidence" => text(&self.confidence),
-            "state" => text(&self.state),
-            "source" => text(&self.source),
+            "kind" => Val::word(&self.kind),
+            "number" => Val::word(&self.number),
+            "confidence" => Val::word(&self.confidence),
+            "state" => Val::word(&self.state),
+            "source" => Val::word(&self.source),
             _ => Val::None,
         }
     }
@@ -486,10 +492,10 @@ impl Row for Flow {
     fn val(&self, col: &str) -> Val {
         match col {
             "flow" => Val::Text(self.flow.clone()),
-            "question" => text(&self.question),
-            "source" => text(self.source.strip_prefix("~/").unwrap_or(&self.source)),
-            "picture" => text(self.picture.rsplit('/').next().unwrap_or_default()),
-            "checked" => text(
+            "question" => Val::word(&self.question),
+            "source" => Val::word(self.source.strip_prefix("~/").unwrap_or(&self.source)),
+            "picture" => Val::word(self.picture.rsplit('/').next().unwrap_or_default()),
+            "checked" => Val::word(
                 &self
                     .checked
                     .iter()
@@ -497,7 +503,7 @@ impl Row for Flow {
                     .collect::<Vec<_>>()
                     .join(", "),
             ),
-            "state" => text(&self.state),
+            "state" => Val::word(&self.state),
             _ => Val::None,
         }
     }
@@ -684,14 +690,6 @@ fn read_flows(paths: &Paths, errors: &mut Vec<String>) -> Vec<Flow> {
 /// A flow's doc section, read now, for the page a row opens.
 pub fn flow_section(flow: &Flow) -> Option<String> {
     section(&std::fs::read_to_string(&flow.doc).ok()?, &flow.anchor)
-}
-
-fn text(s: &str) -> Val {
-    if s.is_empty() {
-        Val::None
-    } else {
-        Val::Text(s.to_string())
-    }
 }
 
 /// The whole tab: each part read from its store, the slow `fleet-bench rules` through `runner`.
@@ -1635,7 +1633,7 @@ mod tests {
     fn an_empty_matcher_filters_as_the_star_it_shows() {
         let h = Hook::default();
         assert_eq!(h.vals("matcher"), [h.val("matcher")]);
-        assert_eq!(h.val("matcher"), text("*"));
+        assert_eq!(h.val("matcher"), Val::word("*"));
     }
 
     #[test]

@@ -41,7 +41,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 
 # What a line has to say to be infra or a timeout. Matched against the job's annotations, its
 # signature line and its exit code, never the whole log: a test log may print these on purpose.
@@ -111,7 +110,6 @@ class Source:
         # partial: the first reason a read failed (the counts are low from there on), else None
         self.partial, self.since, self.archived, self.from_gh, self.logs_missing = None, None, None, 0, []
         os.makedirs(cache, exist_ok=True)
-        self.gh_cache = None  # gh's own cache dir for this process, made on the first gh call
 
     def fail(self, why):
         """Print a failed read and keep the first one as the partial reason, on one line."""
@@ -122,15 +120,10 @@ class Source:
     def gh(self, *args):
         if self.partial:
             raise Partial()
-        # `gh run view --log-failed` caches the whole run's log zip under XDG_CACHE_HOME/gh, writes
-        # it non-atomically and trusts any entry that exists, so one interrupted write fails that run
-        # for every later reader ("zip: not a valid zip file"). This script caches each job's log
-        # itself (log-<job>.txt), so gh gets a private cache, removed when the script exits.
-        if self.gh_cache is None:
-            self.gh_cache = tempfile.TemporaryDirectory(prefix=".gh-", dir=self.cache)
-        env = {**os.environ, "XDG_CACHE_HOME": self.gh_cache.name}
+        # gh is the fleet wrapper (.local/bin/gh), which gives a run log read a private gh cache, so
+        # a poisoned run-log zip in the shared one is never read (ar-3133, ar-3387).
         try:
-            return subprocess.run(["gh", *args], check=True, capture_output=True, text=True, env=env).stdout
+            return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
         except (subprocess.CalledProcessError, OSError) as e:
             err = (getattr(e, "stderr", "") or str(e)).strip()
             if err.startswith("log not found"):

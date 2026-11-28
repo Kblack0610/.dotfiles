@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # quarantine-expiry: each open owner row whose quarantine entries end soon gets one detail line,
-# once per end date, the row a dup-closed owner was folded into included; an owner with no open
-# row is listed, not noted; nothing ending is quiet;
+# once per end date, the row a dup-closed owner was folded into included, and the human-sheet row a
+# dropped agent row was sent to; an owner with no open
+# row is listed, not noted, and trips; every row noted reads OK; nothing ending is quiet;
 # and a quarantine or board that cannot be read is never read as all clear.
 
 setup() {
@@ -12,12 +13,14 @@ setup() {
   # hub answers `quarantine soon` from $SANDBOX/soon.tsv (a missing file is a parse failure,
   # exit 2) and prints $SANDBOX/undated (ends that are not dates) to stderr with exit 1;
   # notes answers `board --json --id <id>...` with the rows of $SANDBOX/board.json those ids
-  # name, logs each lookup's ids to lookups.log and each edit's arguments to notes.log
+  # name (every row with no --id, or a failure while $SANDBOX/whole-board-fails exists), logs
+  # each lookup's ids to lookups.log and each edit's arguments to notes.log
   cat > "$SANDBOX/bin/hub" <<HUB
 #!/usr/bin/env bash
 [ "\$*" = "quarantine soon" ] || exit 2
 cat "$SANDBOX/soon.tsv" 2>/dev/null || { echo "hub quarantine soon: quarantine.json: expected value" >&2; exit 2; }
 [ ! -s "$SANDBOX/undated" ] || { cat "$SANDBOX/undated" >&2; exit 1; }
+[ ! -e "$SANDBOX/rc1" ] || exit 1
 HUB
   cat > "$SANDBOX/bin/notes" <<NOTES
 #!/usr/bin/env bash
@@ -25,6 +28,10 @@ if [ "\$1" = board ]; then
   shift 2; ids=()
   while [ \$# -gt 0 ]; do [ "\$1" = --id ] && ids+=("\$2"); shift 2; done
   echo "\${ids[*]}" >> "$SANDBOX/lookups.log"
+  if [ "\${#ids[@]}" = 0 ]; then
+    [ ! -e "$SANDBOX/whole-board-fails" ] || { echo "notes: board timed out" >&2; exit 1; }
+    jq -c '{today: "x", rows}' < "$SANDBOX/board.json"; exit
+  fi
   jq -c '{today: "x", rows: [.rows[] | select(.id as \$i | \$ARGS.positional | index([\$i]))]}' --args "\${ids[@]}" < "$SANDBOX/board.json"
   exit
 fi
@@ -53,6 +60,11 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   assert_line --index 1 'ucp-2: 2 entries end 2026-11-24 (3d) in Org/play; noted'
   assert_line --index 2 'ucp-3: 1 entry ends 2026-11-24 (3d) in Org/play; the row is on no sheet, so no open row owns them'
   assert_line --index -1 '6 quarantine entries over 3 owner rows end soon (next 2026-11-24, 3d): 2 noted, 1 with no open owner row'
+  # the same rows once ucp-3 is gone: both open rows noted, nothing unowned, so OK
+  soon $'Org/play\tucp-2\t2\t2026-11-24\t3'
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_success
+  assert_line --index -1 '2 quarantine entries over 1 owner row end soon (next 2026-11-24, 3d): 1 noted'
   run cat "$SANDBOX/notes.log"
   assert_line --index 0 --profile
   assert_line --index 1 bnb
@@ -97,6 +109,49 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   assert_line --index 1 'ucp-32 ucp-51 ucp-99'
 }
 
+@test "an owner skip_exits sent to the human sheet hands its entries to that row, through a dup too" {
+  # ucp-60 was dropped to the sheet as ucp-61; ucp-62 closed into ucp-63, which went to the sheet as
+  # ucp-64; ucp-65 was dropped and its sheet copy is closed, so no open row owns it
+  jq '.rows += [
+    {id:"ucp-60",state:"done",dup:null,lane:"agent",project:"unity-core-playground",details:[],raw:"- [x] a <!-- id:ucp-60 dropped: sent -->"},
+    {id:"ucp-61",state:"open",lane:"human",profile:"bnb",project:"unity-core-playground",details:[],
+     raw:"- [ ] fix(tests): a (agent row ucp-60) <!-- id:ucp-61 -->"},
+    {id:"ucp-62",state:"done",dup:"ucp-63",lane:"agent",details:[],raw:"- [x] b <!-- id:ucp-62 dup:ucp-63 -->"},
+    {id:"ucp-63",state:"done",dup:null,lane:"agent",project:"unity-core-playground",details:[],raw:"- [x] c <!-- id:ucp-63 dropped: sent -->"},
+    {id:"ucp-64",state:"open",lane:"human",profile:"bnb",project:"unity-core-playground",details:[],
+     raw:"- [ ] fix(tests): c (agent row ucp-63) <!-- id:ucp-64 -->"},
+    {id:"ucp-65",state:"done",dup:null,lane:"agent",project:"unity-core-playground",details:[],raw:"- [x] d <!-- id:ucp-65 dropped: sent -->"},
+    {id:"ucp-66",state:"done",lane:"human",details:[],raw:"- [x] d (agent row ucp-65) <!-- id:ucp-66 -->"}]' \
+    "$SANDBOX/board.json" > "$SANDBOX/b" && mv "$SANDBOX/b" "$SANDBOX/board.json"
+  soon $'Org/play\tucp-60\t2\t2026-11-24\t3' $'Org/play\tucp-62\t1\t2026-11-24\t3' $'Org/play\tucp-65\t1\t2026-11-24\t3'
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_failure 1
+  assert_line --index 0 'ucp-60: 2 entries end 2026-11-24 (3d) in Org/play; ucp-61 owns them (ucp-60 was sent to the human sheet as it); noted on the row now'
+  assert_line --index 1 'ucp-62: 1 entry ends 2026-11-24 (3d) in Org/play; ucp-64 owns them (closed into it: ucp-62 -> ucp-63 -> ucp-64; ucp-63 went to the human sheet); noted on the row now'
+  assert_line --index 2 'ucp-65: 1 entry ends 2026-11-24 (3d) in Org/play; the row is closed, so no open row owns them'
+  run cat "$SANDBOX/notes.log"
+  assert_line --partial 'quarantine ends 2026-11-24: 2 entries of this row and of the rows closed into it or sent to it from the agent board (ucp-60) stop'
+  assert_line -- '- [ ] fix(tests): a (agent row ucp-60) <!-- id:ucp-61 -->'
+  refute_line --partial -- '--agent'
+}
+
+@test "a moved owner's link is read only on its own project's sheet, and a board that will not read is unreadable" {
+  # ucp-70 was dropped; the only row naming it sits on another project's sheet
+  jq '.rows += [
+    {id:"ucp-70",state:"done",dup:null,lane:"agent",project:"unity-core-playground",details:[],raw:"- [x] a <!-- id:ucp-70 dropped: sent -->"},
+    {id:"apo-1",state:"open",lane:"human",profile:"bnb",project:"other",details:[],raw:"- [ ] quotes (agent row ucp-70) <!-- id:apo-1 -->"}]' \
+    "$SANDBOX/board.json" > "$SANDBOX/b" && mv "$SANDBOX/b" "$SANDBOX/board.json"
+  soon $'Org/play\tucp-70\t1\t2026-11-24\t3'
+  run "$REPO_ROOT/.local/bin/quarantine-expiry" --dry-run
+  assert_failure 1
+  assert_line --index 0 'ucp-70: 1 entry ends 2026-11-24 (3d) in Org/play; the row is closed, so no open row owns them'
+  # the --id lookups answer, the whole-board read does not: never read as all clear
+  touch "$SANDBOX/whole-board-fails"
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_failure 2
+  assert_output 'unreadable: notes board --json: notes: board timed out'
+}
+
 @test "a dup row listed for two repos is named once, and a chain past DUP_HOPS says it was cut" {
   jq '.rows += [{id:"ucp-30",state:"done",dup:"ucp-1",details:[],raw:"- [x] a <!-- id:ucp-30 dup:ucp-1 -->"}]
     + [range(80; 87) | {id: "ucp-\(.)", state: "done", dup: "ucp-\(. + 1)", details: [], raw: "- [x] r"}]
@@ -118,7 +173,7 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
     && mv "$SANDBOX/b" "$SANDBOX/board.json"
   soon $'Org/play\tucp-60\t1\t2026-11-24\t3'
   run "$REPO_ROOT/.local/bin/quarantine-expiry"
-  assert_failure 1
+  assert_success
   assert_line --index 0 'ucp-60: 1 entry ends 2026-11-24 (3d) in Org/play; noted on the row now'
   run cat "$SANDBOX/notes.log"
   assert_line -- '- [ ] fix(tests): later #v0.5.6 <!-- id:ucp-60 -->'
@@ -127,7 +182,7 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
 @test "a row already noted for a later end date is noted again for the new one" {
   soon $'Org/play\tucp-2\t2\t2026-12-08\t2'
   run "$REPO_ROOT/.local/bin/quarantine-expiry"
-  assert_failure 1
+  assert_success
   assert_line --index 0 'ucp-2: 2 entries end 2026-12-08 (2d) in Org/play; noted on the row now'
   run cat "$SANDBOX/notes.log"
   assert_line --partial 'quarantine ends 2026-12-08:'
@@ -140,6 +195,11 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   assert_line --index 0 'ucp-1: 3 entries end 2026-11-24 (3d) in Org/play; would note'
   assert_line --index -1 --partial ': 0 noted'
   [ ! -e "$SANDBOX/notes.log" ]
+  # a row already noted needs no note, so a dry run over it alone reads OK
+  soon $'Org/play\tucp-2\t2\t2026-11-24\t3'
+  run "$REPO_ROOT/.local/bin/quarantine-expiry" --dry-run
+  assert_success
+  assert_line --index 0 'ucp-2: 2 entries end 2026-11-24 (3d) in Org/play; noted'
 }
 
 @test "a note on a row that took many dups names the first few and counts the rest" {
@@ -149,7 +209,7 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
     $'Org/play\tucp-74\t1\t2026-11-24\t3' $'Org/play\tucp-75\t1\t2026-11-24\t3' $'Org/play\tucp-76\t1\t2026-11-24\t3' \
     $'Org/play\tucp-77\t1\t2026-11-24\t3'
   run "$REPO_ROOT/.local/bin/quarantine-expiry"
-  assert_failure 1
+  assert_success
   assert_line --index -1 '7 quarantine entries over 7 owner rows end soon (next 2026-11-24, 3d): 7 noted'
   run cat "$SANDBOX/notes.log"
   assert_line --partial '7 entries of this row and of the rows closed into it as dups (ucp-71, ucp-72, ucp-73, ucp-74, ucp-75 and 2 more) stop'
@@ -203,4 +263,12 @@ soon() { printf '%s\n' "$@" > "$SANDBOX/soon.tsv"; }
   run "$REPO_ROOT/.local/bin/quarantine-expiry"
   assert_failure 1
   assert_line --index -1 'No quarantine entry with a date ends soon; 1 owner row with an end that is not a date'
+}
+
+@test "hub's exit 1 with no stderr line still trips over rows that are all noted" {
+  soon $'Org/play\tucp-2\t2\t2026-11-24\t3'
+  : > "$SANDBOX/rc1"
+  run "$REPO_ROOT/.local/bin/quarantine-expiry"
+  assert_failure 1
+  assert_line --index -1 '2 quarantine entries over 1 owner row end soon (next 2026-11-24, 3d): 1 noted'
 }

@@ -70,8 +70,9 @@ A machine that runs agent sessions is set up by one command, `fleet-node`, the o
 
 ```bash
 fleet-node install      # install.sh --yes --only base,fleet,dotfiles: claude, codex, opencode, the patched tmux, agent-panel, agent-web, the stowed dotfiles
-fleet-node signin       # what only you can do here, one line each (a setup token per Claude account, gh, the private overlay)
-fleet-node ready        # exit 0 once every Claude account has a token here; `fleet-dispatch kit` runs it, and a node that fails it drops claude from its kit and takes only the harnesses it still has
+fleet-node signin       # what only you can do here, one line each (a setup token per Claude account, gh, the private overlay, codex where the roster runs it)
+fleet-node ready        # can this peer hold the fleet lease: one line per need it lacks (each signin line, a dotfiles checkout behind origin/main or one that is shallow or fetches only some branches, a store remote it cannot reach, a home-k3s call the singleton lanes make that its kubeconfig may not, agent-web), nothing and exit 0 when none
+fleet-node ready claude # exit 0 once every Claude account has a token here; `fleet-dispatch kit` runs it, and a node that fails it drops claude from its kit and takes only the harnesses it still has
 ```
 
 `--yes` asks nothing: the proceed prompt is answered, the Kubernetes and login-profile prompts take their skip default. Nothing here copies a login: you push each account's token from a machine with rbw unlocked (`claude-acct token push <host>`) and run `gh auth login`, once a node. The `sshkey` module (a hand-signed-in machine's own key) is not part of a node.
@@ -132,6 +133,8 @@ OS-specific scripts        # "Subclasses" that override specific methods
 - **DRY principle** - Common logic stays in base_functions.sh
 - **Clear structure** - Each function has one purpose, easy to find and modify
 
+An OS script sets `PKG_INSTALL` (its package helper) and `PKG_OS` (its `packages.conf` tag) right after sourcing the base. The catalog steps (`install_basics`, `install_tools`, `install_terminal`, `install_gui`, `install_fleet_packages`) then need no override: each is `install_catalog <CATEGORY>`, which installs `PACKAGES_<CATEGORY>` and `PACKAGES_<CATEGORY>_<OS>`. An override that adds to a category calls `install_catalog <CATEGORY> <extra packages>`. `setup_keyd` and `setup_theme` (its targets are `THEME_TARGETS_<OS>` in `packages.conf`) live in the base too, and `fleet_steps` is the fleet module's step list every OS that runs agent sessions calls from its `install_all`.
+
 ## Function Reference
 
 Each OS script can override these base functions:
@@ -139,10 +142,10 @@ Each OS script can override these base functions:
 ```bash
 # System management
 update_system()          # Update package manager
-install_basics()         # Core system tools
-install_tools()          # Development tools
-install_terminal()       # Terminal enhancements
-install_gui()           # Desktop applications
+install_basics()         # Core system tools (install_catalog BASIC)
+install_tools()          # Development tools (install_catalog DEV)
+install_terminal()       # Terminal enhancements (install_catalog TERMINAL)
+install_gui()           # Desktop applications (install_catalog GUI)
 install_runtime()        # Language runtimes
 
 # Specific tools
@@ -209,7 +212,7 @@ What `install_all` runs, in order, and why each step exists. Most steps come fro
 | 4 | `install_zsh` | **WSL override** | `chsh -s` to zsh if it isn't already the default. No-op if `$SHELL` already ends in `zsh`. |
 | 5 | `install_oh_my_zsh` | base | Curls the OMZ unattended installer; clones `zsh-autosuggestions` and `zsh-syntax-highlighting` into `$ZSH_CUSTOM/plugins/`. |
 | 6 | `install_starship` | base | Curls `starship.rs/install.sh` if `starship` isn't on PATH. |
-| 7 | `install_rust` | base | Curls `rustup-init` (`-y`) if `rustc` isn't on PATH. Sources `~/.cargo/env` after install. |
+| 7 | `install_rust` | base | Curls `rustup-init` (`-y`) if `rustup` isn't on PATH, even when a distro `rustc` or `cargo` is (it warns with the package's removal command and leaves it). Sources `~/.cargo/env` after install. The one Rust installer: every OS script but Termux runs it as a `dev` step. |
 | 8 | `setup_docker` | **WSL override** | Writes `/etc/wsl.conf` with `[boot] systemd=true`, creates the `docker` group, adds `$USER` to it. Enables the docker service if systemd is already running; otherwise warns that `wsl --shutdown` from PowerShell is required first. |
 | 9 | `setup_postgres` | **WSL override** | `initdb` into `/var/lib/postgres/data` (UTF-8, `C.UTF-8` locale) as the `postgres` user. Uses `runuser` when running as root, `sudo -iu` otherwise. Does **not** auto-start the service - left for the user. |
 | 10 | `setup_ssh_key` | base | Generates `~/.ssh/id_ed25519` if missing (module sshkey; a fleet node skips it). Git identity is the stowed `.gitconfig`. |
@@ -324,6 +327,11 @@ PROFILE_ENABLE_SSH=true
 - Verify `PROFILE_START_SUNSHINE=true` in your profile
 - Check service status: `systemctl --user status sunshine`
 - Sunshine starts 3 seconds after Hyprland to allow initialization
+
+**`tests/rust.sh` or the pre-push rust step fails with `rustup: command not found` or a toolchain other than `tests/rust-toolchain`?**
+- A distro rust (`pacman -Q rust`, `dpkg -s rustc`) is first on PATH and rustup is missing or not on PATH; a cargo with no rustup cannot honor the pin.
+- Check: `command -v rustup` should print `~/.cargo/bin/rustup`, and `rustup which rustc` inside the checkout should name the pinned toolchain.
+- Fix: run `install_rust` (it installs rustup when `rustup` is not on PATH); a login shell that skips `.zshrc` gets `~/.cargo/bin` from `.zprofile`. Removing the distro package is optional.
 
 **Want to go back to SDDM?**
 - Switch to a non-autologin profile: `profile-switch secure`

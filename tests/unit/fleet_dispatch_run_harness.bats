@@ -2,9 +2,10 @@
 # fleet-dispatch, a `run` pass routed past the claude accounts: free harnesses, workers, trainees and the fleet lease.
 # One of the tests/unit/fleet_dispatch*.bats files, split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
+# One of two files, split so CI shards can spread them (the other is fleet_dispatch_run_harness_part2.bats): as one file it was
+# a shard by itself (ar-5740). The setup and fixtures both use are in fleet_dispatch/fleet_dispatch_run_harness.bash.
 
-load 'fleet_dispatch/common'
-bats_require_minimum_version 1.5.0
+load 'fleet_dispatch/fleet_dispatch_run_harness'
 
 @test "negative control: a private-project item never picks ocfree, pinned or routed, though ocfree has room and ranks first" {
   route_ready; ocfree_ready
@@ -56,6 +57,22 @@ case "$1" in log) echo run-9 ;; classify)
   printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) - 60 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item pin-free on ocfree (beam)'
+}
+
+# ar-5893: fleet-bench sources reads the hold through this verb, not the ledger.
+@test "provider-holds: names each source whose hold stands with its why, and nothing for a lapsed one" {
+  route_ready; ocfree_ready
+  export FLEET_DISPATCH_STATE="$BATS_TEST_TMPDIR/state"; mkdir -p "$FLEET_DISPATCH_STATE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" provider-holds
+  assert_success
+  assert_output '{}'
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) + 3600 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" provider-holds
+  assert_success
+  assert_equal "$(jq -r '.ocfree' <<<"$output")" "a run on ocfree ended on a provider refusal, so it takes no start until $(date -d "@$(awk -F'\t' '{print $3}' "$FLEET_DISPATCH_STATE/provider-ends.tsv")" "+%F %H:%M")"
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) - 60 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" provider-holds
+  assert_output '{}'
 }
 
 # 2026-11-18: three nim canaries waited behind a 96 C workstation while razer-laptop sat idle (ar-3222).
@@ -154,6 +171,40 @@ case "$1" in log) echo run-9 ;; classify)
   assert_not_called 'claude-acct link'
 }
 
+# 2026-11-21: trader tr-109 ran on razer-laptop with only the schedules-sync kubeconfig and failed Forbidden on freqtrade jobs (ar-5944).
+@test "needs:cluster: an item tagged for the cluster login, or a research row of a cluster project, stays off every worker; the same item untagged is placed" {
+  route_ready
+  acct main:ok
+  agent-queue move fix-menu done --status ok >/dev/null   # route_ready's claude item would take the worker's one session
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  worker '2.0 16 1 50' true '[]' '[]'
+  agent-queue add --project game --slug tag-cl --tags needs:cluster --priority urgent "Read the freqtrade jobs" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item tag-cl on razer-laptop'
+  [ -n "$(qitem queued tag-cl)" ] || fail "the needs:cluster item left the queue: $output"
+  # The wait names the cause.
+  assert_output --partial 'it needs the cluster login (needs:cluster), which only this machine has'
+  # A hand start on the worker is refused with the reason, and the item stays queued.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item tag-cl --host razer-laptop
+  assert_output --partial 'tag-cl needs the cluster login (needs:cluster), which only this machine has'
+  [ -n "$(qitem queued tag-cl)" ] || fail "the refused hand start moved the item: $output"
+  # Negative control: the same item without the tag is placed on the worker.
+  agent-queue set tag-cl tags="size/s" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item tag-cl on razer-laptop'
+  # A research row of a cluster project is the same without the tag.
+  agent-queue move tag-cl done --status ok >/dev/null
+  export DISPATCH_CLUSTER_PROJECTS=game
+  agent-queue add --project game --slug res-cl --from research:retro --priority urgent "Retro the cluster" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item res-cl on razer-laptop'
+  [ -n "$(qitem queued res-cl)" ] || fail "the cluster research row left the queue: $output"
+  # Positive control: the same research row of a project that is not cluster work, and a plain item, are placed.
+  export DISPATCH_CLUSTER_PROJECTS=home-config
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item res-cl on razer-laptop'
+}
+
 @test "fleet_harnesses: an older fleet-dispatch on the worker, or a name that is no harness name, leaves the worker reachable and says why" {
   worker '2.0 16 1 50' true '[]' '[ocfree, Bad_Name]'
   # The probe runs for real here; the worker's fleet-dispatch predates harness-ready (its usage exit).
@@ -172,7 +223,7 @@ case "$1" in log) echo run-9 ;; classify)
   route_ready
   printf 'sk-nim\n' > "$SANDBOX/nim.key"; touch "$SANDBOX/eval-nim.json"
   harness_set --arg k "$SANDBOX/nim.key" --arg c "$SANDBOX/eval-nim.json" '.harnesses.nim = {
-    launcher: "opencode", source: "nim", headless: true, max_tier: 1, config: $c, key_file: $k, timeout_min: 180, models: {glm: "litellm/free-glm (glm-5.3-flash)"}}'
+    launcher: "opencode", source: "nim", end_classifier: "opencode", headless: true, max_tier: 1, config: $c, key_file: $k, timeout_min: 180, models: {glm: "litellm/free-glm (glm-5.3-flash)"}}'
   srcs nim:ok:0.1 codex:ok:5
   # model-lane offers nim first (a trial pick); it has room at the lowest rank.
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"
@@ -244,6 +295,27 @@ case "$1" in log) echo run-9 ;; classify)
   assert_equal "$(qfield "$(qitem running t-one)" agent)" claude
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item t-one-b on codex (sol), routed by model-lane'
+}
+
+# 2026-11-26: ar-5957's trainee run ended on a provider refusal; requeued with agent: and routed: its trainee,
+# every pass routed it to claude and the start relaunched the trainee from agent:, failing the pass (ar-5747).
+@test "trainee: a requeued trainee item whose agent: is its routed: record starts on claude; a pin with no routed: stays on its harness" {
+  trainee_ready
+  acct "main:ok:/home/u/.claude:"
+  agent-queue add --project game --slug t-redo --priority urgent --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  agent-queue set t-redo agent=gotrain routed=gotrain model=glm trainee=gotrain:glm provider_tries=1 >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'could not start queue item t-redo'
+  assert_output --partial 'started queue item t-redo'
+  assert_equal "$(qfield "$(qitem running t-redo)" agent)" claude
+  assert_equal "$(qfield "$(qitem running t-redo)" routed)" ''
+  assert_not_called 'opencode run'
+  # Negative control: the same item with no routed: is a pin, so a hand start keeps gotrain and refuses it there.
+  agent-queue move t-redo queued >/dev/null
+  agent-queue set t-redo agent=gotrain model=glm >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item t-redo
+  assert_output --partial 'start: gotrain runs in a sandbox that sees its worktree alone'
+  assert_not_called 'opencode run'
 }
 
 @test "trainee: a slug with a lane trainee run in model-lane's log is refused, though its fresh item carries no trainee stamp" {
@@ -366,282 +438,4 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'This row is tier 3: before landing, run /code-review high'
   run trainee_review_task "$(agent-queue show t2-row --json)" gotrain:glm base p.patch ''
   refute_output --partial 'This row is tier 3'
-}
-
-@test "direct: a pair model-lane promoted for the class runs a tier-1 row of any #pts in its sandbox and lands it, logged under lane trainee; the trainee offer leaves it out" {
-  trainee_ready
-  export LANE=opus
-  # Negative control: unpromoted, a three-point row is past the trainee lane and no fit the sandbox takes.
-  agent-queue add --project game --slug d-big --priority urgent --tags tier1 "Fix the menu layout #pts/3" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item d-big on codex (sol), routed by model-lane'
-  assert_not_called 'opencode run'
-  # Promoted: the same kind of row runs direct on the pair, stamped direct: and not trainee:.
-  export LANE_PROMOTED=gotrain:glm
-  agent-queue add --project game --slug d-two --priority urgent --tags tier1 "Fix the menu border #pts/3" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item d-two on gotrain (glm), a direct run (model-lane promoted it for the class) it lands on CI with no review'
-  f=$(qitem running d-two)
-  assert_equal "$(qfield "$f" direct)" gotrain:glm
-  assert_equal "$(qfield "$f" trainee)" ''
-  assert_called 'srt --settings'
-  assert_called 'fleet-dispatch direct-land d-two'
-  assert_not_called 'fleet-dispatch trainee-review d-two'
-  assert_called '--lane trainee --by rule'
-  # A one-point row is a trainee row, and the offer leaves the promoted pair out: kimi trains on it.
-  agent-queue add --project game --slug d-one --priority urgent --tags tier1 "Fix the menu footer #pts/1" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item d-one on gotrain (kimi), a trainee run'
-  assert_equal "$(qfield "$(qitem running d-one)" trainee)" gotrain:kimi
-  # Tier 2, a row a ladder run took before, and a lane promotion (not a trainee one) are no direct rows.
-  agent-queue add --project game --slug d-tier2 --priority low --tags tier2 "Fix the save layout #pts/3" >/dev/null
-  HARNESSES=$DISPATCH_HARNESSES
-  run direct_why "$(agent-queue show d-tier2 --json)" gotrain glm '{"direct":["gotrain:glm"]}'
-  assert_failure; assert_output 'it is tier 2, and a direct run takes tier 1 only'
-  run direct_why "$(agent-queue show d-two --json)" gotrain glm '{"direct":["gotrain:glm"]}'
-  assert_failure; assert_output 'a ladder run took it once already (gotrain:glm)'
-  run direct_why "$(agent-queue show d-tier2 --json)" gotrain glm '{"promoted":["gotrain:glm"],"direct":[]}'
-  assert_failure; assert_output 'model-lane promoted gotrain:glm for no class of this item'
-  # A harness whose source has no room (its direct run counted live there) takes no more.
-  agent-queue add --project game --slug d-three --priority low --tags tier1 "Fix the save border #pts/3" >/dev/null
-  run direct_why "$(agent-queue show d-three --json)" gotrain glm '{"direct":["gotrain:glm"]}'
-  assert_success
-  src_shut go 'go: its 2 live sessions are all it takes (max_live 2)'
-  run direct_why "$(agent-queue show d-three --json)" gotrain glm '{"direct":["gotrain:glm"]}'
-  assert_failure; assert_output 'gotrain: go: its 2 live sessions are all it takes (max_live 2)'
-  run trainee_why "$(agent-queue show d-two --json)" gotrain
-  assert_failure; assert_output 'a ladder run took it once already (gotrain:glm)'
-}
-
-# The lease guard: fleet-lease is the sandbox stub, which holds the lease unless FLEET_LEASE_STUB_RC
-# says otherwise; tests/unit/fleet_lease.bats proves the lease itself.
-OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the fleet lease until 12:00, so state skips it'
-
-@test "run: a machine that does not hold the fleet lease stands down and writes nothing" {
-  game_ready
-  worker '2.0 16 1 50'
-  FLEET_LEASE_STUB_RC=1 FLEET_LEASE_STUB_OUT=$OTHER_HOLDS run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output "fleet-dispatch: run: ${OTHER_HOLDS#fleet-lease: }"
-  assert_not_called 'wt new'
-  [ -z "$(ls "$AGENT_QUEUE_DIR/queued" "$AGENT_QUEUE_DIR/running" 2>/dev/null)" ] || fail "a stood-down pass queued an item"
-  [ ! -e "$FLEET_DISPATCH_DIR/headroom.json" ] || fail "a stood-down pass wrote the headroom"
-  [ ! -e "$HOME/.local/state/agentctl/dispatch/candidates.jsonl" ] || fail "a stood-down pass wrote the candidates"
-  [ -z "$(outcome)" ] || fail "a stood-down pass published an outcome: $(outcome)"
-  FLEET_LEASE_STUB_RC=1 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_success
-  refute_output --partial 'would queue: game'
-  # The negative control: on the holder the same pass runs and writes its headroom and outcome.
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_success
-  assert_output --partial 'would queue: game'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  [ -s "$FLEET_DISPATCH_DIR/headroom.json" ] || fail "the holder's pass wrote no headroom"
-  [ -n "$(outcome)" ] || fail "the holder's pass published no outcome"
-}
-
-@test "reap, start, fill and promote do nothing on a machine that does not hold the fleet lease" {
-  game_ready
-  worker '2.0 16 1 50'
-  agent-queue add --project game --slug x "x" >/dev/null
-  local verb
-  for verb in reap start fill promote; do
-    FLEET_LEASE_STUB_RC=1 FLEET_LEASE_STUB_OUT=$OTHER_HOLDS run "$REPO_ROOT/.local/bin/fleet-dispatch" "$verb" --item x
-    assert_failure 1
-    assert_output "fleet-dispatch: $verb: ${OTHER_HOLDS#fleet-lease: }"
-  done
-  assert_not_called 'wt new'
-  [ -n "$(qitem queued x)" ] || fail "a stood-down verb moved the item"
-  # The negative control: on the holder the guard lets the verb through.
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" reap
-  refute_output --partial 'holds the fleet lease'
-}
-
-@test "a lease no remote can say is a fault: run exits 1 and writes nothing; hosts prints the lease status" {
-  game_ready
-  worker '2.0 16 1 50'
-  FLEET_LEASE_STUB_RC=2 FLEET_LEASE_STUB_OUT='fleet-lease: no remote of the store answered, so state cannot tell who holds the fleet lease and skips fleet-dispatch' \
-    run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_failure 1
-  assert_output --partial 'run: no remote of the store answered'
-  [ ! -e "$FLEET_DISPATCH_DIR/headroom.json" ] || fail "a stood-down pass wrote the headroom"
-  assert_not_called 'wt new'
-  FLEET_LEASE_STUB_OUT='this machine (state) holds the fleet lease' run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_success
-  assert_line --index 0 'this machine (state) holds the fleet lease'
-  assert_output --partial 'razer-laptop'
-  FLEET_LEASE_STUB_OUT='this machine (state) holds the fleet lease' run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
-  refute_output --partial 'fleet lease'
-}
-
-@test "a worker not placed, one at its fleet_max_live, or one without wt, a peer store, a notes clone, or a store free of a merge conflict takes nothing" {
-  game_ready
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  worker '2.0 16 1 50' false
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  assert_not_called 'ssh'
-  worker '2.0 16 0 50'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'razer-laptop has no wt, or a store that is not a peer clone (store-sync join)'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  worker '2.0 16 1 50 1'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'razer-laptop: its store is in a merge conflict with origin'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  worker '2.0 16 1 50 0'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  refute_output --partial 'merge conflict'
-  worker '2.0 16 1 50 0 0'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'razer-laptop has no ~/.notes clone'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  worker '2.0 16 1 50 0 1'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  refute_output --partial 'no ~/.notes clone'
-  worker '2.0 16 1 50'
-  remote_item busy
-  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'razer-laptop is at its fleet_max_live'
-}
-
-@test "a heavy item stays here: a worker takes light claude work only" {
-  project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1 50'
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  agent-queue add --project game --slug bake --priority high --weight heavy "Bake the lights" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'machine pace: bake'
-  assert_output --partial 'no fleet worker takes it'
-  assert_not_called 'wt new'
-}
-
-@test "with room here a pass starts here first, and with no roster nothing asks a worker" {
-  game_ready
-  worker '2.0 16 1 50'
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_called "wt new --server lab --detach -c $SANDBOX/repos/game"
-  assert_not_called 'wt new --host'
-  assert_equal "$(qfield "$(qitem running fix-menu)" host)" ''
-}
-
-# 2026-11-12: the classifier's key sat in an over-budget gateway team, every verdict fell back to opus,
-# and the cache kept those for the rest of the day, so free harnesses stayed off work after it was fixed.
-@test "a fallback verdict is kept only for its TTL, so a later pass asks model-lane again; a real one is kept all day" {
-  lane_cache fix-a '{"lane": "opus", "by": "fallback", "why": "llm unavailable (HTTP 429)", "candidates": [{"harness": "claude", "model": "opus", "fit": 0}]}'
-  lane_cache fix-b '{"lane": "sonnet", "by": "llm", "candidates": [{"harness": "claude", "model": "sonnet", "fit": 0}]}'
-  run lane_cached fix-a
-  assert_output --partial '"by":"fallback"'
-  LANE_FALLBACK_TTL=0 run lane_cached fix-a
-  assert_output ''
-  LANE_FALLBACK_TTL=0 run lane_cached fix-b
-  assert_output --partial '"by":"llm"'
-  # A fallback row from before the TTL has no cached_at, so it is already past it.
-  printf '%s\tfix-c\t%s\n' "$(date +%F)" '{"lane":"opus","by":"fallback"}' >>"$LANE_CACHE"
-  run lane_cached fix-c
-  assert_output ''
-}
-
-# The class mix as a pass sees it (plan can-we-move-our-mellow-sphinx P4): three features started
-# today, an older feature and the human's newer ask queued. The pass takes agent-queue's order.
-@test "run starts the starved class first while the mix is on: the human's ask over an older feature; off, the older one (plan P4)" {
-  project game beta "$SANDBOX/repos/game"
-  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=0 AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
-  today="$(date +%F)"
-  mkdir -p "$AGENT_QUEUE_DIR/done/$today"
-  for i in 1 2 3; do
-    printf 'slug: df%s\nproject: game\npriority: high\nfrom: shepherd\nqueued: %sT00:00:00Z\nstarted: %sT00:30:00Z\nstatus: ok\nfinished: %sT01:00:00Z\n---\nfeature %s\n' \
-      "$i" "$today" "$today" "$today" "$i" > "$AGENT_QUEUE_DIR/done/$today/x-df$i.md"
-  done
-  agent-queue add --project game --from shepherd --slug old-feat "an older feature"
-  agent-queue add --project game --slug asked "the human's ask"
-  sed -i 's/^queued: .*/queued: 2026-01-01T00:00:00Z/' "$(qitem queued old-feat)"
-  # NEGATIVE CONTROL: the mix off is the queue's age order
-  jq '.on = false' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$AGENT_QUEUE_CLASSES"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_success
-  assert_output --partial 'would start queue item old-feat'
-  refute_output --partial 'would start queue item asked'
-  jq '.on = true' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$AGENT_QUEUE_CLASSES"
-  run agent-queue mix --json
-  [ "$(jq -c '[.starved, (.classes[] | select(.name == "feature") | .started)]' <<<"$output")" = '[["requested"],3]' ]
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started game-agent-1: game: asked'
-  [ -n "$(qitem running asked)" ] && [ -n "$(qitem queued old-feat)" ] || fail "the pass did not start the starved class's item"
-}
-
-# 2026-11-18: the free keys (go, nim, ocfree) sat at 0% used while every pass ran over the pace
-# target: no trainee row started, so none was reviewed or promoted.
-@test "trainee floor: past the pace target a trainee with a free slot starts a queued row it takes, then stops when its source has no room; candidates [] is off" {
-  trainee_ready
-  srcs go:ok:0.1 codex:reserve:5   # codex without room: an item routed to it would start past the target (other_source_start)
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
-  fleet_state 8
-  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
-  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
-  # Negative control first: no candidates, the floor says it is shut, and the full fleet starts nothing.
-  TRAINEE_LANE='{"candidates":[],"points":1}' run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'trainee floor: shut, lanes.yaml has no trainee: lane'
-  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
-  assert_not_called 'opencode run'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor \(lanes.yaml trainee:, a free slot\)'
-  refute_output --partial 'started queue item p'
-  # t-one holds go's one slot now (claude-acct room --source counts it): the next pass starts no trainee row and says why.
-  src_shut go 'go: its 1 live sessions are all it takes (max_live 1)'
-  agent-queue add --project game --slug t-two --priority low --tags tier1 "Fix the menu label #pts/1" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'trainee floor: gotrain: go: its 1 live sessions are all it takes (max_live 1)'
-  refute_output --partial 'started queue item t-two'
-  # t-one's run ends and its diff waits for review, which claude-acct counts no live item: go has room, so t-two starts beside it.
-  agent-queue move t-one review >/dev/null
-  rm "$NOTES_FIXTURE/src.go"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --regexp 'started queue item t-two on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
-}
-
-# 2026-11-19: "trainee floor: shut, infra: k3s domain red" on every pass while the gateway, the trainee's
-# only cluster dependency, answered (ar-3699).
-@test "trainee floor: a red k3s domain does not shut it while the gateway answers; a down gateway does; a plain start goes on, cluster work waits" {
-  trainee_ready
-  srcs go:ok:0.1 codex:reserve:5
-  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0
-  fleet_state 8
-  stub fleet-shepherd 'echo "infra: k3s domain red"'
-  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
-  # Negative control first: the gateway is not ready, so the floor is shut on both, and says so.
-  stub curl 'echo "{\"status\":\"unhealthy\",\"db\":\"Not connected\"}"'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: unhealthy, Not connected)'
-  assert_not_called 'opencode run'
-  stub curl 'exit 7'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: no answer)'
-  # The gateway answers: the trainee starts; with no diff waiting, the batch-review line stays quiet.
-  gateway_up
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_called 'curl -sS -f -m 10 https://gw.test/health/readiness'
-  refute_output --partial 'the batch review (claude) waits'
-  assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
-  # A plain game item is judged on its route, not the red cluster; a home-config one, cluster work, waits on it (ar-4889).
-  agent-queue move t-one done --status ok >/dev/null
-  fleet_state 0
-  project home-config beta "$SANDBOX/repos/home-config"
-  agent-queue add --project home-config --slug hc --priority high "fix the cluster janitor" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'queue item fix-menu has no source with room it may run on'
-  assert_output --partial 'cluster: hc (infra: k3s domain red, and this is cluster work (DISPATCH_CLUSTER_PROJECTS))'
-  refute_output --partial 'fix-menu (infra: k3s domain red'
-  refute_output --partial 'started queue item hc'
-  [ -n "$(qitem queued hc)" ] || fail "the home-config item left the queue on a red cluster"
 }

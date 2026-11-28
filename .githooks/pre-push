@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # pre-push: refuse a push whose changed paths fail the offline steps of .github/workflows/tests.yml
 # (the house rules and shellcheck, cargo fmt + clippy). Why and budget: ~/.local/src/docs/ci.md
-# speed lever 3. Bypass, deliberately: git push --no-verify. CI stays the authority.
+# speed lever 3. CI stays the authority; an agent session cannot skip it (skip-guard).
 # Each tests.yml job is run here or named CI only; tests/unit/prepush_hook.bats checks the ids.
 #   runs:    lint  rust
-#   CI only: fast weights ui gate report notes skills
+# lint here also runs shape-grow over what the branch adds, with the pushed commit messages as the
+# body, so a "Split:" or "Dup:" line in a commit message covers a hit here as the PR body does in CI.
+#   CI only: fast weights image ui gate report notes skills
 # One step is no tests.yml job: the launch table check of the private repo's ledger.yml.
 # The first push per crate or toolchain builds its dependencies cold (minutes); later ones reuse the cache.
 # fast stays CI only: the unit bats took 17 s to over 120 s a push, past the 10 s budget.
@@ -23,6 +25,7 @@ started=$SECONDS
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
 changed=
+shape_base= shape_head=
 if [ -n "${PREPUSH_CHANGED+x}" ]; then
   changed=$PREPUSH_CHANGED
   echo "pre-push: PREPUSH_CHANGED is set; checking that path list, not the pushed range" >&2
@@ -51,6 +54,7 @@ else
       continue
     fi
     changed+=$(git diff --name-only "$base" "$lsha")$'\n'
+    shape_base=$base shape_head=$lsha
   done
 fi
 changed=$(grep . <<<"$changed" | sort -u || true)
@@ -86,6 +90,12 @@ if [ "${#shell[@]}" -gt 0 ] || grep -qE '\.bats$|^tests/lint' <<<"$changed"; the
   step lint tests/lint.sh --only "${shell[@]}"
 fi
 
+# shape: the lint job's shape-grow step (no long function grows, no copy is added), offline: the
+# commit messages stand in for the PR body. Under the PREPUSH_CHANGED seam there is no range.
+if [ -n "$shape_base" ] && [ -x .local/bin/shape-grow ]; then
+  step "copy+shape (shape-grow)" bash -c 'git log --format=%B "$1..$2" | .local/bin/shape-grow --body - "$1" "$2"' _ "$shape_base" "$shape_head"
+fi
+
 why=$(mktemp "${TMPDIR:-/tmp}/pre-push-why.XXXXXX")
 if picked=$(PICK_CHANGED=$changed tests/pick.sh rust HEAD 2>"$why"); then
   why_text=$(<"$why")
@@ -113,7 +123,7 @@ if [ -x .local/bin/fleet-bench ] && [ -r "$priv/.config/agentctl/PIPELINES.md" ]
 fi
 
 if [ "$rc" -ne 0 ]; then
-  echo "pre-push: refused after $((SECONDS - started))s. Fix the above, or push with --no-verify (CI runs the same checks)." >&2
+  echo "pre-push: refused after $((SECONDS - started))s. Fix the above (CI runs the same checks)." >&2
   exit 1
 fi
 echo "pre-push: ok in $((SECONDS - started))s" >&2

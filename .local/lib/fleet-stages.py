@@ -46,7 +46,8 @@ STALLED = (("main_red", ("nightly red after", "main red after")), ("plan_missing
            ("green_unmerged", ("green, not merged",)), ("conflict", ("conflicts with",)),
            ("ahead", ("not on the default branch",)), ("dirty", ("dirty file",)),
            ("pr_closed", ("closed without merging",)), ("item_running", ("is running here",)),
-           ("item_open", ("is still open with every phase",)))
+           ("item_open", ("is still open with every phase",)), ("train_lapsed", ("with nobody landing it",)),
+           ("validate_failed", ("failed validation",)))
 FLICKER_MIN = 2   # a gone and a new of one window this close is one session the probe missed for a tick
 UNKNOWN = "(unknown)"   # a session the log has no project line for: one that ended before projects were logged
 

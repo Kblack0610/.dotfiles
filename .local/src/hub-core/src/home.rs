@@ -6,8 +6,10 @@
 //!
 //! One row per thing that waits: a session with a pending ask shows the ask, not the session as
 //! well, and a queue item waiting on a session already shown adds nothing. A waiting item an ask
-//! holds (its `ask:<id>` tag, or the ask's Claude session last in its `sessions`) shows on the ask's row
-//! after that session ends, and one whose last session's ask was answered leaves the list. Sessions are matched
+//! holds (its `ask:<id>` tag, or the ask's Claude session last among its Claude `sessions`, a
+//! trainee's opencode session after it skipped) shows on the ask's row after that session ends, and
+//! one whose last session's ask was answered leaves the list. An audit ask (`audit_of`) and a
+//! trainee run's wait list nothing: the fleet answers both, no human waits. Sessions are matched
 //! to a queue item by their tmux session name, the one name an item and a state row carry; an ask
 //! finds its session by `claude_session` alone (the state row's `session_id`), never by name.
 //!
@@ -37,9 +39,11 @@ pub const DOMAINS: [&str; 12] = [
 /// The row types only the human can do (notes-cli README, "The task row": `run decide check`).
 /// A human-sheet row of another type is work an agent can take, so it never needs the human.
 pub const HUMAN_TYPES: [&str; 3] = ["run", "decide", "check"];
-/// The priorities a human-sheet row needs before it joins NEEDS YOU; a `#low` row waits on the sheet.
-/// `normal` is an untagged row's too (notes-cli `md::DEFAULT_PRIORITY`).
-pub const SHEET_PRIORITIES: [&str; 3] = ["urgent", "high", "normal"];
+/// The priorities a human-sheet row needs before it joins NEEDS YOU; a `#normal`, untagged
+/// (notes-cli `md::DEFAULT_PRIORITY`) or `#low` row waits on the sheet. A row that truly blocks
+/// the human is triaged to `#high`. Why: `#normal` is the default for new work, so counting it
+/// floods NEEDS YOU with to-dos that block nothing.
+pub const SHEET_PRIORITIES: [&str; 2] = ["urgent", "high"];
 /// The domains shown even when Prometheus has no status for them, so a missing one reads as no data:
 /// k3s and ci are the platform, and projects holds the playground and dotfiles CI watches that left ci.
 pub(crate) const ALWAYS: [&str; 3] = ["k3s", "ci", "projects"];
@@ -337,6 +341,27 @@ impl Need {
         }
     }
 
+    /// Whether the daily Decisions batch lists it, and Needs you and the needs pager leave it
+    /// out: an ask the judge levelled below critical (`Ask::batchable`), or a session waiting on
+    /// a plan approval. What is not a decision waits on the human today.
+    pub fn is_decision(&self) -> bool {
+        match self.kind {
+            Kind::Ask => self.ask.as_ref().is_some_and(boards::Ask::batchable),
+            Kind::Session => self.need == NeedKind::Plan,
+            _ => false,
+        }
+    }
+
+    /// Whether the needs pager may page it: an ask that is not a decision and holds a session,
+    /// a queue item or later work, or any other row that is not a decision (a session at a
+    /// dialog, a queue item). A decision waits for the briefing's daily batch.
+    pub fn pages(&self) -> bool {
+        match self.kind {
+            Kind::Ask => !self.is_decision() && !self.holds().is_empty(),
+            _ => !self.is_decision(),
+        }
+    }
+
     /// Why it sits where it does: what it holds, or a sheet row's `#priority`.
     pub fn holds(&self) -> String {
         match &self.score {
@@ -379,21 +404,14 @@ impl crate::table::Row for Need {
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
             "rank" => Val::Num(self.rank as f64),
-            "kind" => text(self.need.slug()),
-            "project" => text(&self.project),
+            "kind" => Val::word(self.need.slug()),
+            "project" => Val::word(&self.project),
             // Earlier is bigger, so a header's first click puts the longest wait on top.
             "waited" => self.since.map_or(Val::None, |s| Val::Num(-(s as f64))),
-            "holds" => text(&self.holds()),
-            "what" => text(&self.text),
+            "holds" => Val::word(&self.holds()),
+            "what" => Val::word(&self.text),
             _ => Val::None,
         }
     }
@@ -434,9 +452,9 @@ pub struct Score {
     pub value: i64,
     /// What it holds, in words: "session, 3 phases, 2 queued", empty when nothing.
     pub holds: String,
-    /// A sheet row's priority (`urgent`, `high` or `normal`). Every sheet row ranks after every
-    /// live wait with the same `human`, since a live wait stops work already running and a to-do
-    /// does not; among sheet rows, `high` follows `urgent` and `normal` follows `high`. A live
+    /// A sheet row's priority (`urgent` or `high`, `SHEET_PRIORITIES`). Every sheet row ranks
+    /// after every live wait with the same `human`, since a live wait stops work already running
+    /// and a to-do does not; among sheet rows, `high` follows `urgent`. A live
     /// wait has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
@@ -479,8 +497,8 @@ impl Score {
     }
 
     /// Where the row ranks among the human's: 0 a live wait (an ask, a session, a queue item),
-    /// which stops running work; then a sheet to-do by its priority, `urgent` 1, `high` 2,
-    /// `normal` 3 (`tasks::PRIORITIES` order).
+    /// which stops running work; then a sheet to-do by its priority, `urgent` 1, `high` 2
+    /// (`tasks::PRIORITIES` order).
     fn tier(&self) -> u8 {
         self.priority.as_deref().map_or(0, |p| {
             let i = tasks::PRIORITIES.iter().position(|w| *w == p);
@@ -564,10 +582,7 @@ impl crate::table::Row for Running {
 
     fn val(&self, col: &str) -> crate::table::Val {
         use crate::table::Val;
-        let text = |s: Option<&str>| match s {
-            Some(s) if !s.is_empty() => Val::Text(s.to_string()),
-            _ => Val::None,
-        };
+        let text = |s: Option<&str>| s.map_or(Val::None, Val::word);
         match col {
             "item" => text(Some(&self.title)),
             "project" => text(Some(&self.project)),
@@ -812,7 +827,7 @@ fn pr_item_failed(i: &Item) -> bool {
         && i.tag_list().any(|t| t == "tier3")
 }
 
-/// A human-sheet row that needs the human: open, not `#low`, of a `HUMAN_TYPES` type.
+/// A human-sheet row that needs the human: open, `#urgent` or `#high`, of a `HUMAN_TYPES` type.
 fn needs_the_human(r: &Row) -> bool {
     r.lane == "human"
         && r.state == "open"
@@ -951,6 +966,24 @@ fn ask_need(
         target,
         since,
     }
+}
+
+/// Whether ask `a` waits on a decision. An audit (`audit_of`, posted before ar-4765) reviews an
+/// answer and the fleet reads it: it stands for its item in `needs` and lists nothing.
+fn has_decision(a: &Value) -> bool {
+    str_of(a, "audit_of").is_empty()
+}
+
+/// Whether waiting item `i` is a row of its own: no ask stands for it, no shown session owns it,
+/// and a trainee run did not end it, a wait the fleet answers.
+fn waits_alone(i: &Item, asked: &HashSet<String>, shown: &HashSet<String>) -> bool {
+    i.state == State::Waiting
+        && !i.ended_as_trainee()
+        && !asked.contains(&i.slug)
+        && !i
+            .session
+            .as_deref()
+            .is_some_and(|s| shown.contains(tmux_name(s)))
 }
 
 /// The waiting item ask `a` holds once its session is gone: the one tagged `ask:<id>`, or the one
@@ -1116,7 +1149,7 @@ pub fn needs(
             dependents(item.map(|i| i.slug.as_str())),
             age_min(since),
         );
-        out.push(ask_need(a, item, target, since, score));
+        out.extend(has_decision(a).then(|| ask_need(a, item, target, since, score)));
     }
     for s in &sessions {
         let target = str_of(s, "target");
@@ -1148,14 +1181,7 @@ pub fn needs(
             )),
         });
     }
-    for i in items.iter().filter(|i| i.state == State::Waiting) {
-        if asked.contains(&i.slug)
-            || i.session
-                .as_deref()
-                .is_some_and(|s| shown.contains(tmux_name(s)))
-        {
-            continue;
-        }
+    for i in items.iter().filter(|i| waits_alone(i, &asked, &shown)) {
         work(&mut worked, Some(i));
         let waited = i.waiting.as_deref();
         let target = i.session.as_deref().and_then(|s| target_of(tmux_name(s)));
@@ -1256,7 +1282,7 @@ pub fn needs(
         let what = str_of(j, "what");
         out.push(condition(
             Kind::Janitor,
-            format!("janitor:{what}"),
+            format!("janitor:{}", j["key"].as_str().unwrap_or(what)),
             format!(
                 "Home cluster needs you: {} ({}, {}).",
                 what.trim_end_matches('.'),
@@ -1488,15 +1514,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn an_ask_row_keeps_the_state_documents_audit_of_for_the_pager() {
-        let row = |a: Value| ask_need(&a, None, None, None, Score::new(true, true, 0, 0, 120));
-        let audit = row(json!({"id": "au", "project": "p", "question": "q?", "audit_of": "q1"}));
-        assert_eq!(audit.ask.unwrap().audit_of, "q1");
-        let plain = row(json!({"id": "a1", "project": "p", "question": "q?"}));
-        assert_eq!(plain.ask.unwrap().audit_of, "");
-    }
-
     /// `build` with every kind in `needs`, for the tests of the ranking and the rows themselves;
     /// `build` alone moves the agent kinds to `routed` (`Kind::owner`).
     fn build_all(
@@ -1570,6 +1587,17 @@ mod tests {
             ],
             "main": [{"repo": "repo", "reason": "repo red: Tests"}],
         })
+    }
+
+    #[test]
+    fn a_janitor_need_takes_its_id_from_the_key_and_its_text_from_the_newest_line() {
+        let mut st = state();
+        st["janitor"] = json!([{"when": "10:50", "who": "janitor",
+            "what": "node a quarantine (x3 (06:20Z, 06:50Z, 10:50Z))", "key": "node a quarantine"}]);
+        let h = build_all(Some(&st), None, None, None, NOW);
+        let n = h.needs.iter().find(|n| n.kind == Kind::Janitor).unwrap();
+        assert_eq!(n.id, "janitor:node a quarantine");
+        assert!(n.text.contains("x3 (06:20Z, 06:50Z, 10:50Z)"));
     }
 
     #[test]
@@ -1729,6 +1757,86 @@ mod tests {
             h.needs.iter().find(|n| n.id == "a1").unwrap().holds_line(),
             ""
         );
+    }
+
+    #[test]
+    fn a_dead_askers_item_a_trainee_run_ran_after_shows_once_on_the_ask() {
+        // The Claude asker ended, then a trainee's opencode session ran the item: the ask's
+        // session is no longer the last id in `sessions`, but it is the last Claude one.
+        let mut st = state();
+        st["asks"][0]["claude_session"] = json!("sid-gone");
+        let mut held = item("held", State::Waiting, Some("lab:repo-agent-9"));
+        held.extra
+            .insert("sessions".into(), json!("sid-gone ses_eval123"));
+        let q = Queue {
+            items: vec![held.clone()],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue));
+        let asks: Vec<_> = h.needs.iter().filter(|n| n.kind == Kind::Ask).collect();
+        assert_eq!(asks.len(), 1);
+        assert_eq!(asks[0].holds_line(), "holds held");
+        // Negative control: a Claude session after the asker's is still its own row.
+        held.extra
+            .insert("sessions".into(), json!("sid-gone ses_eval123 sid-later"));
+        let q = Queue {
+            items: vec![held],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Queue && n.id == "held"));
+    }
+
+    #[test]
+    fn an_audit_ask_lists_nothing_but_still_stands_for_its_item() {
+        let mut st = state();
+        st["asks"][0]["audit_of"] = json!("q1");
+        st["asks"][0]["claude_session"] = json!("sid-gone");
+        let mut held = item("held", State::Waiting, Some("lab:repo-agent-9"));
+        held.extra.insert("sessions".into(), json!("sid-gone"));
+        let q = Queue {
+            items: vec![held],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h.needs.iter().any(|n| n.id == "a1"));
+        assert!(!h.needs.iter().any(|n| n.kind == Kind::Queue));
+        // Negative control: the same ask without audit_of lists.
+        st["asks"][0]["audit_of"] = json!("");
+        let h = build(Some(&st), None, None, None, NOW);
+        assert!(h.needs.iter().any(|n| n.id == "a1"));
+    }
+
+    #[test]
+    fn a_trainee_runs_wait_lists_nothing_and_a_claude_wait_does() {
+        let mut trainee = item("tr", State::Waiting, None);
+        trainee.extra.insert("trainee".into(), json!("ocfree:beam"));
+        trainee
+            .extra
+            .insert("sessions".into(), json!("sid-a ses_x"));
+        // The header stays after a rejection: a Claude retry that ended waiting is its own row.
+        let mut retried = trainee.clone();
+        retried.slug = "retried".into();
+        retried
+            .extra
+            .insert("sessions".into(), json!("ses_x sid-b"));
+        let plain = item("plain", State::Waiting, None);
+        let q = Queue {
+            items: vec![trainee, retried, plain],
+            ..Default::default()
+        };
+        let h = build(Some(&state()), Some(&q), None, None, NOW);
+        let queued: Vec<_> = h
+            .needs
+            .iter()
+            .filter(|n| n.kind == Kind::Queue)
+            .map(|n| n.id.as_str())
+            .collect();
+        assert_eq!(queued, ["retried", "plain"]);
     }
 
     #[test]
@@ -2324,8 +2432,9 @@ mod tests {
         Ok(Feed {
             rows: vec![
                 sheet("tr-117", "human", "run", "high", "2026-11-01"),
-                // An untagged row reads normal: it still needs the human, after #high.
+                // A #normal row and an untagged one wait on the sheet, like a #low one.
                 sheet("tr-120", "human", "run", "normal", "2026-10-20"),
+                sheet("tr-121", "human", "run", "", "2026-10-20"),
                 sheet("tr-50", "human", "run", "urgent", "2026-11-04"),
                 // Worked by the queue item behind ask a1, so the ask stands for it.
                 sheet("tr-51", "human", "decide", "urgent", "2026-11-04"),
@@ -2351,8 +2460,8 @@ mod tests {
         let h = build_all(Some(&state()), Some(&q), Some(&board()), None, NOW);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
         // The #urgent row has waited longer than the ask, but every live wait leads: it stops
-        // running work and a to-do does not. The #high row follows the #urgent one, and the
-        // older normal one follows both; conditions stay last.
+        // running work and a to-do does not. The #high row follows the #urgent one; the older
+        // normal one waits on the sheet; conditions stay last.
         assert_eq!(
             rows,
             [
@@ -2360,7 +2469,6 @@ mod tests {
                 (Kind::Session, "hub/dotfiles:2"),
                 (Kind::Sheet, "tr-50"),
                 (Kind::Sheet, "tr-117"),
-                (Kind::Sheet, "tr-120"),
                 (Kind::Nightly, "repo"),
             ]
         );
@@ -2396,7 +2504,7 @@ mod tests {
             .filter(|n| n.kind == Kind::Sheet)
             .map(|n| n.id)
             .collect();
-        assert_eq!(ids, ["tr-51", "tr-117", "tr-120"]);
+        assert_eq!(ids, ["tr-51", "tr-117"]);
         let h = build(
             Some(&state()),
             None,

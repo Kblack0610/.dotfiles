@@ -51,6 +51,7 @@ const UNFOLD_CSS = "[data-pin][hidden], [data-in][hidden] { display: block !impo
 const DATA_ROW = "tr:has(> td):not(.tfilters)";
 const TABS = [
   { tab: "home", row: `#home tr.jr` },
+  { tab: "reports", row: `#reports tr.wr` },
   { tab: "queue", row: `#queue tr.qr` },
   { tab: "projects", row: `#p-cards tr.jr` },
   { tab: "projects", name: "projects-all", inner: "all", row: `#p-all tr.jr` },
@@ -100,6 +101,10 @@ const out = outAt >= 0 ? args[outAt + 1] : join(SCRATCH, (control ? "control" : 
 
 // The versions npx pins do not match the cached browser, so both are named outright.
 function playwright() {
+  // PLAYWRIGHT_CORE_DIR is the pinned one tests/Dockerfile installs, which CI runs this in; set,
+  // it is the only root, so a newer copy elsewhere cannot outrank the pin.
+  const pinned = process.env.PLAYWRIGHT_CORE_DIR;
+  if (pinned) return createRequire(join(pinned, "package.json"))("playwright-core");
   const npx = join(homedir(), ".npm/_npx");
   const roots = [join(SCRATCH, "node/node_modules/playwright-core"), ...(existsSync(npx) ? readdirSync(npx).map((d) => join(npx, d, "node_modules/playwright-core")) : [])].filter(existsSync);
   const version = (p) => JSON.parse(readFileSync(join(p, "package.json"), "utf8")).version;
@@ -107,8 +112,8 @@ function playwright() {
   if (!root) throw new Error(`no playwright-core under ${npx} or ${SCRATCH}/node`);
   return createRequire(join(root, "package.json"))("playwright-core");
 }
-// CI installs the browser its pinned playwright-core names (tests.yml, Phone render harness), so that
-// one wins when it is there.
+// The test image installs the browser its pinned playwright-core names (tests/Dockerfile, under
+// PLAYWRIGHT_BROWSERS_PATH), so that one wins when it is there.
 function chromium(pw) {
   const own = pw.chromium.executablePath();
   if (own && existsSync(own)) return own;

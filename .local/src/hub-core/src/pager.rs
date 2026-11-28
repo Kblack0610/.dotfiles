@@ -99,7 +99,8 @@ fn in_repage_window(n: &Need, cfg: &Config) -> bool {
             .is_some_and(|s| (cfg.repage_after_min..cfg.repage_before_min).contains(&s.age_min))
 }
 
-/// The page for `needs` (in their rank order) given the ids already paged and how many of
+/// The page for `needs` (in their rank order), leaving out the daily decisions and any ask that
+/// holds nothing (`Need::pages`), given the ids already paged and how many of
 /// this sender's pages buzzed in the last day. The paged ids keep only rows still listed, so
 /// an answered ask leaves the file and a new ask with its id would page again. An ask paged
 /// before pages once more inside `repage_after_min..repage_before_min`, so a blocking ask is
@@ -107,14 +108,12 @@ fn in_repage_window(n: &Need, cfg: &Config) -> bool {
 pub fn decide(needs: &[Need], paged: &HashSet<String>, buzzed: usize, cfg: &Config) -> Decision {
     let human: Vec<&Need> = needs
         .iter()
-        .filter(|n| n.score.as_ref().is_some_and(|s| s.human))
+        .filter(|n| n.pages() && n.score.as_ref().is_some_and(|s| s.human))
         .collect();
     let due: Vec<&Need> = human
         .iter()
         .copied()
         .filter(|n| n.score.as_ref().is_some_and(|s| s.value >= cfg.min_score))
-        // An audit (posted before ar-4765) is a review, not a blocking decision: it waits on Home.
-        .filter(|n| n.ask.as_ref().is_none_or(|a| a.audit_of.is_empty()))
         .filter(|n| {
             !paged.contains(&n.id)
                 || (in_repage_window(n, cfg) && !paged.contains(&repage_key(&n.id)))
@@ -260,9 +259,7 @@ impl Paths {
             config: var("COMMS_CHANNELS")
                 .unwrap_or_else(|| home.join(".config/comms-lint/channels.toml")),
             ledger: crate::actions::Paths::from_env().notify_log,
-            paged: var("XDG_STATE_HOME")
-                .unwrap_or_else(|| home.join(".local/state"))
-                .join("hub/needs-paged"),
+            paged: agent_core::vocab::state_home().join("hub/needs-paged"),
         }
     }
 }
@@ -363,39 +360,20 @@ mod tests {
         );
         let c = config(&std::fs::read_to_string(f).unwrap()).unwrap();
         assert!(c.min_score > 0 && c.top > 0);
+        assert_eq!(
+            c.max_buzz_day, 2,
+            "the human's cap: 1-2 critical pages a day (ar-4072)"
+        );
         assert_eq!(c.buzz, ["high", "urgent"]);
         assert!(config("[report]\nbuzz = []\n").is_err());
-    }
-
-    #[test]
-    fn an_audit_ask_never_pages_but_still_counts_as_waiting() {
-        let mut audit = row(Kind::Ask, "au", true, 600);
-        audit.ask = Some(crate::boards::Ask {
-            audit_of: "q1".into(),
-            ..Default::default()
-        });
-        let real = row(Kind::Ask, "a1", true, 600);
-        // Negative control: the same row without audit_of pages.
-        let d = decide(std::slice::from_ref(&real), &set(&[]), 0, &cfg());
-        assert_eq!(d.page.unwrap().reference.as_deref(), Some("ask:a1"));
-        let d = decide(&[audit.clone()], &set(&[]), 0, &cfg());
-        assert_eq!(d.page, None);
-        assert!(d.paged.is_empty());
-        let p = decide(&[audit, real], &set(&[]), 0, &cfg()).page.unwrap();
-        assert_eq!(p.reference.as_deref(), Some("ask:a1"));
-        assert!(
-            p.text.starts_with("1 new needs you, 2 waiting."),
-            "{}",
-            p.text
-        );
     }
 
     #[test]
     fn new_rows_above_the_bar_page_once_as_one_grouped_page() {
         let needs = [
             row(Kind::Ask, "a1", true, 600),
-            row(Kind::Session, "s1", true, 90),
-            row(Kind::Queue, "low", true, 59),
+            row(Kind::Ask, "a2", true, 90),
+            row(Kind::Ask, "low", true, 59),
         ];
         let d = decide(&needs, &set(&[]), 0, &cfg());
         let p = d.page.unwrap();
@@ -404,21 +382,21 @@ mod tests {
         assert_eq!(
             p.text,
             "2 new need you, 3 waiting. First: Question a1? (dotfiles, 2h, holds session). \
-             Then: Question s1? List: hub Home."
+             Then: Question a2? List: hub Home."
         );
-        assert_eq!(d.paged, ["a1", "s1"]);
+        assert_eq!(d.paged, ["a1", "a2"]);
         // The next pass has told the human already.
-        let again = decide(&needs, &set(&["a1", "s1"]), 1, &cfg());
+        let again = decide(&needs, &set(&["a1", "a2"]), 1, &cfg());
         assert_eq!(again.page, None);
-        assert_eq!(again.paged, ["a1", "s1"]);
+        assert_eq!(again.paged, ["a1", "a2"]);
     }
 
     #[test]
     fn past_the_cap_the_page_goes_silent_and_is_never_dropped() {
-        let needs = [row(Kind::Session, "s1", true, 90)];
+        let needs = [row(Kind::Ask, "a1", true, 90)];
         let p = decide(&needs, &set(&[]), 6, &cfg()).page.unwrap();
         assert_eq!(p.priority, "normal");
-        assert_eq!(p.reference.as_deref(), Some("tmux:hub/s1:1"));
+        assert_eq!(p.reference.as_deref(), Some("ask:a1"));
         assert!(p.text.starts_with("1 new needs you, 1 waiting."));
     }
 
@@ -434,39 +412,27 @@ mod tests {
     fn an_ask_open_past_a_day_and_under_14_days_re_pages_once_at_high() {
         let mut ask = row(Kind::Ask, "a1", true, 1_440);
         ask.score.as_mut().unwrap().age_min = cfg().repage_after_min;
-        let mut session = row(Kind::Session, "s1", true, 1_440);
-        session.score.as_mut().unwrap().age_min = cfg().repage_after_min;
 
-        let d = decide(
-            &[ask.clone(), session.clone()],
-            &set(&["a1", "s1"]),
-            0,
-            &cfg(),
-        );
+        let d = decide(&[ask.clone()], &set(&["a1"]), 0, &cfg());
         let p = d.page.unwrap();
         assert_eq!(p.priority, "high");
         assert_eq!(p.reference.as_deref(), Some("ask:a1"));
         assert!(
-            p.text.starts_with("1 needs you again, 2 waiting."),
+            p.text.starts_with("1 needs you again, 1 waiting."),
             "{}",
             p.text
         );
-        assert_eq!(d.paged, ["a1", "repage:a1", "s1"]);
+        assert_eq!(d.paged, ["a1", "repage:a1"]);
 
         // Once re-paged, the next pass stays quiet.
-        let again = decide(
-            &[ask, session.clone()],
-            &set(&["a1", "repage:a1", "s1"]),
-            1,
-            &cfg(),
-        );
+        let again = decide(&[ask], &set(&["a1", "repage:a1"]), 1, &cfg());
         assert_eq!(again.page, None);
-        assert_eq!(again.paged, ["a1", "repage:a1", "s1"]);
+        assert_eq!(again.paged, ["a1", "repage:a1"]);
 
         // Answering the ask drops both its id and its repage marker.
-        let cleared = decide(&[session], &set(&["a1", "repage:a1", "s1"]), 1, &cfg());
+        let cleared = decide(&[], &set(&["a1", "repage:a1"]), 1, &cfg());
         assert_eq!(cleared.page, None);
-        assert_eq!(cleared.paged, ["s1"]);
+        assert!(cleared.paged.is_empty());
     }
 
     #[test]
@@ -495,6 +461,63 @@ mod tests {
             text.starts_with("1 new needs you, 1 needs you again, 2 waiting."),
             "{text}"
         );
+    }
+
+    #[test]
+    fn only_a_critical_ask_that_holds_work_pages() {
+        // Negative controls: a decision (an ask below critical, a plan approval) and an ask that
+        // holds nothing wait for the list and the briefing, however old. A session at a dialog is
+        // not a decision and still pages.
+        let ask = |level: &str, session: bool| {
+            let mut n = row(Kind::Ask, "a", true, 9_000);
+            n.ask = Some(crate::boards::Ask {
+                kind: "question".into(),
+                judge_level: level.into(),
+                ..Default::default()
+            });
+            n.score = Some(Score {
+                value: 9_000,
+                ..Score::new(true, session, 0, 0, 600)
+            });
+            n
+        };
+        let plan = Need {
+            need: crate::home::NeedKind::Plan,
+            ..row(Kind::Session, "s1", true, 9_000)
+        };
+        let waiting = [
+            ask("fleet", true),
+            ask("repo", true),
+            ask("critical", false),
+            plan,
+        ];
+        assert_eq!(decide(&waiting, &set(&[]), 0, &cfg()).page, None);
+        assert!(decide(
+            &[row(Kind::Session, "s2", true, 9_000)],
+            &set(&[]),
+            0,
+            &cfg()
+        )
+        .page
+        .is_some());
+        // The same asks with a critical one that holds a session: one page, for it alone.
+        let p = decide(
+            &[ask("fleet", true), ask("critical", true)],
+            &set(&[]),
+            0,
+            &cfg(),
+        )
+        .page
+        .unwrap();
+        assert!(
+            p.text.starts_with("1 new needs you, 1 waiting."),
+            "{}",
+            p.text
+        );
+        // An ask the judge never levelled (an approval) pages as it did.
+        assert!(decide(&[ask("", true)], &set(&[]), 0, &cfg())
+            .page
+            .is_some());
     }
 
     #[test]
@@ -594,11 +617,11 @@ mod tests {
         let p = paths("once");
         let needs = [
             row(Kind::Ask, "a1", true, 600),
-            row(Kind::Session, "s1", true, 90),
+            row(Kind::Ask, "a2", true, 90),
         ];
         let r = Record(Default::default(), None);
         let page = run(&needs, 0, &p, &r).unwrap().unwrap();
-        assert_eq!(std::fs::read_to_string(&p.paged).unwrap(), "a1\ns1\n");
+        assert_eq!(std::fs::read_to_string(&p.paged).unwrap(), "a1\na2\n");
         assert_eq!(
             run(&needs, 60, &p, &r).unwrap(),
             None,
