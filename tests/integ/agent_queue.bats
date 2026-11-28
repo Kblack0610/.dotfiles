@@ -231,6 +231,68 @@ load 'agent_queue/common'
   assert_output --partial "cause:feed1234 is already owned by rc-p1"
 }
 
+# ar-3645: live_owner is the one owner check; cause (above), row, area, plan and pr all read the queue through it.
+@test "one live item per PR: a second add naming it is refused and names the owner; another PR, a validate item and a set pr= pass" {
+  run "$AQ" add --project game --slug land-a --pr o/game#7 "land PR 7"
+  assert_success
+  assert_equal "$(field "$(item queued land-a)" pr)" o/game#7
+  run "$AQ" add --project game --slug land-b --pr o/game#7 "check PR 7"
+  assert_failure
+  assert_output --partial "o/game#7 is already recorded by land-a"
+  ! compgen -G "$AGENT_QUEUE_DIR/*/*land-b*"
+  # negative control: a different PR, and the same PR in another repo, are other work
+  run "$AQ" add --project game --slug land-c --pr o/game#8 "land PR 8"
+  assert_success
+  run "$AQ" add --project game --slug land-d --pr o/app#7 "land app PR 7"
+  assert_success
+  # a validate item reviews its author's PR, so it neither owns nor is refused
+  run "$AQ" add --project game --slug val-a --tags validate --pr o/game#7 "review PR 7"
+  assert_success
+  # recording a PR by set is bookkeeping (agent-land, reap), never refused, even where another item lists it
+  "$AQ" add --project game --slug other "other work" >/dev/null
+  run "$AQ" set other pr=o/game#7
+  assert_success
+  # a closed owner frees the PR for a new add
+  run "$AQ" move land-c done --status cancelled
+  assert_success
+  run "$AQ" add --project game --slug land-e --pr o/game#8 "land PR 8 again"
+  assert_success
+}
+
+@test "one live item per plan phase: a twin under another slug is refused by add and by set, another phase and plan pass" {
+  story_notes
+  # a plan path with no space: the task text names it unquoted, and the sandbox path has one
+  PD="$BATS_TEST_TMPDIR"
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$PD/own.md"
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$PD/else.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$PD/own.md" --project level --slug own
+  assert_success
+  assert_equal "$(field "$(item queued own-p1)" phases)" 1
+  run "$AQ" add --project level --slug twin "P1 of $PD/own.md: again"
+  assert_failure
+  assert_output --partial "phase 1 of $PD/own.md is already held by own-p1"
+  ! compgen -G "$AGENT_QUEUE_DIR/*/*-twin.md"
+  run "$AQ" add --project level --slug twin2 "Plan: $PD/own.md phase 1 under a new name"
+  assert_failure
+  assert_output --partial "already held by own-p1"
+  "$AQ" add --project level --slug claimer "a session taking on plan work" >/dev/null
+  run "$AQ" set claimer plan="$PD/own.md" phases=1
+  assert_failure
+  assert_output --partial "phase 1 of $PD/own.md is already held by own-p1"
+  # negative control: another phase of the plan, and the same phase of another plan, are other work
+  run "$AQ" set claimer plan="$PD/else.md" phases=1
+  assert_success
+  run "$AQ" add --project level --slug p3 "P3 of $PD/own.md: three"
+  assert_success
+  # the holder's own claim, and a closed holder, free nothing wrongly and nothing falsely
+  run "$AQ" set own-p1 phases=1
+  assert_success
+  run "$AQ" move own-p1 done --status cancelled
+  assert_success
+  run "$AQ" add --project level --slug twin "P1 of $PD/own.md: again"
+  assert_success
+}
+
 @test "add refuses a slug that finished ok unless --repeat; a failed or cancelled one is a retry" {
   "$AQ" add --project game --slug landed "x" >/dev/null
   "$AQ" move landed done --status ok >/dev/null

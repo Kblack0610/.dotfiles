@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Stub for `schedules-sync`, the one reader of the run ledger (runs, repos) and the PR store (prs, sync-prs).
+#
+# Logs every call as `schedules-sync <argv>` to calls.log in $SS_FIXTURE (default: $GH_FIXTURE, the one fixture
+# dir of the sandbox), then answers from the fixture, all optional. A verb is argv[1]; <key> is argv[2] (argv[3]
+# after `--wait`) with `/` as `_`, so `prs o/r` reads ss.prs.o_r.*; the first of these files that exists wins:
+#   ss.<verb>.<key>.<out|rc|err>   one repo's answer to one verb
+#   ss.<verb>.<out|rc|err>         the verb's answer
+#   ss.<out|rc|err>                every verb's answer: stdout, exit status (0 when absent), stderr
+#   ss.script                      present => a test's own behaviour, written by `ss_script` (sandbox.bash): bash,
+#                                  sourced here in place of the canned answers (a shebang first line: exec'd)
+# With no file the stub prints nothing and exits 0: a verb that must answer `[]` has it in ss.<verb>.out.
+# `ss_answer` (sandbox.bash) writes these files.
+set -uo pipefail
+
+_dir="${SS_FIXTURE:-${GH_FIXTURE:?SS_FIXTURE and GH_FIXTURE unset - stub used outside the sandbox}}"
+printf 'schedules-sync %s\n' "$*" >> "$_dir/calls.log"
+if [ -f "$_dir/ss.script" ]; then
+  if [ "$(head -c2 "$_dir/ss.script")" = '#!' ]; then exec "$_dir/ss.script" "$@"; fi
+  set +u +o pipefail
+  . "$_dir/ss.script"
+  exit $?
+fi
+
+_verb="${1:-}" _key="${2:-}"
+[ "$_key" != --wait ] || _key="${3:-}"
+_key="${_key//\//_}"
+_ans() { # <out|rc|err> -> the path of the file that answers, or nothing
+  local f
+  for f in "$_dir/ss.$_verb.$_key.$1" "$_dir/ss.$_verb.$1" "$_dir/ss.$1"; do
+    [ -f "$f" ] && { printf '%s\n' "$f"; return; }
+  done
+}
+f="$(_ans out)"; [ -z "$f" ] || cat "$f"
+f="$(_ans err)"; [ -z "$f" ] || cat "$f" >&2
+f="$(_ans rc)"; exit "$([ -z "$f" ] && echo 0 || cat "$f")"
