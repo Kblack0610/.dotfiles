@@ -725,3 +725,9 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .appd30 { display: inline; }
 }
 .appchk { margin-bottom: 10px; }
+
+/* Tests: a class's recent results, oldest first, one small block each. */
+.hstrip { display: inline-flex; gap: 1px; vertical-align: middle; }
+.hstrip i { display: block; width: 5px; height: 12px; background: var(--b-parked); }
+.hstrip i.passed { background: var(--b-done); } .hstrip i.failed { background: var(--b-needs); }
+.hstrip i.quarantined { background: var(--b-stalled); }

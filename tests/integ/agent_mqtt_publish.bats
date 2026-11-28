@@ -471,6 +471,29 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
 }
 
 
+# mqtt2prom drops text, so the Command Center cannot read `system` as a label: each id also rides
+# as a system_<id> boolean, and Prometheus takes the system from that key's name (ar-6154).
+@test "a watch carries its manifest's system ids and bookkeeping flag; a manifest with neither carries none" {
+  seed_watch both TRIP
+  printf 'system: [tests, ci-runners]\nbookkeeping: true\n' >> "$WATCH_DIR/both.yaml"
+  seed_watch one OK
+  printf 'system: deploy\n' >> "$WATCH_DIR/one.yaml"
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c '[.system, .bookkeeping]' <<< "$(payload agents/testhost/watch/both)")" '["ci-runners,tests",true]'
+  assert_equal "$(jq -c '[.system_tests, .system_ci_runners, .system_deploy]' <<< "$(payload agents/testhost/watch/both)")" '[true,true,null]'
+  assert_equal "$(jq -c '[.system, .bookkeeping, .system_deploy]' <<< "$(payload agents/testhost/watch/one)")" '["deploy",false,true]'
+  # skill-drift (seeded in setup) names no system and no bookkeeping
+  assert_equal "$(jq -c '[.system, .bookkeeping, ([keys[] | select(startswith("system_"))] | length)]' <<< "$(payload agents/testhost/watch/skill_drift)")" '["",false,0]'
+}
+
+@test "when the manifest reader fails, watches publish no labels rather than empty ones" {
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/sm-broken"; chmod +x "$SANDBOX/bin/sm-broken"
+  SENTINEL_MANIFEST="$SANDBOX/bin/sm-broken" run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c '[has("system"), has("bookkeeping"), .tripped]' <<< "$(payload agents/testhost/watch/skill_drift)")" '[false,false,true]'
+}
+
 # A probe's `page:` level (alertmanager-fleet: warning-only alerts page normal) is the trip's level,
 # so the rollup reads it, not the manifest's fixed fallback, while the watch is TRIP.
 @test "a tripped watch carries its trip's level over the manifest severity; a stale level file is ignored" {
