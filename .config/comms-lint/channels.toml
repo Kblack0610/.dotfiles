@@ -40,16 +40,19 @@ refs = [
 buzz = ["high", "urgent"]       # priorities that make the phone buzz (SENTINEL.md, Paging)
 # The buzzes-a-day target is buzzes_per_day_max in ~/.config/agentctl/kpi-thresholds.
 
-# The needs pager (`hub needs --page`, hub-core pager.rs): one grouped page for the rows of
-# hub Home's NEEDS YOU that only the human can act on and that crossed min_score since the
-# last page. A score is (1 + session + plan phases left + queued items after it) x minutes
-# waited, so 60 is an hour alone or 15 minutes holding a session and 2 phases. Past
-# max_buzz_day high pages a day the page still goes out, at normal. top is how many rows one
-# page names before "+N more". An ask already paged pages once more, under the same cap,
+# The needs pager (`hub needs --page`, hub-core pager.rs): one grouped page for the asks of
+# hub Home's NEEDS YOU that only the human can act on, that are not a decision (a critical ask, or
+# one the judge never levelled, `Need::pages`), that hold a session, a queue item or later work, and
+# that crossed min_score since the last page. Every other row, a decision above all (an ask below
+# critical, a plan approval), waits for the list and the briefing's daily Decisions batch. A score
+# is (1 + session + plan phases left + queued items after it) x minutes waited, so 60 is an hour
+# alone or 15 minutes holding a session and 2 phases. max_buzz_day is the human's own cap, 1-2
+# critical pages a day (ar-4072); past it the page still goes out, at normal. top is how many rows
+# one page names before "+N more". An ask already paged pages once more, under the same cap,
 # once it has waited repage_after_min minutes and while under repage_before_min: a day, 14 days.
 [pager.needs]
 min_score = 60
-max_buzz_day = 6
+max_buzz_day = 2
 top = 3
 repage_after_min = 1440
 repage_before_min = 20160
@@ -78,12 +81,13 @@ max_line = 200
 source = { kind = "command", cmd = ["notes", "report", "list", "--json", "--since", "{since_date}"], ts = "updated", text = "summary", path = "id" }
 
 # The morning briefing page (refs/<date>/briefing.md), linted whole: the human overview. Needs you
-# holds at most 5 items, Landed yesterday 10 (8 changes, a rest line, the fleet line), Builds and
+# holds at most 5 items, Decisions 8 (the daily batch, each with its pick, then the one-reply line), Landed yesterday 10 (8 changes, a rest line, the fleet line), Builds and
 # releases and Overnight 14, Money 6 (spent, one line per store or broker); each section must be there.
 [channel.briefing]
-sections = [['^## Needs you$', 5, 160], ['^## Landed yesterday$', 10, 160], ['^## Builds and releases$', 14, 160], ['^## Overnight$', 14, 160], ['^## Money$', 6, 160]]
+sections = [['^## Needs you$', 5, 160], ['^## Decisions$', 8, 200], ['^## Landed yesterday$', 10, 160], ['^## Builds and releases$', 14, 160], ['^## Overnight$', 14, 160], ['^## Money$', 6, 160]]
 require = [
   ['(?m)^## Needs you$', 'a Needs you section'],
+  ['(?m)^## Decisions$', 'a Decisions section'],
   ['(?m)^## Landed yesterday$', 'a Landed yesterday section'],
   ['(?m)^## Builds and releases$', 'a Builds and releases section'],
   ['(?m)^## Overnight$', 'an Overnight section'],
