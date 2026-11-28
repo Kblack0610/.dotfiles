@@ -12,6 +12,7 @@ use crate::links::{Kind, Link};
 use crate::project_sprints::{self, Past};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
+use crate::tasks::Feed;
 
 /// One row of the window with its outcome, as notes-cli prints it, plus its group.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -148,13 +149,161 @@ pub fn rollup(rows: &[SprintRow]) -> Vec<AreaLine> {
     for a in &mut out {
         a.pts = format!("{}/{}", a.pts_done, a.pts_total);
     }
-    out.sort_by(|a, b| {
+    by_weight(&mut out);
+    out
+}
+
+/// The biggest group by points first, then by rows, and Unsorted last.
+fn by_weight(lines: &mut [AreaLine]) {
+    lines.sort_by(|a, b| {
         (a.group == crate::areas::UNSORTED)
             .cmp(&(b.group == crate::areas::UNSORTED))
             .then(b.pts_total.cmp(&a.pts_total))
             .then(b.rows.cmp(&a.rows))
             .then(a.group.cmp(&b.group))
     });
+}
+
+/// One group's line of the By area across sprints table: its By area `pts` cell in each
+/// version, None where the window had no row of the group.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct AcrossLine {
+    pub group: String,
+    pub cells: Vec<Option<String>>,
+}
+
+/// A column of the By area across sprints table: its window and that window's page.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct AcrossHead {
+    pub version: String,
+    pub link: Link,
+}
+
+/// A project's By area across sprints table, under its Sprint tab's Past: one line per group,
+/// one column per window, oldest first, each cell read off that window's own rollup, so the
+/// table and the window's page say the same numbers.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct Across {
+    pub heads: Vec<AcrossHead>,
+    pub lines: Vec<AcrossLine>,
+    /// What could not be read: the history, the groups file, or a window.
+    pub errors: Vec<String>,
+}
+
+/// The table over `pages`, already in version order, grouped and rolled up by `build`; the
+/// groups weigh by their rows and points summed over every window.
+pub fn across(pages: &[Page], profile: &str, project: &str) -> Across {
+    let mut total: Vec<AreaLine> = Vec::new();
+    for a in pages.iter().flat_map(|p| &p.by_area) {
+        match total.iter_mut().find(|t| t.group == a.group) {
+            Some(t) => {
+                t.rows += a.rows;
+                t.pts_total += a.pts_total;
+            }
+            None => total.push(AreaLine {
+                group: a.group.clone(),
+                rows: a.rows,
+                pts_total: a.pts_total,
+                ..Default::default()
+            }),
+        }
+    }
+    by_weight(&mut total);
+    let cell = |p: &Page, group: &str| {
+        p.by_area
+            .iter()
+            .find(|a| a.group == group)
+            .map(|a| a.pts.clone())
+    };
+    Across {
+        heads: pages
+            .iter()
+            .map(|p| AcrossHead {
+                version: p.version.clone(),
+                link: link(profile, project, &p.version),
+            })
+            .collect(),
+        lines: total
+            .iter()
+            .map(|t| AcrossLine {
+                group: t.group.clone(),
+                cells: pages.iter().map(|p| cell(p, &t.group)).collect(),
+            })
+            .collect(),
+        errors: Vec::new(),
+    }
+}
+
+/// The project's open windows in the board feed: the column a scored history lacks (a queued
+/// window has no row done yet, so it has none).
+pub fn open_windows(
+    f: &Feed,
+    profile: &str,
+    project: &str,
+    now: chrono::NaiveDateTime,
+) -> Vec<String> {
+    f.sprint_rows(Some((profile, project)), now)
+        .into_iter()
+        .filter(|r| !r.queued)
+        .map(|r| r.version)
+        .collect()
+}
+
+/// How many window reads `read_across` runs at once.
+const READS_AT_ONCE: usize = 4;
+
+/// Read a project's By area across sprints table: every scored window plus the `windows` the
+/// caller knows of beside them (the open one), each read as its page is. A window that fails to
+/// read is said in `errors` and left out, never drawn as an empty column.
+pub fn read_across(
+    runner: &(dyn Runner + Sync),
+    areas: Result<Areas, String>,
+    profile: &str,
+    project: &str,
+    windows: &[String],
+) -> Across {
+    if !crate::projects::safe_name(profile) || !crate::projects::safe_name(project) {
+        return Across {
+            errors: vec![format!("refusing {profile}/{project}")],
+            ..Default::default()
+        };
+    }
+    let mut errors = Vec::new();
+    let mut versions = known(runner, project, windows, &mut errors);
+    in_order(&mut versions);
+    let groups = groups_or_none(areas, &mut errors);
+    // One notes read per window, a few side by side: they are independent and each is a process,
+    // and a long history must not start one per window at once on a shared machine.
+    let reads: Vec<Result<Page, String>> = versions
+        .chunks(READS_AT_ONCE)
+        .flat_map(|batch| {
+            std::thread::scope(|s| {
+                let jobs: Vec<_> = batch
+                    .iter()
+                    .map(|v| {
+                        let groups = &groups;
+                        s.spawn(move || {
+                            fetch(runner, project, v)
+                                .and_then(|json| build(&json, groups, profile, project, vec![]))
+                                .map_err(|e| format!("{v}: {e}"))
+                        })
+                    })
+                    .collect();
+                jobs.into_iter()
+                    .map(|j| {
+                        j.join()
+                            .unwrap_or_else(|_| Err("a window read panicked".into()))
+                    })
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    let pages: Vec<Page> = reads
+        .into_iter()
+        .filter_map(|r| r.map_err(|e| errors.push(e)).ok())
+        .collect();
+    let mut out = across(&pages, profile, project);
+    out.errors = errors;
     out
 }
 
@@ -194,11 +343,20 @@ fn head_lines(p: &Page) -> Vec<String> {
     out
 }
 
+/// The version names a read may pass to notes, oldest first, each once.
+fn in_order(all: &mut Vec<String>) {
+    all.retain(|v| safe_version(v));
+    // Ties on the release order break on the name, so a name listed twice sits together for dedup.
+    all.sort_by(|a, b| {
+        let key = crate::tasks::release_order;
+        key(a).cmp(&key(b)).then_with(|| a.cmp(b))
+    });
+    all.dedup();
+}
+
 /// The versions either side of `version` among `all`.
 fn neighbours(all: &mut Vec<String>, version: &str) -> (Option<String>, Option<String>) {
-    all.retain(|v| safe_version(v));
-    all.sort_by_key(|v| crate::tasks::release_order(v));
-    all.dedup();
+    in_order(all);
     let Some(i) = all.iter().position(|v| v == version) else {
         return (None, None);
     };
@@ -231,6 +389,42 @@ pub fn build(
     Ok(p)
 }
 
+/// notes-cli's JSON of one window: its head and every row with its outcome.
+fn fetch(runner: &dyn Runner, project: &str, version: &str) -> Result<String, String> {
+    runner.run(&[
+        "notes".into(),
+        "projects".into(),
+        "--sprints".into(),
+        project.into(),
+        "--version".into(),
+        version.into(),
+        "--json".into(),
+    ])
+}
+
+/// The scored versions notes lists beside `windows`; a history that fails to read is said.
+fn known(
+    runner: &dyn Runner,
+    project: &str,
+    windows: &[String],
+    errors: &mut Vec<String>,
+) -> Vec<String> {
+    let mut all = windows.to_vec();
+    match project_sprints::past(runner, project) {
+        Ok(h) => all.extend(h.into_iter().map(|p| p.version)),
+        Err(e) => errors.push(e),
+    }
+    all
+}
+
+/// The groups map, or none (each scope stands alone) with why it could not be read.
+fn groups_or_none(areas: Result<Areas, String>, errors: &mut Vec<String>) -> Areas {
+    areas.unwrap_or_else(|e| {
+        errors.push(e);
+        Areas::default()
+    })
+}
+
 /// Read one sprint's page. `windows` are the versions the caller knows of beside the scored
 /// ones (the open and queued windows), for the links to the next and the previous.
 pub fn read(
@@ -247,25 +441,10 @@ pub fn read(
     {
         return Err(format!("refusing {profile}/{project}/{version}"));
     }
-    let out = runner.run(&[
-        "notes".into(),
-        "projects".into(),
-        "--sprints".into(),
-        project.into(),
-        "--version".into(),
-        version.into(),
-        "--json".into(),
-    ])?;
+    let out = fetch(runner, project, version)?;
     let mut errors = Vec::new();
-    let mut known = windows.to_vec();
-    match project_sprints::past(runner, project) {
-        Ok(h) => known.extend(h.into_iter().map(|p| p.version)),
-        Err(e) => errors.push(e),
-    }
-    let groups = areas.unwrap_or_else(|e| {
-        errors.push(e);
-        Areas::default()
-    });
+    let known = known(runner, project, windows, &mut errors);
+    let groups = groups_or_none(areas, &mut errors);
     let mut p = build(&out, &groups, profile, project, known)?;
     p.errors = errors;
     Ok(p)
@@ -504,5 +683,107 @@ mod tests {
             "#projects/bnb%2Funity/sprint/v0.5.4"
         );
         assert_eq!(p.rows[0].group, "ci", "no map: the scope stands alone");
+    }
+
+    #[test]
+    fn the_across_table_is_each_windows_own_rollup_oldest_first() {
+        let p5 = built();
+        let p4 = build(
+            &PAGE
+                .replace("v0.5.5", "v0.5.4")
+                .replace("\"area\":\"gameplay\"", "\"area\":\"ci\""),
+            &areas(),
+            "bnb",
+            "unity",
+            vec![],
+        )
+        .unwrap();
+        let a = across(&[p4.clone(), p5.clone()], "bnb", "unity");
+        let versions: Vec<&str> = a.heads.iter().map(|h| h.version.as_str()).collect();
+        assert_eq!(versions, ["v0.5.4", "v0.5.5"]);
+        assert_eq!(
+            a.heads[1].link.href(),
+            "#projects/bnb%2Funity/sprint/v0.5.5"
+        );
+        let lines: Vec<(&str, Vec<&str>)> = a
+            .lines
+            .iter()
+            .map(|l| {
+                (
+                    l.group.as_str(),
+                    l.cells
+                        .iter()
+                        .map(|c| c.as_deref().unwrap_or("-"))
+                        .collect(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                ("Tests, CI and benches", vec!["3/10", "3/5"]),
+                ("Engine", vec!["-", "0/5"]),
+                ("Unsorted", vec!["1/1", "1/1"]),
+            ],
+            "a window with no row of a group says -, Unsorted stays last"
+        );
+        for (p, col) in [(&p4, 0), (&p5, 1)] {
+            for l in &a.lines {
+                let on_page = p.by_area.iter().find(|x| x.group == l.group);
+                assert_eq!(
+                    on_page.map(|x| x.pts.as_str()),
+                    l.cells[col].as_deref(),
+                    "the table and the page agree"
+                );
+            }
+        }
+        assert_eq!(across(&[], "bnb", "unity"), Across::default());
+    }
+
+    #[test]
+    fn a_read_across_reads_the_history_and_the_open_window_and_says_a_window_it_lost() {
+        struct Says;
+        impl Runner for Says {
+            fn run(&self, argv: &[String]) -> Result<String, String> {
+                match argv.join(" ").as_str() {
+                    "notes projects --sprints unity --json" => {
+                        Ok(r#"[{"version":"v0.5.4"},{"version":"v0.5.5"}]"#.into())
+                    }
+                    "notes projects --sprints unity --version v0.5.5 --json" => Ok(PAGE.into()),
+                    "notes projects --sprints unity --version v0.5.6 --json" => {
+                        Ok(PAGE.replace("v0.5.5", "v0.5.6").replace("closed", "open"))
+                    }
+                    "notes projects --sprints unity --version v0.5.4 --json" => {
+                        Err("no sprints/v0.5.4.md".into())
+                    }
+                    other => Err(format!("unexpected {other}")),
+                }
+            }
+        }
+        let a = read_across(
+            &Says,
+            Ok(areas()),
+            "bnb",
+            "unity",
+            &["v0.5.6".into(), "latest".into(), "v0.5.5".into()],
+        );
+        assert_eq!(
+            a.heads
+                .iter()
+                .map(|h| h.version.as_str())
+                .collect::<Vec<_>>(),
+            ["v0.5.5", "v0.5.6"],
+            "once each, in version order, never a name notes would refuse"
+        );
+        assert_eq!(a.errors, ["v0.5.4: no sprints/v0.5.4.md"]);
+        assert_eq!(a.lines[0].cells, [Some("3/5".into()), Some("3/5".into())]);
+        struct Never;
+        impl Runner for Never {
+            fn run(&self, _: &[String]) -> Result<String, String> {
+                panic!("an unsafe name never reaches notes");
+            }
+        }
+        let refused = read_across(&Never, Ok(areas()), "bnb", "../x", &[]);
+        assert!(refused.lines.is_empty() && refused.errors.len() == 1);
     }
 }
