@@ -147,6 +147,28 @@ bats_require_minimum_version 1.5.0
   [ -z "$(outcome)" ] || fail "kick published fleet-dispatch's outcome: $(outcome)"
 }
 
+# 2026-11-26/27 (ar-4387): kicks started items through a standing hold, and the Stopped line counted on.
+@test "a kick that starts an item ends the pass's standing hold without publishing the pass's outcome; one that starts nothing leaves it" {
+  local d="$HOME/.local/state/agentctl/fleet-dispatch"
+  game_ready
+  mkdir -p "$d"; echo "$(( $(date +%s) - 3 * 3600 - 30 ))" > "$d/held_since"; printf 'no account has room; alt is the closest, 4 points over its weekly pace' > "$d/held_why"
+  # Negative control: a kick with nothing to start leaves the hold and its duration.
+  AGENTCTL_NAME=fleet-dispatch-kick run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_output --partial 'kick: nothing queued to start'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_failure
+  assert_output --partial 'Dispatch stopped 3h00m: no account has room'
+  agent-queue add --project game --slug mine "mine"
+  AGENTCTL_NAME=fleet-dispatch-kick run "$REPO_ROOT/.local/bin/fleet-dispatch" kick
+  assert_output --partial 'kick: started 1'
+  [ ! -e "$d/held_since" ] || fail "a kick's start left the pass's hold standing"
+  [ ! -e "$d/held_why" ] || fail "a kick's start left held_why"
+  [ -z "$(outcome)" ] || fail "kick published fleet-dispatch's outcome: $(outcome)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
+  assert_success
+  assert_output ''
+}
+
 @test "fleet-dispatch-kick.path watches the wake file, starts the kick runner, and is enabled by default.target.wants" {
   local u="$REPO_ROOT/.config/systemd/user"
   grep -qxF 'PathChanged=%h/.agent/dispatch/.wake' "$u/fleet-dispatch-kick.path"

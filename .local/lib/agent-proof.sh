@@ -194,17 +194,26 @@ proof_report() {
   mkdir -p "$dir" 2>/dev/null || return 0
   printf '%s' "$verdict" > "$dir/last-outcome" 2>/dev/null || true
   # The standing hold: held_since is the first BLOCKED pass of an unbroken run, held_why the latest
-  # one's reason, and a WORKED or NOOP pass ends the run. A pass that went past the hold without
-  # proving it gone (a run-floor start, a pass that never read the gates) sets PROOF_HELD_KEEP=1.
-  # FAILED and STALLED leave it: they say nothing about the gate. proof_unhold ends a hold whose own
-  # gate let a pass through. Readers: fleet-dispatch stopped, Sessions' Runners (hub-core fleet.rs).
+  # one's reason. A hold says passes are stopped, so a WORKED pass ends the run whatever gate it went
+  # past (a floor start included: one kept a 9h Stopped line through 43 starts, ar-4387), and a NOOP
+  # ends it unless it never read the gates (PROOF_HELD_KEEP=1). FAILED and STALLED leave it: they say
+  # nothing about the gate. proof_unhold ends a hold from outside a pass (a gate that let one through,
+  # a kick's start: proof_hold_end). Readers: fleet-dispatch stopped and stats, Sessions' Runners (hub-core fleet.rs).
   case "$verdict" in
     BLOCKED)
       [ -s "$dir/held_since" ] || date +%s > "$dir/held_since" 2>/dev/null
       printf '%s' "${why:-unrecorded}" > "$dir/held_why" 2>/dev/null || true ;;
-    WORKED | NOOP) [ "${PROOF_HELD_KEEP:-0}" = 1 ] || rm -f "$dir/held_since" "$dir/held_why" ;;
+    WORKED) proof_hold_end "$name" ;;
+    NOOP) [ "${PROOF_HELD_KEEP:-0}" = 1 ] || proof_hold_end "$name" ;;
   esac
   printf '[%s] outcome=%s %s\n' "$(date -Is)" "$verdict" "$detail" >> "$dir/activity.log" 2>/dev/null || true
+}
+
+# proof_hold_end NAME - NAME's standing hold is over, whatever its reason: NAME started work, under its
+# own outcome or another's (a fleet-dispatch kick). A hold says NAME is stopped, and a start disproves it.
+proof_hold_end() {
+  local dir="$(proof_state_dir)/$1"
+  rm -f "$dir/held_since" "$dir/held_why"
 }
 
 # proof_unhold NAME WHY - the gate that held NAME let a pass through, so a standing hold whose

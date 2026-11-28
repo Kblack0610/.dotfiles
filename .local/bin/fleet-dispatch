@@ -7916,7 +7916,7 @@ start_run() {
 # pass goes on. rc 5 when no candidate it may run on has room (an Opus item while only lazer-reserve has room,
 # a pinned harness whose source is spent): the pass goes on to the next item, which may.
 start_item() {
-  local it="$1" slug rc verdict='' cached floor='' keep=0 harness=claude
+  local it="$1" slug rc verdict='' cached floor='' harness=claude
   local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE ACCT_RC=0 SHORT_PASS=${SHORT_PASS:-0}
   slug=$(jq -r .slug <<<"$it")
   # A client's work project is hidden here (project_visible); agent-queue add refuses one, and this
@@ -7955,23 +7955,19 @@ start_item() {
   local plan_past; plan_past=$(plan_load_past)
   [ -z "$plan_past" ] || plan_past=", past $plan_past on the plan load floor (DISPATCH_PLAN_LOAD_FLOOR=$DISPATCH_PLAN_LOAD_FLOOR)"
   if [ "$harness" = claude ]; then
-    # A floor start leaves the hold standing (keep, settle): a red-floor one went past the machine
-    # gates, and a run-floor one past an account over its pace has no room either.
     if [ "${BATCH_PASS:-0}" = 1 ]; then
-      floor=" on the trainee floor: a batch review of the waiting trainee diffs"; keep=1
+      floor=" on the trainee floor: a batch review of the waiting trainee diffs"
       [ -z "$(jq -r '.pr_owner // ""' <<<"$it")" ] || floor=" on the trainee floor: the $(jq -r .pr_owner <<<"$it") session of a trainee's PR"
-    elif red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"; keep=1
-    elif [ "${SPRINT_PASS:-0}" = 1 ]; then floor=" on the sprint floor, past the pace target: an urgent row of the open sprint (DISPATCH_SPRINT_FLOOR=$DISPATCH_SPRINT_FLOOR)"; keep=1
+    elif red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"
+    elif [ "${SPRINT_PASS:-0}" = 1 ]; then floor=" on the sprint floor, past the pace target: an urgent row of the open sprint (DISPATCH_SPRINT_FLOOR=$DISPATCH_SPRINT_FLOOR)"
     elif human_floor_open; then
       floor=" on the human floor, past the weekly pace: $([ "$(runs_now_label "$it")" = urgent ] && echo "urgent from the human" || echo "the human's ask")"
       [ -z "$(jq -r '.plan // ""' <<<"$it")" ] || floor=" on the human floor, past the weekly pace: a ready phase of a plan the human approved"
-      keep=$ACCT_PAST_PACE
-      [ -z "$plan_past" ] || { floor="$floor$plan_past"; keep=1; }
+      [ -z "$plan_past" ] || floor="$floor$plan_past"
     elif short_floor_open && [ "$ACCT_PAST_PACE" = 1 ]; then
-      floor=" on the class floor, past the weekly pace: its class is under its classes.json min_live"; keep=1
+      floor=" on the class floor, past the weekly pace: its class is under its classes.json min_live"
     elif floor_open; then
       floor=" on the run floor (DISPATCH_RUN_FLOOR=$DISPATCH_RUN_FLOOR)"
-      keep=$ACCT_PAST_PACE
     fi
     START_ORIGIN=run START_VERDICT=$verdict RUN_ACCOUNT=$ACCT_DIR start_run --item "$slug" ${PLACE_HOST:+--host "$PLACE_HOST"}
   else
@@ -7979,11 +7975,10 @@ start_item() {
     elif [ -n "$(harness_sandbox "$harness")" ] && direct_why "$it" "$harness" "$ROUTE_MODEL" "$verdict" >/dev/null; then floor=" on $harness ($ROUTE_MODEL), a direct run (model-lane promoted it for the class) it lands on CI with no review"
     elif [ -n "$(harness_sandbox "$harness")" ]; then floor=" on $harness ($ROUTE_MODEL), a trainee run (lanes.yaml trainee:) a batch review lands or sends back"
     else floor=" on $harness ($ROUTE_MODEL), routed by model-lane"; fi
-    # A start past the account hold leaves it standing, like a floor start.
-    [ "$ACCT_RC" = 0 ] || { floor="$floor while $ACCT_WHY"; keep=1; }
-    if [ "${TRAINEE_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor (lanes.yaml trainee:, a free slot)"; keep=1; fi
-    if [ "${BATCH_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor: a batch review of the waiting trainee diffs"; keep=1; fi
-    [ -z "$plan_past" ] || { floor="$floor$plan_past"; keep=1; }
+    [ "$ACCT_RC" = 0 ] || floor="$floor while $ACCT_WHY"
+    if [ "${TRAINEE_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor (lanes.yaml trainee:, a free slot)"; fi
+    if [ "${BATCH_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor: a batch review of the waiting trainee diffs"; fi
+    [ -z "$plan_past" ] || floor="$floor$plan_past"
     START_ORIGIN=run START_VERDICT=$verdict start_run --item "$slug" --harness "$harness" --model "$ROUTE_MODEL" ${PLACE_HOST:+--host "$PLACE_HOST"}
   fi
   rc=$?; exec 7>&-
@@ -7991,7 +7986,6 @@ start_item() {
     # The route is recorded beside the `agent:` cmd_start set, so a requeued item routes again.
     [ "$harness" = claude ] || item_pinned "$it" || agent-queue set "$slug" "routed=$harness" >/dev/null ||
       say "could not record routed=$harness on queue item $slug"
-    [ "$keep" = 0 ] || FLOOR_HELD=1
     settle WORKED "started queue item $slug${PLACE_HOST:+ on $PLACE_HOST}$floor${PICK_NOTE:-}"
   elif [ "$(item_state "$slug")" != queued ]; then
     say "queue item $slug was started by another start"; return 4
@@ -8044,8 +8038,8 @@ held_clears() {
 # "Dispatch stopped 13h05m: <why>. <what clears it>." It is the one line every surface shows (hub Home's
 # Stopped row through fleet-sessions, the briefing, queue-starved's probe), at most 160 characters;
 # --json is {runner, since, line, why, clears}: why is the whole held_short reason and clears what ends
-# it, uncut, for the pipeline snapshot (fleet-bench pipeline_json). A run-floor start does not end the
-# hold, a pass past an open gate does (agent-proof.sh). A hold under the threshold, or none, prints
+# it, uncut, for the pipeline snapshot (fleet-bench pipeline_json). Any start, a floor or kick start too,
+# ends the hold, so the line counts only passes that started nothing (agent-proof.sh, settle). A hold under the threshold, or none, prints
 # nothing and is rc 0.
 cmd_stopped() {
   local since why full held clears head max line
@@ -8073,8 +8067,8 @@ cmd_stopped() {
 # starved -- rc 1 when urgent or high queue items have been runnable (no hold) for over
 # DISPATCH_STARVED_MIN minutes and no run pass has started a queue item in that time: it names them
 # and the last pass's outcome. A standing hold past that long trips it too, led by the Stopped line,
-# and no run start clears it then: a run-floor start goes past an account hold, and on 11-05/06 one
-# every hour cleared this while every other pass stopped. A deep queue the passes are moving is not starved, and neither is one
+# and the log's run start does not clear it then: a start ends the hold where it is written (agent-proof.sh,
+# settle), so a hold that stands has seen no start since its first BLOCKED pass. A deep queue the passes are moving is not starved, and neither is one
 # held on purpose (agent-hold), high items behind a fleet at its pace target, or the load gates, whose alarm is
 # fleet-thermal: a busy machine is not a broken queue, and any other gate still trips. Neither a hold nor load
 # clears an urgent item from the human, which no limit may cut off. Only a run start counts: a hand start or a redispatch proves nothing
@@ -9338,17 +9332,18 @@ settle() {
   esac
   say "$2"
   [ "$DRY" = 0 ] || return 0
-  # A pass that started an item past a closed gate (start_item sets FLOOR_HELD) leaves the hold
-  # standing (held_since): its WORKED and any later NOOP prove no gate open.
-  [ "${FLOOR_HELD:-0}" = 1 ] && local PROOF_HELD_KEEP=1
   # A kick is no pass: its outcome is its own unit's (fleet-dispatch-kick), never fleet-dispatch's, which
-  # would end or set the hold and the liveness proof of the pass that reads the whole fleet (KICK, cmd_kick).
+  # would set the hold and the liveness proof of the pass that reads the whole fleet (KICK, cmd_kick).
   # Run by hand it has no unit and publishes nothing (proof_runner_outcome). The unit's own outcome keeps
-  # agentctl from reading a run that said nothing as STALLED.
+  # agentctl from reading a run that said nothing as STALLED. Its start (WORKED), by hand too, still ends the
+  # pass's standing hold, as a pass's start does (agent-proof.sh), so the Stopped line never counts through it.
   # shellcheck source=/dev/null
   . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null || return 0
   if [ "${KICK:-0}" = 0 ]; then proof_outcome fleet-dispatch "$1" "$2" 2>/dev/null || true
-  else proof_runner_outcome "$1" "$2" 2>/dev/null || true; fi
+  else
+    proof_runner_outcome "$1" "$2" 2>/dev/null || true
+    [ "$1" != WORKED ] || proof_hold_end fleet-dispatch
+  fi
 }
 
 # settle_board <outcome> <why> -- settle a pass on its board step. A pass that came here past held
@@ -9388,7 +9383,7 @@ KICK_STARTS=${KICK_STARTS:-1}
 # pass_reset -- the per-pass state a `run` pass and a `kick` start from.
 pass_reset() {
   HUMAN_PASS=0 SPRINT_PASS=0 PLAN_PASS=0 PLAN_STARTED=0 PLANS_STARTED=''
-  QUEUE_HELD='' SHARE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' GATEWAY_READ=0 JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
+  QUEUE_HELD='' SHARE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 RUN_GATED=0 FLOOR_GATE='' GATEWAY_READ=0 JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (trainee or sprint floor), even to nothing
 }
 

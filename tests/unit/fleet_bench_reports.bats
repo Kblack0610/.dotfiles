@@ -676,7 +676,9 @@ STUB
   assert_line 'problems over 24h: running 1'
 }
 
-@test "pipeline: dispatch reads held, not stopped, while floors start under the main lane's hold, and the headline says so (ar-4985)" {
+# ar-4387: any start ends the hold (agent-proof.sh), so a hold that stands is stopped. It once read "held,
+# floors started N" while floor starts kept it standing (ar-4985).
+@test "pipeline: a standing hold reads dispatch stopped, from the live hold even with no dispatch record (ar-4985, ar-4387)" {
   pipeline_fixture
   lt() { date -u -d "@$((T0 - $1))" +%Y-%m-%dT%H:%M:%S%:z; }
   stop_stub "$((T0 - 3840))" 'pace target: 41 live sessions, the present target is 40' 'Clears when a live session ends'
@@ -684,28 +686,20 @@ STUB
   {
     echo "[$(lt 5000)] outcome=WORKED started queue item f0 on the run floor"
     for a in 3000 2400 1800; do echo "[$(lt $a)] outcome=BLOCKED why: tagged 3 for a plan; pace target: 41 live sessions"; done
-    for a in 2000 1500 900; do echo "[$(lt $a)] outcome=WORKED started queue item f$a on the run floor"; done
-    echo "[$(lt 600)] outcome=WORKED under-used: started 1, room on bnb"
   } > "$BENCH_DISPATCH_LOG"
   run "$SUBJECT" pipeline --json
   assert_success
-  run jq -c '.steps[] | select(.step == "dispatch") | [.wip, .measure, .measure_bound, .score, .verdict, .floor_starts, .held_kind, .clears, .why]' <<<"$output"
-  assert_output '[50,64,60,1.07,"over",4,"slots","Clears when a live session ends",[{"reason":"started on a floor, the main lane held","n":4},{"reason":"pace target","n":3}]]'
+  run jq -c '.steps[] | select(.step == "dispatch") | [.wip, .measure, .measure_bound, .score, .verdict, .held_kind, .clears, .why, has("floor_starts")]' <<<"$output"
+  assert_output '[50,64,60,1.07,"stopped","slots","Clears when a live session ends",[{"reason":"pace target","n":3}],false]'
   run "$SUBJECT" pipeline --json
   run jq -r '.headline.text' <<<"$output"
-  assert_output 'dispatch, main lane held 1h04m, floors started 4 (107% of 1h00m): pace target: 41 live sessions, the present target is 40. Clears when a live session ends.'
-  # NEGATIVE CONTROL: the same hold with no start under it is stopped
-  grep -v WORKED "$BENCH_DISPATCH_LOG" > "$BENCH_DISPATCH_LOG.new"; mv "$BENCH_DISPATCH_LOG.new" "$BENCH_DISPATCH_LOG"
-  run "$SUBJECT" pipeline --json
-  run jq -r '(.steps[] | select(.step == "dispatch") | .verdict), .headline.text' <<<"$output"
-  assert_line 'stopped'
-  assert_line 'dispatch, stopped 1h04m (107% of 1h00m): pace target: 41 live sessions, the present target is 40. Clears when a live session ends.'
-  # An unreadable dispatch record cannot say no floor started: over, never stopped
+  assert_output 'dispatch, stopped 1h04m (107% of 1h00m): pace target: 41 live sessions, the present target is 40. Clears when a live session ends.'
+  # The hold is read live from fleet-dispatch, so an unreadable dispatch record still reads stopped
   rm "$BENCH_DISPATCH_LOG"
   run "$SUBJECT" pipeline --json
-  run jq -c '.steps[] | select(.step == "dispatch") | [.verdict, .floor_starts]' <<<"$output"
-  assert_output '["over",null]'
-  # A hold the pass cleared: `stopped` prints nothing, and the headroom the pass wrote first is no hold
+  run jq -r '.steps[] | select(.step == "dispatch") | .verdict' <<<"$output"
+  assert_output 'stopped'
+  # NEGATIVE CONTROL: a hold a start ended: `stopped` prints nothing, and the headroom the pass wrote first is no hold
   export BENCH_STOPPED_CMD=true
   run "$SUBJECT" pipeline --json
   run jq -c '.steps[] | select(.step == "dispatch") | [.measure, .verdict]' <<<"$output"

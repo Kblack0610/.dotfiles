@@ -263,29 +263,22 @@ load 'fleet_dispatch/fleet_dispatch_run_floors'
   assert_not_called 'wt new'
 }
 
-# 2026-11-06 (P3 live): a red started on the red floor at 13:03 past a load hold while an account
-# had room, and the hold that had stood since 10:48 ended: settle asked only for account room.
-@test "red floor: a red start past the machine gates leaves the hold standing, with an account's room too" {
+# A red-floor start went past the machine gates, and it is still a start: the hold ends, so the Stopped
+# line never counts a fleet that is starting work (ar-4387; it once kept the hold, 2026-11-06).
+@test "red floor: a red start past the machine gates ends the hold" {
   local d="$HOME/.local/state/agentctl/fleet-dispatch"
   red_held_machine
   acct alt:ok:/home/u/.claude-personal
   agent-queue add --project game --slug r --tags 'red cause:ab12' "fix r" >/dev/null
   mkdir -p "$d"; echo "$(( $(date +%s) - 3 * 3600 - 30 ))" > "$d/held_since"; printf 'fleet-assess says HOLD' > "$d/held_why"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item r on the red floor'
-  assert_equal "$(outcome)" WORKED
   run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
   assert_failure
   assert_output --partial 'Dispatch stopped 3h00m: fleet-assess says HOLD'
-  # Negative control: the machine gates open, and the next start ends the hold.
-  stub fleet-assess '[ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
-  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
-  agent-queue add --project game --slug r2 --tags 'red cause:cd34' "fix r2" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item r2'
-  refute_output --partial 'r2 on the red floor'
-  [ ! -e "$d/held_since" ] || fail "a start past open gates left the hold standing"
-  [ ! -e "$d/held_why" ] || fail "a start past open gates left held_why"
+  assert_output --partial 'started queue item r on the red floor'
+  assert_equal "$(outcome)" WORKED
+  [ ! -e "$d/held_since" ] || fail "a red-floor start left the hold standing"
+  [ ! -e "$d/held_why" ] || fail "a red-floor start left held_why"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" stopped
   assert_success
   assert_output ''
