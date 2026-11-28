@@ -2035,6 +2035,14 @@ live_merges() {
   assert_output --partial 'merges: none'
 }
 
+@test "throughput: a host with no run ledger says unread, not none recorded (ar-4609)" {
+  use_fixture
+  BENCH_RUNS_TSV="$SANDBOX/absent/runs.tsv" run "$SUBJECT" throughput
+  assert_success
+  assert_line 'local runs unread: the run ledger is missing on this host'
+  refute_output --partial 'none recorded'
+}
+
 @test "throughput: a multi-day window with over 128 KB of merge rows still reads (ar-2446)" {
   use_fixture
   export BENCH_MERGES_TSV="$SANDBOX/merges-big.tsv"
@@ -2154,10 +2162,20 @@ scorecard_with_data() {
   scorecard_with_data
   mkdir -p "$BENCH_OUTCOMES_DIR/game"
   jq -cn '{session_id: "s1", prs_merged: 2, edits: 3, hard_errors: {tool_errors: 5},
-    activity: {tool_calls: 50, test_runs: 12, ci_polls: 4, api_messages: 60, tokens: 4000000, tokens_after_last_edit: 1000000}}' > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+    activity: {tool_calls: 50, edit_calls: 2, test_runs: 12, ci_polls: 4, api_messages: 60, tokens: 4000000, tokens_after_last_edit: 1000000}}' > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
   BENCH_NOW=$((T0 + 3600)) "$SUBJECT" scorecard >/dev/null
   run grep '^| lab/game-agent-1:1 | 12 ' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output '| lab/game-agent-1:1 | 12 | 6 | 4 | 50 | 10% | 60 | 4 | 25% |'
+}
+
+@test "breakdown: no edit call prints '-' in Spent after last edit, whatever the registry edits says" {
+  scorecard_with_data
+  mkdir -p "$BENCH_OUTCOMES_DIR/game"
+  jq -cn '{session_id: "s1", prs_merged: 2, edits: 3, hard_errors: {tool_errors: 5},
+    activity: {tool_calls: 50, edit_calls: 0, test_runs: 12, ci_polls: 4, api_messages: 60, tokens: 4000000, tokens_after_last_edit: 1000000}}' > "$BENCH_OUTCOMES_DIR/game/2026-10.jsonl"
+  BENCH_NOW=$((T0 + 3600)) "$SUBJECT" scorecard >/dev/null
+  run grep '^| lab/game-agent-1:1 | 12 ' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output '| lab/game-agent-1:1 | 12 | 6 | 4 | 50 | 10% | 60 | 4 | - |'
 }
 
 @test "breakdown: a session the nightly has not seen is not reported as idle" {

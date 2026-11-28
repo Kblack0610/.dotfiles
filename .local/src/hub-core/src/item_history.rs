@@ -9,8 +9,9 @@ use serde::{Deserialize, Serialize};
 /// The lines a history keeps, newest last.
 pub const KEEP: usize = 20;
 
-/// How far back the record is read, in days. An item older than this shows its last month.
-pub const DAYS: u32 = 30;
+/// How far back the record is read, in days: all it keeps (`KEEP_DAYS` in notes-cli `ingest.rs`).
+/// An item older than this shows its last week.
+pub const DAYS: u32 = 7;
 
 /// One event as `notes log --json` prints it; the fields a line is made from.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -175,7 +176,7 @@ mod tests {
         fn run(&self, argv: &[String]) -> Result<String, String> {
             assert_eq!(
                 argv,
-                ["notes", "log", "--item", "ucp-526", "--days", "30", "--json"]
+                ["notes", "log", "--item", "ucp-526", "--days", "7", "--json"]
             );
             self.0.clone()
         }

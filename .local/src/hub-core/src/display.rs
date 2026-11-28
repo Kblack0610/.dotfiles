@@ -318,6 +318,7 @@ pub const FIELD_ROLES: &[(&str, Role)] = &[
     ("needs", Role::Next),
     ("decisions", Role::Next),
     ("landed", Role::Note),
+    ("by_project", Role::Note),
     ("builds", Role::Note),
     ("overnight", Role::Note),
     ("money", Role::Note),
