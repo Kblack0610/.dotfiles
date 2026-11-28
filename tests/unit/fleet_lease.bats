@@ -320,6 +320,17 @@ EOS
   # The holder's own record lapsed.
   FLEET_LEASE_NOW=$((T0 + 301)) run -1 on a check
   assert_output --partial "a does not hold the fleet lease on its own record"
+  assert_output --partial "origin lease lapsed at"
+}
+
+@test "check reads backup while origin is unreachable, as the renewer does" {
+  conf "$R/gone.git"
+  on a fleet-dispatch 2>/dev/null
+  run on a check
+  assert_success
+  assert_output ""
+  FLEET_LEASE_NOW=$((T0 + 250)) run -1 on a check
+  assert_output --partial "backup lease expires in 50s"
 }
 
 @test "check says unreadable, never a fault, when no remote answers" {

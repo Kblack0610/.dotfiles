@@ -298,7 +298,11 @@ cmd_check() {
     ([.remotes[] | select(.reached)][0]) as $d
     | (if .held then empty else "\(.me) does not hold the fleet lease on its own record (fleet-lease held)" end),
       (if $d.holder == .me then empty else "\($d.remote) names \($d.holder // "no one") as holder, not \(.me)" end),
-      (if $d.holder == .me and ($d.expires - $t) < $m then "\($d.remote) lease expires in \([$d.expires - $t, 0] | max)s, so the renewer has stopped (fleet-lease.timer)" else empty end)' <<<"$j")
+      (if $d.holder != .me then empty
+       elif $d.expires <= $t then "\($d.remote) lease lapsed at \($d.expires | strftime("%H:%M")) UTC, so the renewer has stopped (fleet-lease.timer)"
+       elif ($d.expires - $t) < $m then "\($d.remote) lease expires in \($d.expires - $t)s, so the renewer has stopped (fleet-lease.timer)"
+       else empty end)' <<<"$j") ||
+    { echo "unreadable: fleet-lease check could not read the status"; exit 2; }
   [ -z "$faults" ] || { printf '%s\n' "$faults"; exit 1; }
 }
 
