@@ -109,3 +109,21 @@ prs_stub() {
   assert_output --partial 'usage: fleet-dispatch adopt-prs [--dry-run]'
   assert [ ! -e "$FLEET_DISPATCH_DIR/adopt-prs" ]
 }
+
+@test "adopt-prs: a full queue stops the adoptions, so no PR is filed as a plain board row the next probe adopts again" {
+  project game beta "$SANDBOX/repos/game"
+  : > "$SANDBOX/prs.jsonl"
+  stranded o/game#10 SUCCESS MERGEABLE
+  stranded o/game#11 SUCCESS MERGEABLE
+  stranded o/game#12 FAILURE MERGEABLE
+  prs_stub
+  export AGENT_QUEUE_CAP=1
+  run cmd_adopt_prs
+  assert_success
+  assert_output 'adopted o/game#10 as pr-o-game-10 (land)'
+  grep -q 'adopt-prs: the queue is at its cap, so o/game#11 and the PRs after it wait for the next probe' "$FLEET_DISPATCH_DIR/log.md"
+  for s in pr-o-game-11 pr-o-game-12; do [ -z "$(agent-queue show "$s" --json 2>/dev/null)" ] || fail "$s was queued past the cap"; done
+  run grep -rl 'land or close stranded PR o/game#11' "$NOTES_FIXTURE"
+  assert_failure
+  assert_equal "$(grep -c 'gh pr view' "$NOTES_FIXTURE/calls.log")" 1
+}

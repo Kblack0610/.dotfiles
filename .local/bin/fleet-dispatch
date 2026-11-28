@@ -211,6 +211,7 @@ DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
 AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finished ok (its finished_ok)
 AQ_EX_HELD=5       # agent-queue add's exit when the cap held an add (its admit)
+AQ_EX_REFUSED=6    # agent-queue add's exit when the cap held an add and its board refused the row (overflow_row gated)
 LOG="$DIR/log.md"
 CLAUDE_PROJECTS="${DISPATCH_CLAUDE_PROJECTS:-$HOME/.claude*/projects}"   # every account's Claude transcripts, <dir>/*/<session id>.jsonl: where item_end reads why a Claude run ended
 CODEX_SESSIONS="${DISPATCH_CODEX_SESSIONS:-$HOME/.codex/sessions}"             # Codex's rollouts, where item_end reads why a run ended
@@ -6363,12 +6364,16 @@ cmd_adopt_prs() {
     slug=$(tr 'A-Z' 'a-z' <<<"pr-${repo%%/*}-${repo#*/}-${ref##*#}" | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g')
     [ -z "$(item_state "$slug")" ] || continue
     if [ -n "$dry" ]; then echo "would adopt $ref as $slug (${owner/fix/fix-ci}$why)"; continue; fi
+    # Room first: an add the cap holds is filed as a plain board row (add_cap_hold), which carries no pr:,
+    # so it would never own the PR and the next probe would adopt it again; the board may refuse it (exit 6).
+    [ "$(queue_headroom)" -gt 0 ] || { logline "adopt-prs: the queue is at its cap, so $ref and the PRs after it wait for the next probe"; break; }
     head=$(gh pr view "${ref##*#}" -R "$repo" --json headRefOid -q .headRefOid 2>/dev/null) && [ -n "$head" ] ||
       { logline "adopt-prs: PR $ref is stranded, but gh did not read its head; the next probe tries again"; continue; }
     rc=0
     out=$(adopt_task "$ref" "$title" | AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add \
       --project "$project" --slug "$slug" --tags adopt --from auto:adopt 2>&1) || rc=$?
-    if [ "$rc" -eq "$AQ_EX_HELD" ]; then logline "adopt-prs: the queue cap held $slug ($ref); the next probe tries again"; break; fi
+    # 5: the cap held it (another add took the last place); 6: its board refused the held row. Either way the queue is full.
+    if [ "$rc" -eq "$AQ_EX_HELD" ] || [ "$rc" -eq "$AQ_EX_REFUSED" ]; then logline "adopt-prs: the queue cap held $slug ($ref); the next probe tries again"; break; fi
     [ "$rc" -eq 0 ] || { say "adopt-prs: could not queue $slug for $ref: ${out##*$'\n'}"; continue; }
     it=$(agent-queue show "$slug" --json 2>/dev/null) || it='{}'
     # A tier-3 lander runs on claude, as own_parked_pr's does: agent-land asks it for /code-review high.
