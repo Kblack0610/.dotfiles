@@ -39,7 +39,7 @@ metadata:
     # A hand cancel of this repo's runs: from its checkout, naming it with -R, in the api path, by GH_REPO or a cd on the
     # same line. gh-workflows' own row lets `# own:` and `# stuck:` through; these do not, since the script is the one path
     # that checks the run's jobs first.
-    - match: '(?:^|[;&|(){}\s/])gh(?:\s+(?:-R|--repo[\s=])\s*\S+)*\s+(?:run\s+cancel(?![\w-])|api\s(?:[^;&|\n]*actions/runs/[^/\s]+/(?:force-)?cancel(?![\w-])))'
+    - match: '(?:^|[;&|(){}\s/])gh\s(?:[^;&|\n]*\s)?(?:run\s+cancel(?![\w-])|api\s[^;&|\n]*actions/runs/[^/\s]+/(?:force-)?cancel(?![\w-]))'
       use: 'scripts/test/gh-run-cancel.sh <run> "<why>" (or --stuck "<live step>"): it refuses a run a Unity job has started (docs/operations/ci.md rule 7) and logs caller, run and reason'
       where: unity-core-playground
       unless: '(?:-R|--repo[\s=])\s*[\w.-]+/(?!unity-core-playground(?![\w.-]))[\w.-]+'
