@@ -4196,3 +4196,47 @@ seed_live() {
   [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 1 ]
   [ ! -e "$wake" ] || fail "a rise in the live count woke a kick: $(cat "$wake")"
 }
+
+@test "end to end: a red PR on a red base that another live item claims waits on that item, not STALLED CI red (ar-1513)" {
+  # platform#1493 sat red behind develop's Android E2E red while fix-ci-android-mobile-e2e-red-on-develop worked it.
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  local tip repo q="$HOME/.agent/queue"
+  tip="$(git -C "$SANDBOX/wt" rev-parse origin/main)"
+  # A ref names <owner>/<repo>, which the sandbox path (with its space) is not: the clone reads as a GitHub one.
+  git -C "$SANDBOX/wt" remote set-url origin https://github.com/o/r.git
+  repo=o/r
+  owner() { # owner <state> <pr: list>: item fix-base, on another session, recording <pr: list>
+    rm -rf "$q/running/"*fix-base.md "$q/done"; mkdir -p "$q/$1"
+    printf 'slug: fix-base\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T09:00:00Z\nsession: lab:s2\npr: %s\n---\nfix the base\n' \
+      "$2" > "$q/$1/20261103-090000-fix-base.md"
+  }
+  queue_item running lab:s1
+  ledger main "[$(r Tests failure "$tip" 1)]"
+  open_pr FAIL
+  owner running "${repo^^}#9 $repo#12"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  session="$(jq -c 'select(.bucket != "NIGHTLY")' <<<"$output")"
+  [ "$(jq -r .bucket <<<"$session")" = WORKING ]
+  [ "$(jq -r .reason <<<"$session")" = 'PR #9 waiting on base red, owned by fix-base' ]
+
+  # negative controls, each STALLED CI red: the base is green, the owner is done, the only claim is the
+  # session's own item, no item claims the PR
+  ledger main "[$(r Tests success "$tip" 1)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
+  ledger main "[$(r Tests failure "$tip" 1)]"
+  owner done "$repo#9"
+  printf 'status: ok\nfinished: 2026-11-03T12:00:00Z\n' | sed -i '/^session:/r /dev/stdin' "$q/done/20261103-090000-fix-base.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
+  rm -rf "$q/done"
+  sed -i "s|^session: lab:s1\$|session: lab:s1\npr: $repo#9|" "$q/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
+  queue_item running lab:s1
+  owner running "$repo#12"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
+}
