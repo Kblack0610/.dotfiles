@@ -5259,7 +5259,7 @@ item_brief() {
     no_human "$slug"
     return
   fi
-  ask_rule
+  ask_rule "$key"
 }
 
 # plan_stage <slug> <tags> -- what a headless plan item does first: write the plan, post it as an
@@ -5378,14 +5378,20 @@ land_brief() {
   if headless "$2"; then no_human "$slug"; else echo "If the verdict is the human's call (a product decision, or a repo that needs their approval to merge), file it with agent-ask post (options land and close, your recommendation in --recommend) and end: the item waits on the answer."; fi
 }
 
-# ask_rule -- a question blocks only the step that needs it. Reap moves the item to waiting/ once the
-# session stops with its ask pending, so the session never moves it itself.
+# ask_rule [<row>] -- a question blocks only the step that needs it. Reap (settle_item) returns a
+# session's item to its board row behind the ask once the session is gone, so the session never moves it
+# itself; an item with no row fails there, so with no <row> the window stays open. With a row the session
+# ends with /wind-down auto, whose teardown reopens it on the answer (agent-ask reopen-on-answer).
 # no_human <slug> -- the same for a headless harness, whose run ends when it stops: the item goes back
 # in the queue behind the ask, and the answer starts it again with the decision in its brief.
 no_human() { echo "If a step needs a decision from the human, file it with agent-ask post (your recommendation in --recommend), run agent-queue requeue $1 --ask <id>, and stop: the answer starts this item again. Nobody watches this run, and one that stops with its item still running counts as failed."; }
 
 ask_rule() {
-  echo "If a step needs a decision from the human, only that step is blocked, not the task: ask it here and file it with agent-ask post (your recommendation in --recommend), build the rest with that step switched off, and end your turn on the question only when nothing else is left, leaving this window open."
+  local rule="If a step needs a decision from the human, only that step is blocked, not the task: ask it here and file it with agent-ask post (your recommendation in --recommend), build the rest with that step switched off, and "
+  if [ -n "${1:-}" ]; then
+    rule+="once the ask is all that is left, run /wind-down auto: the teardown sets the ask to reopen this conversation on the answer. If wind-down will not close, end your turn on the question and leave this window open."
+  else rule+="end your turn on the question only when nothing else is left, leaving this window open."; fi
+  echo "$rule"
 }
 
 # proof_brief <slug> <kind> <item_row> <project> <harness> -- how a proof kind (kinds.json `exit`:
@@ -5401,7 +5407,7 @@ proof_brief() {
   echo "This is agent-queue item $slug${key:+, promoted from the board row \"$key\"}, a $kind row: it ends on live proof, never a PR or agent-land."
   headless "$5" || wd='; then /wind-down auto'
   echo "Close in one turn: agent-queue set $slug note=\"<proof>\"${key:+; notes$pf ptask $project$flag done \"$key\" --proof \"<proof>\"}; agent-queue move $slug done --status ok$wd."
-  if headless "$5"; then no_human "$slug"; else ask_rule; fi
+  if headless "$5"; then no_human "$slug"; else ask_rule "$key"; fi
 }
 
 # doc_ask_brief <slug> <kind> <item_row> <project> -- how a doc+ask kind (kinds.json `exit`, the
