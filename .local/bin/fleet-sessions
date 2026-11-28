@@ -477,10 +477,22 @@ watched_gate() {
   [ -z "$ended" ] || echo "$ended"
 }
 
+# time_use_argv_lines -> the conf's gate, test and build lines as JSON, each with the regex that wants its text at the start
+# of an argv (time_use_lines_json). Built once a pass into PROC_SNAP's cache dir: live_wait runs once a session. A conf with no
+# line is said on stderr once, and reads as `[]`.
+time_use_argv_lines() {
+  local f="${PROC_SNAP:+$PROC_SNAP.tu}" out
+  if [ -n "$f" ] && [ -s "$f" ]; then cat "$f"; return 0; fi
+  out="$(time_use_lines_json "$FLEET_TIME_USE_CONF" "$SO_TU_ARGV_START" 2>/dev/null)" && [ "$out" != '[]' ] \
+    || { echo "fleet-sessions: no gate, test or build line readable in $FLEET_TIME_USE_CONF; live_wait reads none" >&2; out='[]'; }
+  [ -z "$f" ] || printf '%s\n' "$out" > "$f"
+  printf '%s\n' "$out"
+}
+
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
 # landing turn: WORKING past FLEET_SHELL_STALE_MIN, it ends itself), else gate, test or build when a process running in <cwd> (or below it), or
-# descended from the session's claude whatever its cwd, matches a `gate`, `test` or `build` line of
-# agent-panel's time-use.conf, else checkout for a live Git checkout or LFS transfer (git_checkout), else nothing. A background subagent's commands run in its own
+# descended from the session's claude whatever its cwd, runs a `gate`, `test` or `build` line of
+# agent-panel's time-use.conf (anchored at its argv, past wrappers), else checkout for a live Git checkout or LFS transfer (git_checkout), else nothing. A background subagent's commands run in its own
 # worktree and a gate script may cd elsewhere (2026-11-03 agent-49 read STALLED mid-gate on #1669),
 # but both stay children of the claude that started them. The transcript shows a gate detached
 # with & only as the until-loop watching its output file (2026-11-07 unity-core-playground-agent-30:
@@ -491,7 +503,7 @@ watched_gate() {
 # which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
 # without .pid) only the worktree is read.
 live_wait() {
-  local conf="$FLEET_TIME_USE_CONF" want kind text pid cmd
+  local conf="$FLEET_TIME_USE_CONF" want pid cmd
   local -a cmds=()
   while IFS=$'\t' read -r pid cmd; do [ -z "$pid" ] || cmds+=("$cmd"); done < <(wait_procs "$@")
   [ "${#cmds[@]}" -gt 0 ] || return 0
@@ -501,14 +513,13 @@ live_wait() {
     [ -n "$checkout" ] || ! git_checkout "$cmd" || checkout=checkout
   done
   if [ -r "$conf" ]; then
-    for want in gate test build; do
-      while read -r kind text; do
-        [ "$kind" = "$want" ] && [ -n "$text" ] || continue
-        for cmd in "${cmds[@]}"; do
-          case "$cmd" in *"$text"*) echo "$want"; return 0 ;; esac
-        done
-      done < "$conf"
-    done
+    # Each line's text must start the process's argv, past the wrappers (time_use_argv_lines, the rule the other readers
+    # share), so `vim x.bats` and `grep make test` are not a test run. gate beats test beats build whatever the line order.
+    want="$(printf '%s\n' "${cmds[@]}" | jq -nRr --argjson lines "$(time_use_argv_lines)" '
+      [inputs] as $cmds
+      | first(("gate", "test", "build") as $k | $lines[] | select(.kind == $k and (.re as $re | any($cmds[]; test($re)))) | $k) // empty')" \
+      || { echo "fleet-sessions: live_wait could not match $conf; it reads no wait" >&2; want=""; }
+    [ -z "$want" ] || { echo "$want"; return 0; }
   fi
   [ -z "$checkout" ] || echo "$checkout"
 }
@@ -2588,6 +2599,19 @@ refused_wait() {
   awk -F'\t' -v p="$2" '$1 == p { h = $2 } END { if (h != "") print h }' "$key.refused"
 }
 
+# base_red_owner <dir> <pr> <all items, jsonl> <the row's item slugs, comma list|-> -> the slug of an item that is not done, is not
+# one of the row's own, and records PR #<pr> of <dir>'s repo in its pr: or open_pr: list (owner/repo#N, forge names case-blind),
+# else nothing. That is how an item that fixes a red base claims the PRs the red holds (fix-ci step 3): the PR is red only until
+# that item lands, so its session waits on the item and is not STALLED CI red. Why: platform#1493 sat red behind develop's
+# Android E2E red while fix-ci-android-mobile-e2e-red-on-develop worked it, and its session was nudged once per head (ar-1513).
+base_red_owner() {
+  local repo
+  [[ "$2" =~ ^[0-9]+$ ]] && repo="$(origin_repo "$1" 2>/dev/null)" && [ -n "$repo" ] || return 0
+  jq -rn --arg ref "${repo,,}#$2" --arg own ",${4:--}," 'first(inputs
+    | select(.state != "done" and (.slug as $s | $own | contains("," + $s + ",") | not))
+    | select([.pr, .open_pr] | map(. // "" | tostring | ascii_downcase | split(" ")[]) | any(. == $ref)) | .slug) // empty' <<<"$3" 2>/dev/null
+}
+
 # pr_not_here <host> <state> <all items> <item slugs, comma list|-> <pr_made_here's arguments...> -> true when the row's branch
 # PR is not this session's work. A finished one (MERGED or CLOSED) on this machine is not when pr_made_here
 # says another session made it. An open one is unlanded work in this tree, except on a validate item's
@@ -2644,13 +2668,14 @@ head_covers() {
     [ "$(git -C "$1" rev-list --count --no-merges "$2" "^$3" "^$(default_base "$1")" 2>/dev/null)" = 0 ]
 }
 
-# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<all items> <item slugs>] -> two lines: the landing-slot wait, then
+# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<all items> <item slugs> <base health>] -> two lines: the landing-slot wait, then
 # the wait the bucket reads (empty when none). A PR of this clone's repo riding an open landing train waits on that
 # train's gate, one queued for the landing slot waits its turn, and one the slot holder refused waits on that holder
 # (slot_refuser), unless its own Checks are red past the slot's refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
 # chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's. Past those, a green
 # or unknown-CI PR carries its item's validate verdict (validate_hold): a live validate item on its head is a wait, and a
-# fail on its head is "failed <slug>", never landable (ar-5286).
+# fail on its head is "failed <slug>", never landable (ar-5286). A red PR whose base reads RED (main_health) and that another
+# live item claims (base_red_owner) waits on that item (ar-1513).
 pr_wait() {
   local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w h
   [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] || { printf '\n\n'; return 0; }
@@ -2663,6 +2688,8 @@ pr_wait() {
   w="$land"
   if [ -z "$w" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *)
     if [ -n "$chain" ]; then w="after: $chain"; else w="$(validate_hold "${9:-}" "${10:--}" "$oid" "$gd")"; fi ;; esac; fi
+  if [ -z "$w" ] && [ "$ci" = FAIL ] && [ "${11:--}" = RED ] && [ "$gd" != - ] && h="$(base_red_owner "$gd" "$pr" "${9:-}" "${10:--}")" &&
+    [ -n "$h" ]; then w="base red, owned by $h"; fi
   printf '%s\n%s\n' "$land" "$w"
 }
 
@@ -3022,7 +3049,7 @@ collect() {
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
     # What an open PR waits on (pr_wait); only a landing-slot wait carries the slot's wait, depth and critical path.
     local wait_on="" land_wait=""
-    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs")
+    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs" "$mh")
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=- qrepo=- qpr=-

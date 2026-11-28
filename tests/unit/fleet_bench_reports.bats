@@ -1713,6 +1713,63 @@ SH
   assert_failure 2
 }
 
+@test "sources: a points series younger than the window reads points_days and points_short, and the table marks its points and ratios; a full series is unmarked" {
+  sources_fixture
+  echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1","outcome":"landed"}' > "$ITEMS"
+  run "$SUBJECT" sources --json
+  assert_success
+  assert_equal "$(jq -c '[.read.points_start, (.sources[] | select(.name == "main" or .name == "alt") | [.name, .points_days, .points_short])]' <<<"$output")" \
+    '[true,["main",7,false],["alt",null,false]]'
+  run "$SUBJECT" sources
+  assert_line '| main | claude | 40% | - | 10 | $50 list | 1 | $5 | 0.1 | 10 | - |'
+  SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" sources --json
+  assert_equal "$(jq -c '.sources[] | select(.name == "main" or .name == "bnb") | [.name, .points, .points_days, .points_short]' <<<"$output")" \
+    '["main",10,2.6,true]
+["bnb",4,7,false]'
+  SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" sources
+  assert_line '| main | claude | 40% | - | 10 (2.6d of 7) | $50 list | 1 | $5 (2.6d of 7) | 0.1 (2.6d of 7) | 10 (2.6d of 7) | - |'
+  assert_line '| bnb | claude | 20% | - | 4 | $30 list | 0 | $7.5 | 0 | - | - |'
+  # the same series covers a 2-day window whole
+  BENCH_QUEUE_DAYS=2 SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" sources --json
+  assert_equal "$(jq -c '.sources[] | select(.name == "main") | [.points_days, .points_short]' <<<"$output")" '[2,false]'
+  # a gateway key's dollars are its points of its budget, so a short series marks them too
+  SRC_FIRST_RESERVE=$((T0 - 224640)) run "$SUBJECT" sources
+  assert_line '| reserve | litellm-key | 50% | - | 5 (2.6d of 7) | $10 gateway (2.6d of 7) | 0 | $2 (2.6d of 7) | 0 (2.6d of 7) | - | lazer |'
+}
+
+@test "sources: a first-sample read that fails leaves points_days null and nothing marked, and the rest of the table reads" {
+  sources_fixture
+  stub_vm 'case "$*" in
+  *tfirst_over_time*) exit 7 ;;
+  *week_used_percent*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"account\":\"main\"},\"value\":[1,\"10\"]}]}}" ;;
+  *) exit 7 ;;
+esac'
+  run "$SUBJECT" sources --json
+  assert_success
+  assert_equal "$(jq -c '[.read.points, .read.points_start, (.sources[] | select(.name == "main") | [.points, .points_days, .points_short])]' <<<"$output")" \
+    '[true,false,[10,null,false]]'
+  run "$SUBJECT" sources
+  assert_line '- points window: ? (first-sample read failed, so a short series is not marked)'
+}
+
+@test "scorecard: the KPI table marks points_per_pr when a Claude source's points cover fewer days than the window, and leaves it bare when they cover it" {
+  kpi_setup; sources_fixture
+  {
+    echo '{"slug":"a","account":"main","status":"ok","pr":"o/r#1","outcome":"landed"}'
+    echo '{"slug":"b","account":".claude-bnb","status":"ok","pr":"o/r#2","outcome":"landed"}'
+  } > "$ITEMS"
+  run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '.points_per_pr | [.["7d"], .short_days]' <<<"$output")" '[7,null]'
+  SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" kpi --json
+  assert_equal "$(jq -c '.points_per_pr | [.["7d"], .short_days]' <<<"$output")" '[7,2.6]'
+  SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" kpi
+  assert_line '| points_per_pr (now) | 7 (2.6d of 7) | - | - | - |'
+  run "$SUBJECT" kpi
+  assert_line '| points_per_pr (now) | 7 | - | - | - |'
+  BENCH_QUEUE_DAYS=2 SRC_FIRST_MAIN=$((T0 - 224640)) run "$SUBJECT" kpi
+  assert_line --regexp '^\| points_per_pr \(now\) \| [0-9.]+ \| - \| - \| - \|$'
+}
+
 @test "sources: a source a provider refusal holds shows its hold beside its used percent, json and table; an unreadable hold read leaves every source unheld" {
   sources_fixture
   : > "$ITEMS"
@@ -4977,7 +5034,7 @@ alert_setup() {
   route '^check\(watch\): alertmanager-fleet tripped' agent fix-red 'fallback' -
   watch alertmanager-fleet TRIP -25200 high
   # the probe's `page:` line (its trip's level, watch-companion-loop) is not an alert row
-  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
+  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\nsystems: ConvergenceDrift=deploy HomelabCronJobFailed=deploy,ci TraderRunFailed=Bad!\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
     > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
 }
 
@@ -4997,6 +5054,30 @@ alert_setup() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial '4 queued as red fixes'
+}
+
+@test "triage: each alert's red loads its rule's system skills, else the watch's system" {
+  alert_setup
+  export BENCH_SKILLS_DIR="$SANDBOX/skills"
+  mkdir -p "$BENCH_SKILLS_DIR"/{fix-red,k8s-ops,ci-failures,sentinel}
+  printf -- '---\nname: fix-red\nmetadata:\n  system: [any]\n---\n' > "$BENCH_SKILLS_DIR/fix-red/SKILL.md"
+  printf -- '---\nname: k8s-ops\nmetadata:\n  system: [deploy]\n---\n' > "$BENCH_SKILLS_DIR/k8s-ops/SKILL.md"
+  printf -- '---\nname: ci-failures\nmetadata:\n  system: [ci]\n---\n' > "$BENCH_SKILLS_DIR/ci-failures/SKILL.md"
+  printf -- '---\nname: sentinel\nmetadata:\n  system: [telemetry]\n---\n' > "$BENCH_SKILLS_DIR/sentinel/SKILL.md"
+  printf 'system: telemetry\n' >> "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, .*; fix with fix-red: fix this alert; system deploy: load fix-red and k8s-ops #high'
+  # a label naming two ids loads both systems' skills
+  assert_line --regexp '^check\(alert\): HomelabCronJobFailed nas/bark-archive firing, .*; system ci deploy: load fix-red and ci-failures, k8s-ops #high'
+  # an id that is not lowercase is dropped, so that alert falls back to the watch's own system
+  assert_line --regexp '^check\(alert\): TraderRunFailed trader-web/walkforward firing, .*; system telemetry: load fix-red and sentinel #high'
+  # negative control: no systems line and no watch system names none
+  sed -i '/^systems: /d' "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"; sed -i '/^system:/d' "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, '
+  refute_line --regexp '^check\(alert\): .*system'
 }
 
 @test "triage: an alert row files at the trip's level, not the watch's fixed severity" {
