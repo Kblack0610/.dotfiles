@@ -1652,17 +1652,28 @@ critical_of() {
   printf '%s\t%s\n' "$crit" "$place"
 }
 
-# branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
+# ledger_repo <dir> -> the run ledger's key of the repo <dir> lands on (forge_of): `forgejo:owner/repo` for a clone
+# on a Forgejo host or a Forgejo-canonical one (home-config, whose origin is the GitHub mirror, which has no runs),
+# else origin's owner/repo. The ledger keys a Forgejo repo without its host (schedules-sync runs).
+ledger_repo() {
+  local f
+  f="$(forge_of "$1")"
+  if [ "$f" != origin ]; then printf 'forgejo:%s\n' "${f#* */}"; else origin_repo "$1"; fi
+}
+
+# branch_runs <dir> <branch> -> <branch>'s main_runs in the repo <dir> lands on (ledger_repo): gate_ci, main_health
 # and activity_line all read it, from one ledger read per repo per pass ($CACHE). A repo the ledger
 # does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1
-# with the row blind on every read.
+# with the row blind on every read. Read off origin, a Forgejo-canonical clone's mirror had no runs, so its
+# main read green and its gates read none (ar-2727, follow-up of ar-2587).
 branch_runs() {
-  local d="$1" b="$2" all one rc=0
-  all="$CACHE/runs_$(repo_slug "$d")" || return 1
+  local d="$1" b="$2" all one rc=0 repo slug
+  slug="$(repo_slug "$d")" || return 1
+  all="$CACHE/runs_${slug}_$(canonical_remote "$d")"
   one="${all}_${b//\//%2F}" # %2F: feat/x and feat_x are two branches
   if [ ! -f "$one" ]; then
     if [ ! -f "$all" ]; then
-      main_runs "$(origin_repo "$d")" > "$all" || rc=$?
+      if repo="$(ledger_repo "$d")"; then main_runs "$repo" > "$all" || rc=$?; else rc=1; fi
       case $rc in
         0) ;;
         3) echo '[]' > "$all" ;;

@@ -195,12 +195,14 @@ sandbox_detach_env() {
   # exports for its agent: MODEL and HARNESS outrank the conf (agent_run_codex.bats read a Claude
   # model as Codex's), AGENTCTL_ACCOUNT and a Claude session's CLAUDE_CONFIG_DIR pick the account
   # (agent_run_route.bats), FLEET_SHEPHERD_HOLDER makes the lease the runner's (fleet_shepherd.bats),
-  # AGENTCTL_AGENT names the caller in the call log, DIR and FILE point at live state, caps at the conf.
+  # AGENTCTL_AGENT names the caller in the call log, DIR and FILE point at live state, caps at the conf,
+  # and SSH_AUTH_SOCK is the live ssh agent, which would let a test reach a real fleet worker.
   # sandbox_isolation.bats reads both launchers' exports, so a new one fails there until it is here; LANE comes from the
   # unit's EnvironmentFile conf, in no launcher, and turned fleet_dispatch's model-lane stub. A test that wants one sets it after sandbox_init.
   unset LANE MODEL HARNESS ROUTE DATA_CLASS AGENTCTL_ACCOUNT AGENTCTL_INBOX AGENTCTL_EXPLAIN CLAUDE_TELEMETRY_SERVICE \
     FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_HOLDER FLEET_SHEPHERD_LEASE_MIN CLAUDE_CONFIG_DIR BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR \
-    AGENTCTL_AGENT AGENT_PROMPT AGENT_PROMPT_SHA AGENT_PROMPT_RENDERED AGENT_SCHEMA AGENT_MAX_TOKENS AGENT_TEMPERATURE AGENT_CALL_CONTEXT ROUTE_FROM
+    AGENTCTL_AGENT AGENT_PROMPT AGENT_PROMPT_SHA AGENT_PROMPT_RENDERED AGENT_SCHEMA AGENT_MAX_TOKENS AGENT_TEMPERATURE AGENT_CALL_CONTEXT ROUTE_FROM \
+    SSH_AUTH_SOCK
 
   # A suite run by a systemd unit (CI, a timer) inherits its INVOCATION_ID, and ask-resume reads
   # that as "detach through systemd-run", which would start a real transient scope.
