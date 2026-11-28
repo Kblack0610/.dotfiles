@@ -43,8 +43,6 @@ function sessionsHead() {
   return `<div class="capline">${line}</div>${unlinked}` + bad.map((e) => errPanel(e, { card: true })).join("");
 }
 
-const sessionAgent = (r) => st.agents.find((a) => a.target === r.target || (r.session_id && a.session === r.session_id));
-
 // New output: a session that wrote since this browser last had it open carries an accent dot. Per
 // browser by design: when each session was last seen sits in localStorage, and a session never
 // opened here has none, so the dot says "moved since you looked", not "is busy". The last write is
@@ -106,7 +104,7 @@ function ctxCell(r) {
 
 // The task at most two lines (ui.md rule 9), its tags first so a long task never hides them.
 function sessionRow(r) {
-  const a = sessionAgent(r), tags = sessionTags(r, a);
+  const a = r.agent, tags = sessionTags(r, a);
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "-" : dur(r.idle_min);
   const phases = r.phases_total ? `${r.phases_done}/${r.phases_total}` : "-";
   return `<tr class="click" data-key="${esc(r.key)}"><td>${newDot(a)}<span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span></td><td class="muted">${esc(r.activity || "-")}</td>` +
@@ -135,7 +133,7 @@ const sessionId = (a) => a.session || a.target;
 // The link carries the Sessions table's own view (its plain keys), never Runners' `r` or the
 // verdicts' `v` keys that share the URL.
 function sessionClick(r) {
-  const a = sessionAgent(r), q = tblParams(st.views.sessions).toString();
+  const a = r.agent, q = tblParams(st.views.sessions).toString();
   location.hash = `#sessions/sessions/${encodeURIComponent(a ? sessionId(a) : r.session_id || r.key)}${q ? "?" + q : ""}`;
 }
 
@@ -154,7 +152,7 @@ async function openSession(id) {
   }
   // An item's link names its session by the item (hub_core::queue Item::links), as session_page::find resolves it.
   const a = st.agents.find((x) => x.session === id || x.target === id) || st.agents.find((x) => (x.items || []).includes(id));
-  select(a || { target: id, session: id, paneless: true, status: "", summary: "", actions: [] });
+  select(a || { target: id, session: id, paneless: true, status: "", summary: { text: "" }, actions: [] });
   sideShow(true);
 }
 
@@ -169,9 +167,9 @@ const isSel = (r) => !!st.sel && ((r.target && r.target === st.sel.target) || (r
 function sideRow(r) {
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "" : dur(r.idle_min);
   const pr = r.pr ? sessionPr(r) : "";
-  const host = sessionAgent(r)?.host || "";
+  const host = r.agent?.host || "";
   return `<button class="srow${isSel(r) ? " on" : ""}" data-key="${esc(r.key)}"><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span>` +
-    `<span class="sn">${newDot(sessionAgent(r))}${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${host ? " @" + esc(host) : ""}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
+    `<span class="sn">${newDot(r.agent)}${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${host ? " @" + esc(host) : ""}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
 }
 
 function renderSide(scroll = false) {
@@ -222,7 +220,7 @@ const loadPage = coalesce(async () => {
   try {
     const p = await api(`/api/sessions/page?t=${encodeURIComponent(id)}`);
     if (still() && st.sel.paneless) {
-      Object.assign(st.sel, { name: p.name, summary: p.task, target: p.session_id || st.sel.target });
+      Object.assign(st.sel, { name: p.name, summary: { text: p.task }, target: p.session_id || st.sel.target });
       renderHead();
     }
     html = pageHtml(p);

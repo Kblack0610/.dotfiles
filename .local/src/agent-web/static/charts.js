@@ -7,7 +7,6 @@
 // A bucket outside it (UNCLEAR in old watch.log lines) takes CHAT's grey and sorts last.
 let BUCKETS = [];
 const setBuckets = (list) => { if (list && list.length) BUCKETS = list; };
-const bucketRank = (b) => { const i = BUCKETS.indexOf(b); return i < 0 ? BUCKETS.length : i; };
 const bucketColor = (b) => `var(--b-${BUCKETS.includes(b) ? b.toLowerCase() : "chat"})`;
 
 // A horizontal meter: frac in [0, 1], with a tick at mark (same scale) when given, kept inside the box at 100%.
