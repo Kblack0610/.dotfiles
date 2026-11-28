@@ -3977,9 +3977,10 @@ queue_section() {
 # lane graduates or demotes on.
 # lane_runs -> model-lane's run log, one row per run id, folded by lib/lane-runs.jq (the union merge of
 # ~/.agent can leave a rewritten row beside its old copy). A line that is no JSON (a torn append) is skipped.
-LANE_RUNS_JQ="$(grep -v '^#' "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/lane-runs.jq")" || exit 1
 lane_runs() {
-  jq -cRn "$LANE_RUNS_JQ"'[inputs | fromjson? | objects | select(.id and .ts)] | lane_runs[]' "$BENCH_LANE_LOG" 2>/dev/null
+  local fold
+  fold="$(grep -v '^#' "${BENCH_LIB_DIR:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib}/lane-runs.jq")" || return 1
+  jq -cRn "$fold"'[inputs | fromjson? | objects | select(.id and .ts)] | lane_runs[]' "$BENCH_LANE_LOG" 2>/dev/null
 }
 
 models_json() {
