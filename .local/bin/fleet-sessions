@@ -1584,8 +1584,8 @@ store_refresh() {
 # ($CACHE, case-blind), which prs_for, pr_states and item_open_prs all take their columns from. It asks the store to
 # catch up first (store_refresh, a no-op outside close --self). rc as pr_store: 1 unreadable, 3 not listed.
 repo_prs() {
-  local f="$CACHE/prsraw_${1//\//_}" rc=0
-  f="${f,,}"
+  local key="${1//\//_}" f rc=0
+  f="$CACHE/prsraw_${key,,}"
   store_refresh "$1"
   if [ ! -e "$f.rc" ]; then
     pr_store "$1" --checks > "$f" 2>/dev/null || rc=$?

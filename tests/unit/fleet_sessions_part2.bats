@@ -329,6 +329,21 @@ J
   [ ! -f "$CACHE/blind_row" ]
 }
 
+@test "repo_prs: one prs read per repo per pass, under a pass cache whose path has capitals (mktemp -d)" {
+  CACHE="$SANDBOX/PassCache"; mkdir -p "$CACHE"
+  printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_o_r.tsv"
+  : > "$LEDGER_DIR/calls"
+  run repo_prs o/r
+  assert_success
+  [ "$(jq -r '.[0].number' <<<"$output")" = 11 ]
+  pr_states o/r >/dev/null
+  repo_prs o/r >/dev/null
+  [ "$(grep -c '^prs ' "$LEDGER_DIR/calls")" = 1 ]
+  ss_script 'exit 3'
+  run repo_prs o/other
+  assert_failure 3
+}
+
 @test "store_key: a Forgejo alias host is the store's host, any other repo as given (ar-2786)" {
   printf '{"forges":{"forgejo":"store.example"}}\n' > "$SANDBOX/map.json"
   export SO_PROJECT_MAP="$SANDBOX/map.json" SO_FORGEJO_HOSTS="store.example alias.example"
