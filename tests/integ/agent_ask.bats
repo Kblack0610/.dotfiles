@@ -230,10 +230,6 @@ relay_fixture() { # <kind> <text> <shown>
   relay_fixture answer 'Park them' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" 'merge past red'
   assert_failure 1; assert_output --partial "names none (or more than one) of ask $id's options"
-  # Words that name neither the option nor its meaning do not pick it (ar-6269, ask M0yWLL).
-  relay_fixture answer 'get us down to only the ones that need' "Ask $id: park or wait?"
-  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'only the ones that need' "$id" park
-  assert_failure 1; assert_output --partial "does not pick 'park'"
   # Words that name another option pick that one, not this.
   relay_fixture answer 'wait for CI' "Ask $id: park or wait?"
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'wait for CI' "$id" park
@@ -255,6 +251,32 @@ relay_fixture() { # <kind> <text> <shown>
   run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'park them' "$id" wait
   assert_failure 1; assert_output --partial 'not waiting on the human'
   run "$AGENT_ASK" show "$id"; assert_line 'answer: park'
+}
+
+# In a session the human is at, words that name no option are their answer as the session reads it,
+# and the note says it was a reading; words that name the option are no reading; words that name
+# another option refuse.
+@test "answer --quote: words that name no option record the session's reading, and the note says so" {
+  local id; id="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'yes or no is fine, go off your recs thanks' "Ask $id: park or wait? My pick: park."
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id" park
+  assert_success
+  run "$AGENT_ASK" show "$id"; assert_line 'answer: park'; assert_line 'answered_by: human'
+  assert_output --partial "answer_note: relayed in session sid-r: the session's reading of their words as 'park': go off your recs"
+  # Negative control: words naming the other option are no reading of park.
+  local id2; id2="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'go off your recs, but wait for CI' "Ask $id2: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id2" park
+  assert_failure 1; assert_output --partial "whole message does not pick 'park'"
+  run "$AGENT_ASK" show "$id2"; assert_line 'status: pending'
+  # A fragment of an entry that names park is the human's pick, not the session's reading.
+  local id3; id3="$("$AGENT_ASK" post --project demo --options 'park=park them|wait=wait for CI' 'park or wait?')"
+  relay_fixture typed 'go off your recs and park it' "Ask $id3: park or wait?"
+  run env CLAUDE_CODE_SESSION_ID=sid-r "$AGENT_ASK" answer --by human --quote 'go off your recs' "$id3" park
+  assert_success
+  run "$AGENT_ASK" show "$id3"; assert_line 'answer: park'
+  assert_output --partial 'answer_note: relayed in session sid-r: go off your recs'
+  refute_output --partial "session's reading"
 }
 
 # An agent answers what does not need the human, and its answer releases what the ask holds
