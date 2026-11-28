@@ -71,13 +71,6 @@ install_runtime() {
     log_section "Installing language runtimes"
     install_package_list install_pacman_package arch \
         $PACKAGES_RUNTIME $PACKAGES_RUNTIME_ARCH
-
-    # Rust handled out-of-band (rustup, not pacman)
-    if ! command -v cargo &>/dev/null; then
-        log_info "Installing Rust..."
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-        source "$HOME/.cargo/env"
-    fi
 }
 
 # Override: Install Zsh
@@ -837,6 +830,7 @@ install_all() {
     step dev         install_tmux
     step dev         install_lazygit
     step dev         install_kitty
+    step dev         install_rust
 
     fleet_steps
 

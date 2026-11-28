@@ -45,7 +45,7 @@ const fixes = {
 const alert = (what, o = {}) => ({ sev: "high", what, project: "", source: "sentinel", since: NOW - 3600, owner: "-", state: "no owner", about: "", place: "", action: "", evidence: "", ...o });
 const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "trip", n: 1 }, { name: "error", n: 1 }, { name: "no owner", n: 1 }],
-  columns: ["sev", "what", "project", "source", "since", "owner", "state"].map(col), facets: [] };
+  columns: ["sev", "what", "project", "system", "source", "since", "owner", "state"].map(col), facets: [] };
 const watch = (name, state) => ({ name, state, severity: "normal", since: NOW - 60, lastrun: NOW - 30, lasttrip: null, place: "GitHub", what: "", action: "", evidence: "" });
 const firing = [
   alert("playground-nightly", { project: "unity-core-playground", owner: "ar-9 fixing", state: "fixing", slug: "ar-9", owner_href: "#queue/ar-9", about: "the nightly on main", place: "GitHub, unity", action: "read the run", evidence: "PlayMode 2 failed" }),
@@ -56,7 +56,7 @@ const strip = { firing: 2, fixes: 2, watches: 2 };
 // Watches' and History's summaries (hub_core::table over Watch and Action), each table's own.
 const watchesTable = { q: "", state: "", sort: "", dir: "", total: 3, shown: 3,
   states: [{ name: "all", n: 3 }, { name: "trip", n: 1, tone: "bad" }, { name: "error", n: 1, tone: "bad" }, { name: "new", n: 0 }, { name: "ok", n: 1, tone: "ok" }],
-  columns: ["name", "state", "severity", "project", "since", "lastrun", "place"].map(col), facets: [] };
+  columns: ["name", "state", "severity", "project", "system", "since", "lastrun", "place"].map(col), facets: [] };
 const historyTable = { q: "", state: "", sort: "", dir: "", total: 1, shown: 1, states: [{ name: "all", n: 1 }, { name: "loud", n: 0 }, { name: "failed", n: 0 }],
   columns: ["when", "actor", "verb", "prio", "source", "text"].map(col), facets: [] };
 const data = (o = {}) => ({
@@ -130,8 +130,8 @@ test("a rule firing in one place keeps its row and names its alert's summary", (
 
 test("a firing row names its project, a fleet-wide one a dash, and the watches list carries it too", () => {
   const h = show(data({ watches: [{ ...watch("playground-nightly", "TRIP"), project: "unity-core-playground" }, watch("disk", "OK")] }));
-  assert.match(h, /<td class="wrap">playground-nightly<\/td><td class="muted">unity-core-playground<\/td><td class="muted">sentinel<\/td>/);
-  assert.match(h, /<td class="wrap">dream<\/td><td class="muted">-<\/td><td class="muted">sentinel<\/td>/);
+  assert.match(h, /<td class="wrap">playground-nightly<\/td><td class="muted">unity-core-playground<\/td><td class="muted">-<\/td><td class="muted">sentinel<\/td>/);
+  assert.match(h, /<td class="wrap">dream<\/td><td class="muted">-<\/td><td class="muted">-<\/td><td class="muted">sentinel<\/td>/);
   assert.match(h, /<td>playground-nightly<\/td><td class="bad">TRIP<\/td><td class="muted">normal<\/td><td class="muted">unity-core-playground<\/td>/);
 });
 
