@@ -1,7 +1,7 @@
 //! The briefing, two documents from one read. The overview (`markdown`, `hub briefing --md`) is
-//! the human's: headline, Needs you, what landed yesterday (products before fleet tooling), one
-//! line per project that moved, builds and releases, overnight, money, and one line to the second
-//! document. The agent briefing
+//! the human's: headline, Needs you, the daily Decisions, what landed yesterday (products before
+//! fleet tooling), one line per project that moved, builds and releases, overnight, money, and one
+//! line to the second document. The agent briefing
 //! (`agents_markdown`, `--agents-md`) is what the briefing was before the split: Needs you, one
 //! line per area (Infra, Sessions, Workers overnight, Nightly, Delivery, Costs), then the detail.
 //! `agentctl-briefing` writes both; `--json` is the same document for a surface.
@@ -36,6 +36,9 @@ use crate::text::cap;
 /// Needs you holds at most this many items; past it, one less and a "more" line
 /// (`channels.toml [channel.briefing]`).
 pub const NEEDS_SHOWN: usize = 5;
+/// Decisions names at most this many, then a "more" line, then the one-reply line
+/// (`channels.toml [channel.briefing]` caps the section at 8).
+pub const DECISIONS_SHOWN: usize = 6;
 /// How long one line of Landed, Builds, Overnight (but its mail) and Money may be (the same
 /// channel's cap). A Needs you item and an overnight mail line take the `next` role's cap instead.
 pub const ITEM_MAX: usize = 160;
@@ -109,6 +112,9 @@ pub struct Briefing {
     /// The overview's headline: needs, and what yesterday landed.
     pub overview: String,
     pub needs: Vec<String>,
+    /// The daily batch: each ask below critical and each plan approval, with its pick, then the
+    /// one-reply line. Empty when none waits. The overview only (`markdown`).
+    pub decisions: Vec<String>,
     /// Overview sections, one markdown bullet body per line.
     pub landed: Vec<String>,
     /// One line per project that merged, went red or shipped (`by_project`, not `projects`: the
@@ -308,6 +314,59 @@ pub fn needs(rows: &[Need], now: i64) -> Vec<String> {
             "{more} more on Home: run hub needs, or open the Home tab."
         ));
     }
+    lines
+}
+
+/// A decision's recommended option as its line states the pick, cut to fit.
+fn pick(n: &Need) -> Option<String> {
+    n.recommend
+        .as_ref()
+        .filter(|r| !r.is_empty())
+        .map(|r| cap(r, 40))
+}
+
+/// One Decisions line: the pick first, then the question and where it is answered.
+fn decision_line(n: &Need, now: i64) -> String {
+    let text = n.text.trim_end_matches('.');
+    if n.kind == Kind::Session {
+        let tail = format!(" (session {})", cap(home::tmux_name(&n.id), 30));
+        return next_line(&format!("Approve the plan: {text}"), &tail);
+    }
+    let mut meta: Vec<String> = vec![];
+    meta.extend((!n.project.is_empty()).then(|| n.project.clone()));
+    meta.extend(n.since.map(|s| age(now - s)));
+    meta.push(format!("ask {}", n.id));
+    let tail = format!(" ({})", meta.join(", "));
+    match pick(n) {
+        Some(r) => next_line(&format!("Take {r} on: {text}"), &tail),
+        None => next_line(&format!("No pick; choose on: {text}"), &tail),
+    }
+}
+
+/// Decisions: what waits on the human and can wait a day (`Need::is_decision`: an ask the judge
+/// levelled below critical, a plan approval), in Home's rank order, one line each with its pick,
+/// then the line that answers them all. `agent-ask batch` (agentctl-briefing, before this reader)
+/// parks the asks the last batch listed and nobody answered, so each shows once, never twice.
+pub fn decisions(rows: &[Need], now: i64) -> Vec<String> {
+    let rows: Vec<&Need> = rows.iter().filter(|n| n.is_decision()).collect();
+    if rows.is_empty() {
+        return vec![];
+    }
+    let mut lines: Vec<String> = rows
+        .iter()
+        .take(DECISIONS_SHOWN)
+        .map(|n| decision_line(n, now))
+        .collect();
+    if rows.len() > DECISIONS_SHOWN {
+        lines.push(format!(
+            "{} more decisions on Home: run hub needs, or open the Home tab.",
+            rows.len() - DECISIONS_SHOWN
+        ));
+    }
+    lines.push(
+        "Reply once: agent-ask batch --take takes each ask's pick; open asks park at the next batch."
+            .into(),
+    );
     lines
 }
 
@@ -1292,18 +1351,23 @@ fn agents_line(areas: &[Area]) -> String {
 }
 
 /// "As of Tue 06:50: 4 things need you.", the sentence both documents open with and
-/// notes-cli's Morning block reads.
-fn as_of(i: &Inputs, n: usize) -> String {
+/// notes-cli's Morning block reads. It is the one count of Home's rows, and says how many of them
+/// are the day's Decisions (`d`), listed in a section of their own.
+fn as_of(i: &Inputs, n: usize, d: usize) -> String {
     let needs = match n {
         0 => "nothing needs you".to_string(),
         1 => "1 thing needs you".to_string(),
         n => format!("{n} things need you"),
     };
-    format!("As of {}: {needs}.", day_clock(i.now))
+    let decided = match d {
+        0 => String::new(),
+        d => format!(", {d} of them daily decisions"),
+    };
+    format!("As of {}: {needs}{decided}.", day_clock(i.now))
 }
 
-fn headline(i: &Inputs, n: usize) -> String {
-    let mut s = as_of(i, n);
+fn headline(i: &Inputs, n: usize, d: usize) -> String {
+    let mut s = as_of(i, n, d);
     if let Some((rec, avg)) = yesterday_and_avg(i, spent) {
         let row = crate::boards::day_row("", rec);
         s += &format!(
@@ -1410,7 +1474,16 @@ fn details(i: &Inputs, areas: &[Area]) -> Vec<String> {
 
 pub fn build(i: &Inputs) -> Briefing {
     let n = i.home.waiting().count;
-    let needs = needs(&i.home.needs, i.now);
+    let d = i.home.needs.iter().filter(|r| r.is_decision()).count();
+    let waits: Vec<Need> = i
+        .home
+        .needs
+        .iter()
+        .filter(|r| !r.is_decision())
+        .cloned()
+        .collect();
+    let needs = needs(&waits, i.now);
+    let decisions = decisions(&i.home.needs, i.now);
     let areas = vec![
         infra(i),
         sessions(i),
@@ -1423,12 +1496,13 @@ pub fn build(i: &Inputs) -> Briefing {
     Briefing {
         at: i.now,
         since: i.since,
-        headline: headline(i, n),
+        headline: headline(i, n, d),
         overview: match summary {
-            Some(s) => format!("{} {s}", as_of(i, n)),
-            None => as_of(i, n),
+            Some(s) => format!("{} {s}", as_of(i, n, d)),
+            None => as_of(i, n, d),
         },
         needs,
+        decisions,
         landed,
         by_project: projects(i),
         builds: builds(i),
@@ -1454,6 +1528,17 @@ impl Briefing {
         s
     }
 
+    fn decisions_md(&self) -> String {
+        let mut s = String::from("\n## Decisions\n\n");
+        if self.decisions.is_empty() {
+            s += "- nothing\n";
+        }
+        for d in &self.decisions {
+            s += &format!("- {d}\n");
+        }
+        s
+    }
+
     fn needs_md(&self) -> String {
         let mut s = String::from("## Needs you\n\n");
         if self.needs.is_empty() {
@@ -1465,12 +1550,13 @@ impl Briefing {
         s
     }
 
-    /// The file `agentctl-briefing` writes as `briefing.md`: headline, Needs you, Landed
+    /// The file `agentctl-briefing` writes as `briefing.md`: headline, Needs you, Decisions, Landed
     /// yesterday, Projects, Builds and releases, Overnight, Money, then one line to the agent briefing.
     /// notes-cli's Morning block reads the `As of ` line and the `- ` items under Needs you.
     pub fn markdown(&self) -> String {
         let mut s = self.top("Briefing", &self.overview, "the agents briefing");
         s += &self.needs_md();
+        s += &self.decisions_md();
         for (title, lines) in [
             ("Landed yesterday", &self.landed),
             ("Projects", &self.by_project),
@@ -1492,6 +1578,7 @@ impl Briefing {
     pub fn agents_markdown(&self) -> String {
         let mut s = self.top("Agent briefing", &self.headline, "Details");
         s += &self.needs_md();
+        s += &self.decisions_md();
         s += "\n## Areas\n\n";
         for a in &self.areas {
             let line = format!("{}: {}, {}", a.name, a.level.word(), a.line);
@@ -2161,6 +2248,15 @@ mod tests {
         }
     }
 
+    /// An ask record the judge levelled, for a row that is a decision when the level is below critical.
+    fn levelled(level: &str) -> crate::boards::Ask {
+        crate::boards::Ask {
+            kind: "question".into(),
+            judge_level: level.into(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn needs_fold_by_kind_in_rank_order() {
         let mut rows: Vec<Need> = (0..9)
@@ -2250,8 +2346,15 @@ mod tests {
         ask.recommend = Some("send".into());
         let mut sheet = need(Kind::Sheet, "row", "Call the vet");
         sheet.project = "home".into();
+        let mut batched = need(Kind::Ask, "qRsTuV", "Which repo takes the guard?");
+        batched.recommend = Some("dotfiles".into());
+        batched.ask = Some(levelled("repo"));
+        let mut plan = need(Kind::Session, "lab/dotfiles:4", "Plan: one Decisions batch");
+        plan.need = home::NeedKind::Plan;
         i.home.needs = vec![
             ask,
+            batched,
+            plan,
             need(Kind::Ask, "kLmNoP", "Second question?"),
             need(Kind::Session, "lab/dotfiles:3", "plan awaiting approval"),
             need(Kind::Queue, "ar-4381", "Pick the cap"),
@@ -2276,6 +2379,105 @@ mod tests {
         )
         .iter()
         .any(|c| c == "item-id"));
+    }
+
+    #[test]
+    fn the_daily_batch_lists_decisions_with_their_pick_and_leaves_them_out_of_needs_you() {
+        let mut i = green();
+        let ask = |id: &str, text: &str, level: &str, pick: Option<&str>| {
+            let mut n = need(Kind::Ask, id, text);
+            n.ask = Some(levelled(level));
+            n.recommend = pick.map(String::from);
+            n
+        };
+        let mut plan = need(Kind::Session, "lab/dotfiles:4", "Plan: one batch");
+        plan.need = home::NeedKind::Plan;
+        i.home.needs = vec![
+            ask("crit01", "Send the release post?", "critical", Some("send")),
+            ask(
+                "bat001",
+                "Which repo takes the guard?",
+                "repo",
+                Some("dotfiles"),
+            ),
+            ask("bat002", "Rename the lane?", "fleet", None),
+            plan,
+            need(Kind::Queue, "ar-1", "Pick the cap"),
+        ];
+        let b = build(&i);
+        let waits = b.needs.join("\n");
+        assert!(
+            waits.contains("crit01") && waits.contains("ar-1"),
+            "{waits}"
+        );
+        assert!(
+            !waits.contains("bat00") && !waits.contains("Plan: one batch"),
+            "{waits}"
+        );
+        assert_eq!(b.decisions.len(), 4, "{:?}", b.decisions);
+        assert!(
+            b.decisions[0].starts_with("Take dotfiles on: Which repo takes the guard?"),
+            "{:?}",
+            b.decisions
+        );
+        assert!(b.decisions[0].contains("ask bat001"), "{:?}", b.decisions);
+        assert!(
+            b.decisions[1].starts_with("No pick; choose on: Rename the lane?"),
+            "{:?}",
+            b.decisions
+        );
+        assert!(
+            b.decisions[2].starts_with("Approve the plan: Plan: one batch"),
+            "{:?}",
+            b.decisions
+        );
+        assert!(
+            b.decisions[3].starts_with("Reply once: agent-ask batch --take"),
+            "{:?}",
+            b.decisions
+        );
+        // The one count still counts every row, and says how many are the day's decisions.
+        assert!(
+            b.overview.starts_with(&format!(
+                "As of {}: 5 things need you, 3 of them daily decisions.",
+                day_clock(i.now)
+            )),
+            "{}",
+            b.overview
+        );
+        let md = b.markdown();
+        assert!(md.contains("## Decisions\n\n- Take dotfiles on:"), "{md}");
+        for l in &b.decisions {
+            let f = grader::grade(&["--channel", "ui", "--role", "next"], l);
+            assert!(f.is_empty(), "{l}: {f:?}");
+        }
+        // Negative control: with nothing batched the section says so and no reply line shows.
+        i.home.needs.retain(|n| !n.is_decision());
+        let b = build(&i);
+        assert!(b.decisions.is_empty());
+        assert!(b.markdown().contains("## Decisions\n\n- nothing\n"));
+    }
+
+    #[test]
+    fn a_long_batch_names_six_then_counts_the_rest_inside_the_section_cap() {
+        let rows: Vec<Need> = (0..9)
+            .map(|k| {
+                let mut n = need(Kind::Ask, &format!("bat{k:03}"), &format!("Question {k}?"));
+                n.ask = Some(levelled("self"));
+                n
+            })
+            .collect();
+        let lines = decisions(&rows, NOW);
+        assert_eq!(lines.len(), DECISIONS_SHOWN + 2, "{lines:?}");
+        assert!(
+            lines[DECISIONS_SHOWN].starts_with("3 more decisions on Home"),
+            "{lines:?}"
+        );
+        assert!(lines.last().unwrap().starts_with("Reply once"));
+        assert!(
+            decisions(&[need(Kind::Ask, "a", "Q?")], NOW).is_empty(),
+            "an unlevelled ask is not a decision"
+        );
     }
 
     /// A folded group still names the place of its top row, and a sheet row with no project
@@ -2786,6 +2988,7 @@ mod tests {
         let order = [
             "As of ",
             "## Needs you",
+            "## Decisions",
             "## Landed yesterday",
             "## Projects",
             "## Builds and releases",
@@ -2806,7 +3009,7 @@ mod tests {
         assert!(a.contains("## Areas") && a.contains("## Details"), "{a}");
         assert!(!a.contains("## Landed yesterday"), "{a}");
         // both documents open with the sentence the Morning block reads
-        assert!(md.contains(&as_of(&i, 0)) && a.contains(&as_of(&i, 0)));
+        assert!(md.contains(&as_of(&i, 0, 0)) && a.contains(&as_of(&i, 0, 0)));
     }
 
     #[test]
