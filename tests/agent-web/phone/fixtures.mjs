@@ -220,12 +220,15 @@ const sessions = {
 };
 Object.assign(sessions, paged(sessions, "sessions/sessions"));
 const capacity = { parts: [{ text: "39 live", warn: false, start: "", confirm: "" }, { text: "2 slots free", warn: true, start: "", confirm: "" }], unlinked: 0, live: 39, errors: [] };
-const watch = { state: { sessions: rows(39, (i) => ({ target: `lab/agent-${i}:1`, bucket: pick(BUCKET, i), age_min: 30 + i * 20 })), vocab: { buckets: sessions.buckets }, generated_at: iso(NOW) }, transitions: [] };
+const watch = { state: { sessions: rows(39, (i) => ({ target: `lab/agent-${i}:1`, bucket: pick(BUCKET, i), age_min: 30 + i * 20 })), vocab: { buckets: sessions.buckets }, generated_at: iso(NOW) }, transitions: [],
+  // hub_core::boards::lanes: one lane per live session over the last day, as served.
+  lanes: { t0: (NOW - 86400) * 1000, until: NOW * 1000, lanes: [] } };
+watch.lanes.lanes = watch.state.sessions.map((s) => ({ target: s.target.split("/").pop(), gone: false, segs: [{ a: Math.max(watch.lanes.t0, (NOW - s.age_min * 60) * 1000), b: NOW * 1000, key: s.bucket, title: `${s.bucket} now` }] }));
 // Log's Rundowns: as many as agent-web keeps (shepherd.rs RUNDOWNS), each a long sum-up like the
 // live ones, of which the server sends the first page, so the inner tab's height is measured at a live count.
 const rundownBody = (i) => `## Your requests\n\n${rows(24, (k) => `- ${SLUGS[(i + k) % SLUGS.length]}-${k}, queued, no open PR, no ETA, waits on: ${TEXT[k % TEXT.length]}`).join("\n")}\n`;
 const shepherd = {
-  target: "", status: "", stats: null, ledger: { due: [], lease_at: null, lease_holder: "" },
+  target: "", status: "", pass: null, pass_error: null, ledger: { due: [], lease_at: null, lease_holder: "" },
   rundowns: rows(60, (i) => ({ file: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")}T${String(2359 - i).padStart(4, "0")}Z.md`, title: TEXT[i % TEXT.length].slice(0, 60), stamp: `2026-11-${String(12 - Math.floor(i / 6)).padStart(2, "0")} 12:${String(i % 60).padStart(2, "0")} UTC`, body: rundownBody(i) })),
 };
 { const p = paged({ rows: shepherd.rundowns, table: { shown: shepherd.rundowns.length, pager: null } }, "rundowns"); Object.assign(shepherd, { rundowns: p.rows, rundowns_table: p.table }); }
@@ -587,7 +590,7 @@ const byTab = (tab) => GRID_CARDS.find((c) => c.tab === tab) ?? (() => { throw n
 export const CARD_ORDER = ids("ORDER");
 const homeCards = CARD_ORDER.filter((t) => t !== "red").map(byTab);
 export const FIXTURES = {
-  "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, sessions: 0, href: "#home" }, "/api/session-options": { describe: {}, accounts: [] },
+  "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, sessions: 0, href: "#home" }, "/api/session-options": { actions: [], accounts: [] },
   "/api/home": home, "/api/home/cards": homeCards, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
   "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/candidates?counts=1": candCounts, "/api/queue/projects": PROJECTS.slice(0, 5),
   "/api/projects": projects, "/api/deliverables": deliverables, "/api/coverage": coverage, "/api/stages": stages, "/api/stages/requirements": stageReqs, "/api/board": board, "/api/sprints": sprints, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,
