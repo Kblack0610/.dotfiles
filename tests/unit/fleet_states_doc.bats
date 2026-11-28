@@ -411,18 +411,19 @@ check_owner_copies() { # <doc> <file>...
   refute_output --partial "SKILL.md"
 }
 
-@test "negative controls for the re-review's gate gaps: a guessed branch loop, a harness prefix test and a size capture or word list are found; the owner's loop and an interrupt count are not" {
+@test "negative controls for the re-review's gate gaps: a guessed branch loop, a harness prefix test either quote and a size capture or word list are found; the owner's loop and an interrupt count are not" {
   local t="$BATS_TEST_TMPDIR"
   printf '%s\n' '  for ref in main master develop; do' > "$t/branch"
   printf '%s\n' '  elif ($t | startswith("[Request interrupted")) then ""' > "$t/prefix"
   printf '%s\n' '    if "continued from a previous conversation" in t:' > "$t/compact.py"
+  printf '%s\n' "    if t.startswith('[Request interrupted'):" > "$t/single.py"
   printf '%s\n' '  size="$(jq -r '"'"'(.task | capture("#size/(?<s>[sml])") | .s)'"'"')"' > "$t/capture"
   printf '%s\n' '  test("^[+-]#(urgent|size/[sml]|plan)$")' > "$t/words"
   printf '%s\n' '    .map_or(Val::None, |s| at(&["xs", "s", "m", "l", "xl"], s)),' > "$t/sizes.rs"
   printf '%s\n' '  (if ($c | startswith("[Request interrupted by user")) then .interrupts += 1 else . end)' > "$t/interrupts"
-  run check_owner_copies "$DOC" "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$t/branch" "$t/prefix" "$t/compact.py" "$t/capture" "$t/words" "$t/sizes.rs" "$t/interrupts"
+  run check_owner_copies "$DOC" "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$t/branch" "$t/prefix" "$t/compact.py" "$t/single.py" "$t/capture" "$t/words" "$t/sizes.rs" "$t/interrupts"
   assert_failure
-  for f in branch prefix compact.py capture words sizes.rs; do assert_output --partial "$t/$f:1:"; done
+  for f in branch prefix compact.py single.py capture words sizes.rs; do assert_output --partial "$t/$f:1:"; done
   refute_output --partial "$t/interrupts"
   refute_output --partial "agent-merge-proof.sh"
 }
