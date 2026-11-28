@@ -2892,6 +2892,79 @@ fix_item() {
   assert_output 1
 }
 
+# 2026-11-27 (ar-6018): tries count per trip, so a watch whose fixes kept merging and not holding got a fresh fix
+# item every trip: fleet-liveness had 12 came-back fixes in 7 days and dotfiles-gate-budget 11.
+@test "triage: a watch whose red came back after two merged fixes in the window gets one cause item, then nothing more" {
+  log_triage_setup
+  watch links TRIP -25200 high
+  route 'watch.: (links) tripped' agent fix-red 'fix the source each line names'
+  local want old older ancient
+  want=$(printf '%s' 'check(watch):links' | sha256sum | cut -c1-8)
+  old=$(date -u -d "@$((T0 - 90000))" +%FT%TZ); older=$(date -u -d "@$((T0 - 180000))" +%FT%TZ)
+  ancient=$(date -u -d "@$((T0 - 8 * 86400))" +%FT%TZ)
+  # fix_item <slug> <queued and finished> <pr> [extra tags] [state]: a fix of this cause, merged unless it names no PR
+  fix_item() { jq -cn --arg t "red watch cause:$want${4:+ $4}" --arg slug "$1" --arg q "$2" --arg pr "$3" --arg st "${5:-done}" \
+    '{slug: $slug, tags: $t, state: $st, status: "ok", queued: $q, finished: (if $st == "done" then $q else null end),
+      pr: (if $pr == "" then null else $pr end), merged: (if $pr == "" then null else "abc" end)}' >> "$ITEMS"; }
+  # one merged fix before this trip is a per-trip first try, as before
+  fix_item ar-1 "$older" o/r#5
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want --raw "
+  # a second item recording the same PR (one landing closed both) and one merged 8 days ago are no second fix
+  : > "$PLOG"; fix_item ar-2 "${older%Z}.5Z" o/r#5; fix_item ar-0 "$ancient" o/r#4
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  refute_output --partial ' cause retry:'
+  # two merged fixes it came back after: one cause item on the escalation model, naming both
+  : > "$PLOG"; fix_item ar-3 "$old" o/r#6
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --model opus --tags red watch cause:$want cause retry:ar-1,ar-3 --raw "
+  [ "$(grep -c . "$PLOG")" = 1 ]
+  # its brief reads both PRs from the queue, once each, oldest first
+  run "$SUBJECT" triage --backs "$want" $((T0 - 25200))
+  assert_success
+  assert_output "$(printf 'ar-1\to/r#5\t%s\nar-3\to/r#6\t%s' "$older" "$old")"
+  # given its watch, the probe output file follows, when the watch has one
+  echo 'red: x' > "$TRIAGE_WATCH_STATE/links.out"
+  run "$SUBJECT" triage --backs "$want" $((T0 - 25200)) links
+  assert_line --index 2 "$(printf 'probe\t%s' "$TRIAGE_WATCH_STATE/links.out")"
+  # NEGATIVE CONTROL: with the cause branch off (a bar no watch reaches), the same queue gets a fresh per-trip item
+  : > "$PLOG"
+  TRIAGE_CAUSE_BACKS=99 run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want --raw "
+  # a further trip while the cause item is open queues nothing
+  : > "$PLOG"; fix_item ar-9 "$(date -u -d "@$((T0 - 3600))" +%FT%TZ)" '' cause queued
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  refute_output --partial 'queued as red fixes'
+  # its cause item closed and the red is back: spent, one ask, never a second cause item
+  : > "$ITEMS"; fix_item ar-1 "$older" o/r#5; fix_item ar-3 "$old" o/r#6
+  fix_item ar-4 "$(date -u -d "@$((T0 - 86400))" +%FT%TZ)" o/r#7 cause
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  run grep -c '^post ' "$ASKLOG"
+  assert_output 1
+  grep -q "ar-1,ar-3,ar-4" "$ASKLOG"
+  # one that held past TRIAGE_PROVES_MAX before this trip leaves room for one new cause item, naming it too
+  : > "$ITEMS"; : > "$ASKLOG"; rm -f "$XDG_STATE_HOME/agentctl/triage-spent"
+  fix_item ar-1 "$older" o/r#5; fix_item ar-3 "$old" o/r#6
+  fix_item ar-4 "$(date -u -d "@$((T0 - 25200 - 90000))" +%FT%TZ)" o/r#7 cause
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --model opus --tags red watch cause:$want cause retry:ar-1,ar-4,ar-3 --raw "
+}
+
 # ar-4064: one row whose board add failed returned from board_upsert, so the pass queued no red fix.
 @test "triage: a row whose board write fails is skipped alone, and the pass still queues its red fixes" {
   log_triage_setup

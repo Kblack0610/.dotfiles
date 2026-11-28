@@ -248,6 +248,17 @@ J
   cmd_start --item r2 >/dev/null || fail "start r2"
   run cat "$NOTES_FIXTURE/cmds.log"
   assert_output --partial 'this is its escalation: before any fix, do the root-cause pass of fix-red section 3'
+  refute_output --partial 'this is its cause item'
+  # ar-6018: a cause item's brief lists each earlier fix's PR, read from the queue by fleet-bench triage --backs
+  : > "$NOTES_FIXTURE/cmds.log"
+  stub fleet-bench "echo \"\$*\" >> '$NOTES_FIXTURE/fb.log'; printf 'ar-1\to/r#5\t2026-11-20T00:00:00Z\nar-3\to/r#6\t2026-11-21T00:00:00Z\nprobe\t/st/links.out\n'"
+  agent-queue add --project game --slug r3 --tags 'red watch cause:ef56 cause retry:ar-1,ar-3' "check(watch): links tripped since x" >/dev/null
+  cmd_start --item r3 >/dev/null || fail "start r3"
+  run cat "$NOTES_FIXTURE/fb.log"
+  assert_output --regexp '^triage --backs ef56 [0-9]+ links$'
+  run cat "$NOTES_FIXTURE/cmds.log"
+  assert_output --partial 'came back after each earlier fix merged: o/r#5 (item ar-1, finished 2026-11-20T00:00:00Z), o/r#6 (item ar-3, finished 2026-11-21T00:00:00Z). So this is its cause item'
+  assert_output --partial 'before and after (fix-red step 5); the probe output now is in /st/links.out. Before any fix'
 }
 
 @test "promote: --model pins the item's model, as triage's escalation does; without it the item names none" {
