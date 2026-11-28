@@ -108,3 +108,42 @@ repo_of() {
   run git -C "$CLONE" remote get-url origin
   assert_output git@git.example.lan:o/r.git
 }
+
+@test "store_name: a GitHub host (or none) gives owner/repo, any other host host/owner/repo, lower-cased" {
+  local h
+  for h in github.com GitHub.com ssh.github.com github.com-work ''; do
+    run store_name "$h" o/r
+    assert_output o/r
+  done
+  run store_name Git.Example.LAN o/r
+  assert_output git.example.lan/o/r
+}
+
+@test "origin_store_name: the store key of a checkout's origin; rc 1 with none" {
+  run origin_store_name "$CLONE"
+  assert_failure 1
+  git -C "$CLONE" remote add origin git@github.com:o/r.git
+  run origin_store_name "$CLONE"
+  assert_output o/r
+  git -C "$CLONE" remote set-url origin https://git.example.lan/o/r.git
+  run origin_store_name "$CLONE"
+  assert_output git.example.lan/o/r
+}
+
+@test "pr_store: the store's rows on 0, 3 for a repo it does not list, 1 for any other failure" {
+  source "$REPO_ROOT/.local/lib/main-state.sh"
+  ss_stub
+  ss_answer prs.out '[{"number":1}]'
+  run pr_store o/r --state open --checks
+  assert_success
+  assert_output '[{"number":1}]'
+  run calls
+  assert_output 'schedules-sync prs o/r --state open --checks'
+  ss_answer prs.rc 3
+  run pr_store o/r
+  assert_failure 3
+  assert_output ''
+  ss_answer prs.rc 2
+  run pr_store o/r
+  assert_failure 1
+}

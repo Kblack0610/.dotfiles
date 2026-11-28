@@ -3,7 +3,7 @@
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|normal|low] [--tags "t1 t2"]
 #       [--weight heavy|light] [--after slug|row-id[,...]] [--from human|session|shepherd|canary|trainee|research:<facet>|auto:<filer>|item:<slug>|ask:<id>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
-#       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--checked <id>[,...]] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
+#       [--row <code>-<N>] [--pr <owner>/<repo>#<N>] [--epic <code>-<N>] [--want <channel>] [--checked <id>[,...]] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --running with no --from or --want is from item:<$AGENT_QUEUE_ITEM> in a queue item's session, from session in any
 #       other Claude session, and from human only at a terminal; a hand session records the human's own want with --want human.
 #       A --running add (or a session's own claim) from a worktree session on a machine that is not the fleet lease holder records `host:` too, so the holder's reap checks that worker's tmux (hand_host).
@@ -23,6 +23,9 @@
 #       A plan phase or validate item (stack_dependent) after a slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: it is stacked on it
 #       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
 #       head, and agent-land refuses it (exit 4) until that slug closed ok. A phase's PR in another project's repo is no base (its checkout lacks the commit): that after: holds until the close (stack_same_checkout); a validate item still stacks, and dispatch cuts it in the PR's repo, since it lands that PR. A dependency closed unmerged stays a dead hold. Any other --after holds until that slug closed ok, open PR or not.
+#       One owner per piece of work (live_owner): an add is refused, naming the live item, when it names a cause: tag, a --row, a --pr
+#       (the PR the item works, recorded as its pr:) or a plan phase (a first line "P4 of <plan>") another active item already has; set refuses
+#       a cause: tag, plan= and phases= the same way, and never a pr= (agent-land records the PR it merged). A `validate` item reviews its author's PR and owns none.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. When notes refuses that row for
@@ -2130,16 +2133,56 @@ file_story() {
   printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
 }
 
+# live_owner <kind> <value> [<self slug>] -> the active items that own <value>, one `<slug><TAB><state><TAB><session>`
+# a line (none when it is free), <self slug> not counted. The one reader of the queue for "who has this
+# already", read once under whatever lock the caller holds; each caller decides what an owner means (warn,
+# refuse, keep). Kinds, by value:
+#   area  <project>:<area>      another item of the project on the same `area:`
+#   cause cause:<id>            a `cause:` tag; a later phase of AQ_ITEM_PLAN (add --plan) is the same work
+#   row   <board>:<row id>      the row it works (`row:`)
+#   pr    <owner>/<repo>#<N>    a PR in its `pr:` or `open_pr:`; a `validate` item reviews its author's PR and owns none
+#   plan  <file>[#<phase>]      an item of the plan (its `plan:` field, or a task naming the file); with a phase, the item
+#         holding that phase: `phases:` of its `plan:`, else its task's first line ("P4 of <plan>", "Plan: <plan> phase 4")
+# Exits LOCK_BUSY's rc, else 1, with nothing printed, when the queue could not be read: a reader that fails reads no owners.
+live_owner() {
+  local rows
+  rows="$(collect_rows $ACTIVE)" || return $?
+  jq -r --arg k "$1" --arg v "$2" --arg s "${3:-}" --arg own "${AQ_ITEM_PLAN:-}" "$PLAN_ITEMS_JQ"'
+    def words($f): ($f // "") | ascii_downcase | split("[ ,]+"; null) | map(select(. != ""));
+    def tagged($t): ((" " + (.tags // "") + " ") | contains(" " + $t + " "));
+    def holds_phase($file; $n): ($file | split("/") | last | ascii_downcase | gsub("[.]"; "\\.")) as $b
+      | if (.plan // "") != "" then (words(.phases) | index($n)) != null and names_plan($file)
+        else ((.task // "") | split("\n")[0] | ascii_downcase
+          | test("^(phase |p)" + $n + " of (the plan )?(\\S*/)?" + $b + "([.,;:) ]|$)|plan: (\\S*/)?" + $b + " phase p?" + $n + "\\b")) end;
+    ($v | ascii_downcase) as $lv
+    | ($v | split("#")) as $hash
+    | ($v | index(":") // 0) as $i
+    | .[] | select(.slug != $s)
+    | select(
+        if $k == "area" then
+          (.project | ascii_downcase) == $lv[:$i] and ((.area // "") | ascii_downcase) == $lv[$i + 1:]
+        elif $k == "cause" then
+          tagged($v) and ($own == "" or (names_plan($own) | not))
+        elif $k == "row" then .row == $v
+        elif $k == "pr" then
+          (words(.pr) + words(.open_pr) | index($lv)) != null and (tagged("validate") | not)
+        elif $k == "plan" then
+          names_plan($hash[0]) and ($hash[1] == null or holds_phase($hash[0]; $hash[1]))
+        else error("live_owner: no kind " + $k) end)
+    | "\(.slug)\t\(.state)\t\(.session // "")"' <<<"$rows"
+}
+
 # area_held <project> <area> [<slug>] -- warn when another active item of the project already holds the area.
 # Dispatch never picks a row on a held area (fleet-dispatch queue_areas); a start by hand (add --running, a
 # session's own claim) is the human's call, so it is told who holds it and goes ahead.
 area_held() {
-  local held
+  local owners held='' s st se
   [ -n "$2" ] || return 0
-  held="$(collect_rows $ACTIVE | jq -r --arg p "${1,,}" --arg a "${2,,}" --arg s "${3:-}" '[.[]
-    | select((.project | ascii_downcase) == $p and .slug != $s and ((.area // "") | ascii_downcase) == $a)
-    | "\(.slug) (\(.state)\(if .session then " in " + .session else "" end))"] | join(", ")')" ||
+  owners="$(live_owner area "$1:$2" "${3:-}")" ||
     { echo "agent-queue: could not check the queue for another item on area $2" >&2; return 0; }
+  while IFS=$'\t' read -r s st se; do
+    [ -z "$s" ] || held+="${held:+, }$s ($st${se:+ in $se})"
+  done <<<"$owners"
   [ -z "$held" ] || echo "agent-queue: area $2 on $1 is already held by $held; dispatch starts no second session there, so check this is not the same work" >&2
 }
 
@@ -2149,16 +2192,83 @@ area_held() {
 # (AQ_ITEM_PLAN, add --plan) is the same work. Under the lock, so two filers cannot both pass.
 # gate: aq-cause-owner
 cause_owner() {
-  local c own rows
+  local c own
   [[ " $1 " == *" cause:"?* ]] || return 0
-  rows="$(collect_rows $ACTIVE)" || die "could not check the queue for an item that owns a cause:"
   for c in $1; do
     [[ "$c" == cause:?* ]] || continue
-    own="$(jq -r --arg c " $c " --arg s "${2:-}" --arg p "${AQ_ITEM_PLAN:-}" "$PLAN_ITEMS_JQ"' first(.[]
-      | select(.slug != $s and ((" " + (.tags // "") + " ") | contains($c)) and ($p == "" or (names_plan($p) | not)))
-      | .slug) // empty' <<<"$rows")"
+    own="$(live_owner cause "$c" "${2:-}")" || die "could not check the queue for an item that owns a cause:"
+    own="${own%%$'\t'*}"
     [ -z "$own" ] || die "$c is already owned by $own: work it there, or take it over with agent-queue claim $own"
   done
+}
+
+# pr_twin <slug> <owner/repo#N>...: refuses when a live item other than <slug> already records one of the
+# PRs (pr:, open_pr:), as cause_owner refuses a second owner of a red: two sessions on one PR checked it
+# five times while a third fixed it (#2539, 2026-11-18). A validate item reviews its author's PR, so it is
+# neither refused nor an owner (live_owner).
+pr_twin() {
+  local s="$1" ref own
+  shift
+  for ref in "$@"; do
+    [[ "$ref" =~ ^[^/[:space:]]+/[^/#[:space:]]+#[0-9]+$ ]] || continue
+    own="$(live_owner pr "$ref" "$s")" || die "could not check the queue for an item on $ref"
+    own="${own%%$'\t'*}"
+    [ -z "$own" ] || die "$ref is already recorded by $own: work it there, or take it over with agent-queue claim $own"
+  done
+}
+
+# plan_phase_owner <slug> <plan file> <phase>...: refuses when a live item other than <slug> or the calling
+# session's own item already holds one of the phases (live_owner plan), whatever its slug: ar-3247 was
+# queued as a plan's P4 while ar-3228 built it under a row's slug, and both ran (2026-11-18).
+plan_phase_owner() {
+  local s="$1" file="$2" ph own
+  shift 2
+  [ -n "$file" ] || return 0
+  for ph in "$@"; do
+    [[ "$ph" =~ ^[0-9]+$ ]] || continue
+    own="$(live_owner plan "$file#$ph" "$s")" || die "could not check the queue for an item on phase $ph of $file"
+    own="$(awk -F'\t' -v me="${AGENT_QUEUE_ITEM:-}" '$1 != me { print $1; exit }' <<<"$own")"
+    [ -z "$own" ] || die "phase $ph of $file is already held by $own: work it there, or take it over with agent-queue claim $own"
+  done
+}
+
+# plan_items_live <plan> -> the slugs of the plan's items already active, the calling session's own not counted
+# (live_owner plan). Exits LOCK_BUSY when the queue stays locked, else 1: a reader of the queue that fails reads no items.
+plan_items_live() {
+  local rc=0 out
+  out="$(live_owner plan "$1" "${AGENT_QUEUE_ITEM:-}")" || rc=$?
+  [ "$rc" != "$LOCK_BUSY" ] || exit "$LOCK_BUSY"
+  [ "$rc" = 0 ] || die "could not check the queue for items of $1, so nothing was added"
+  cut -f1 <<<"$out" | paste -sd' '
+}
+
+# task_plan_phase <first line of a task> -> "<plan file>\t<phase>" when it opens "P6 of <plan>" or "Phase 6 of the
+# plan <plan>", or carries "Plan: <plan> phase P3" (plan_landed reads the same two forms of a done item), else rc 1.
+task_plan_phase() {
+  local re1='^(Phase |P)([0-9]+) of (the plan )?([^[:space:]]+\.md)([.,;:) ]|$)' re2='Plan: ([^[:space:]]+\.md) phase P?([0-9]+)'
+  if [[ "$1" =~ $re1 ]]; then printf '%s\t%s\n' "${BASH_REMATCH[4]}" "${BASH_REMATCH[2]}"
+  elif [[ "$1" =~ $re2 ]]; then printf '%s\t%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  else return 1; fi
+}
+
+# plan_flags_ok <task words> <want> <row> <pr> <mode> <running>: the flags `add --plan` refuses, each one naming a
+# single item's work or a human's channel, which a plan's agent-made phases carry on their own.
+plan_flags_ok() {
+  [ "$1" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
+  [ -z "$2" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
+  [ -z "$3" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
+  [ -z "$4" ] || die "--pr names the PR one item works; a plan's phases each record their own"
+  [ "$5" = oneshot ] && [ -z "$6" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
+}
+
+# add_owners <slug> <tags> <pr> <text>: the owner checks of an add, under the lock: a red's cause, the PR it
+# names (--pr), and the plan phase its first line names. A --plan phase (AQ_ITEM_PLAN) was checked as a whole
+# by add_plan; a validate item owns no PR.
+add_owners() {
+  local plan ph
+  cause_owner "$2"
+  [[ " $2 " == *" validate "* ]] || [ -z "$3" ] || pr_twin "$1" "$3"
+  [ -n "${AQ_ITEM_PLAN:-}" ] || ! IFS=$'\t' read -r plan ph < <(task_plan_phase "$(head -1 <<<"$4")") || plan_phase_owner "$1" "$plan" "$ph"
 }
 
 # link_row <id> <project> -> "<board><TAB><profile><TAB><id>" of an open row on the project's agent board, started
@@ -2169,8 +2279,8 @@ link_row() {
   local id="$1" project lab code taken out
   IFS=$'\t' read -r project lab code < <(project_board "$2")
   [ -n "$lab" ] && [ -n "$code" ] || die "--row $id: $2 has no agent board (no lab or code in $AQ_MAP, nor a board key naming one)"
-  taken="$(collect_rows $ACTIVE | jq -r --arg r "$project:$id" 'first(.[] | select(.row == $r) | .slug) // empty')" ||
-    die "--row $id: could not check the queue for an item on that row"
+  taken="$(live_owner row "$project:$id")" || die "--row $id: could not check the queue for an item on that row"
+  taken="${taken%%$'\t'*}"
   [ -z "$taken" ] || die "--row $id: $taken already works that row; to take it over: agent-queue claim $taken"
   command -v notes >/dev/null || die "--row $id: no notes on PATH"
   out="$(notes --profile "$lab" ptask "$project" --agent start "$id" 2>&1)" ||
@@ -2365,6 +2475,7 @@ add_item_text() {
   [ -n "$ctype" ] && printf 'type: %s\narea: %s\n' "$ctype" "$carea"
   [ -n "$tags" ] && printf 'tags: %s\n' "$tags"
   [ -n "$after" ] && printf 'after: %s\n' "$after"
+  [ -n "$pr" ] && printf 'pr: %s\n' "$pr"
   [ -n "${AQ_ITEM_PLAN:-}" ] && printf 'plan: %s\nphases: %s\n' "$AQ_ITEM_PLAN" "$AQ_ITEM_PHASES"
   [ -n "${AQ_ITEM_PLAN:-}" ] && [ -n "${AQ_ITEM_PHASE_KEYS:-}" ] && printf 'phase_keys: %s\n' "$AQ_ITEM_PHASE_KEYS"
   printf 'from: %s\nagent: %s\nqueued: %s\n' "$from" "$agent" "$now"
@@ -2420,7 +2531,7 @@ story_refused() {
 # overflow row was a twin that dispatch skipped to the human sheet beside the first (2026-11-25).
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
-  local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given="" AQ_ADD_CHECKED=""
+  local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given="" pr="" AQ_ADD_CHECKED=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:?}"; shift 2 ;;
@@ -2436,6 +2547,7 @@ cmd_add() {
       --epic) epic="${2:?}"; shift 2 ;;
       --want) want="${2:?}"; ! headless || die "--want names a human's channel; a headless Claude run ($CLAUDE_CODE_ENTRYPOINT) has no human at hand, so its add carries none"; shift 2 ;;
       --row) row="${2:?}"; shift 2 ;;
+      --pr) pr="${2:?}"; [[ "$pr" =~ ^[^/[:space:]]+/[^/#[:space:]]+#[0-9]+$ ]] || die "--pr is <owner>/<repo>#<N>, not $pr"; shift 2 ;;
       --checked) AQ_ADD_CHECKED="${AQ_ADD_CHECKED:+$AQ_ADD_CHECKED,}$(word_list "${2:?}" | tr ' ' ,)"; shift 2 ;;
       --running) running=1; shift ;;
       --session) session="${2:?}"; shift 2 ;;
@@ -2453,10 +2565,7 @@ cmd_add() {
   # row it links gives its own below. The human's add by hand (no session) keeps high (ar-4374).
   [ -z "$running" ] || [ -n "$priority_given" ] || [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || priority=normal
   if [ -n "$planf" ]; then
-    [ "${#task[@]}" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
-    [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
-    [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
-    [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
+    plan_flags_ok "${#task[@]}" "$want" "$row" "$pr" "$mode" "$running"
     plan_check_markers "$planf" "$check"
     # --from board:<project>:<id> is dispatch's promote of a plan row filed before ar-5605 (its brief is
     # plan_row_task's): that row goes on the plan's `rows:` line (add_plan), which agent-land closes with
@@ -2551,7 +2660,7 @@ cmd_add() {
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug"
   local why
-  cause_owner "$tags"
+  add_owners "$slug" "$tags" "$pr" "$text"
   # Checked before slug is reused below: an explicit --slug is the same work by name.
   [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}" "$from")"
   [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
@@ -2605,7 +2714,7 @@ cmd_add() {
   fi
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug (added while its row was written${story:+; row $srow on $sboard stays open})"
-  cause_owner "$tags"
+  add_owners "$slug" "$tags" "$pr" "$text"
   if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
     unlock
     [ -z "$story" ] || echo "agent-queue: row $srow on $sboard is left un-started: dispatch promotes it as the queue drains" >&2
@@ -2838,7 +2947,7 @@ add_plan() {
   # A plan is queued once: by its owner, or by hand. The calling session's own item does not count.
   # Its items already active are checked against the chain below, once their slugs are known.
   local taken
-  taken="$(plan_taken "$planf")" || exit $?
+  taken="$(plan_items_live "$planf")" || exit $?
   # A sub-phase line is no queue item: its number is not an integer, so no item's `phases:` can carry it.
   local subs
   subs="$(plan_phase_list "$planf" | jq -r '[.[] | select(.state == "open" and (.n | type) == "string") | .n] | join(" ")')"
@@ -3085,16 +3194,6 @@ phase_hold() {
   local prio="$1" tags="$2" at="$3"
   [ -z "$at" ] || { tags="${tags:+$tags }$at"; [ "$prio" != urgent ] || prio=high; }
   printf '%s\t%s\n' "$prio" "$tags"
-}
-# plan_taken <plan> -> the slugs of the plan's items already active, the calling session's own not counted.
-# Exits LOCK_BUSY when the queue stays locked, else 1: a reader of the queue that fails reads no items.
-plan_taken() {
-  local rc=0 out
-  out="$(collect_rows $ACTIVE | jq -r --arg p "$1" --arg own "${AGENT_QUEUE_ITEM:-}" \
-    "$PLAN_ITEMS_JQ"' .[] | select(.slug != $own and names_plan($p)) | .slug' | paste -sd' ')" || rc=$?
-  [ "$rc" != "$LOCK_BUSY" ] || exit "$LOCK_BUSY"
-  [ "$rc" = 0 ] || die "could not check the queue for items of $1, so nothing was added"
-  printf '%s\n' "$out"
 }
 # kept_queued <slug>: the item an earlier add queued is still queued. A try that stopped on the lock
 # never reached the start step, so the rerun starts it with the phases it adds itself.
@@ -3789,7 +3888,7 @@ cmd_set() {
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
-  [[ "$f" == "$AQ_DIR"/done/* ]] || for kv in "$@"; do [ "${kv%%=*}" != tags ] || cause_owner "${kv#*=}" "$slug"; done
+  [[ "$f" == "$AQ_DIR"/done/* ]] || set_owners "$slug" "$f" "$@"
   # A gate on a queued item sends it back to its board row (below), so one with no row is refused
   # before anything is written: it would stay queued with a pending hold.
   local new_after new_tags HOLD HOLD_DEAD
@@ -3860,6 +3959,25 @@ cmd_set() {
   [ -n "$gate" ] || return 0
   ( cmd_return "$slug" --why "the set gave it a gate ($gate): it waits on its board row" ) ||
     die "$slug is queued with a gate ($gate) it could not take back to its board row: agent-queue return $slug --why <why>, or set it back"
+}
+
+# set_owners <slug> <item file> <key=value>...: the owner checks of a set on a live item (live_owner): a
+# tags= with a cause: another item owns, a plan= or phases= that puts it on a phase another item holds. A claim
+# by set is how a session that takes on a phase's scope says so, so a second session finds it taken. A pr= or
+# open_pr= is never refused: agent-land and reap record the PR an item opened or merged, a fact about the
+# PR, whoever else lists it (a refusal there failed agent-land's record step). Under the lock.
+set_owners() {
+  local slug="$1" f="$2" kv plan ph
+  shift 2
+  plan="$(fm_get "$f" plan)" ph="$(fm_get "$f" phases)"
+  for kv in "$@"; do
+    case "${kv%%=*}" in
+      tags) cause_owner "${kv#*=}" "$slug" ;;
+      plan) plan="${kv#*=}" ;;
+      phases) ph="$(word_list "${kv#*=}")" ;;
+    esac
+  done
+  case " $* " in *" plan="* | *" phases="*) plan_phase_owner "$slug" "$plan" $ph ;; esac
 }
 
 # repoint_row <slug> <file> <row> <profile> <lane> -- an active item re-pointed to another row
@@ -4752,7 +4870,7 @@ cmd_reopen() {
   lock
   [ -z "$(find_item "$slug")" ] || die "$slug is still active: nothing to reopen"
   f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
-  cause_owner "$(fm_get "$f" tags)" "$slug"
+  set_owners "$slug" "$f" "tags=$(fm_get "$f" tags)" "plan=$(fm_get "$f" plan)" "phases=$(fm_get "$f" phases)"
   status="$(fm_get "$f" status)" note="$(fm_get "$f" note)"
   if [ -n "$unland" ]; then
     # A false ok close (agent-land took a side PR from another repo, 2026-11-07): that PR comes
