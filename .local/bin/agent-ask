@@ -225,6 +225,8 @@ JQ_MONEY='def money: (. * 100 | round) as $c | "$\($c / 100 | floor).\($c % 100 
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/judge.sh"
 # shellcheck source=../lib/fmt.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"
+# shellcheck source=../lib/frontmatter.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/frontmatter.sh"
 # shellcheck source=../lib/ask-store.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/ask-store.sh"
 ASKS_ROOT="$(ask_root)"
@@ -311,8 +313,8 @@ human_work_approval() {
   if ! grep -qiE '(^|\|)(cancel|drop)(\||$)' <<<"$opts"; then
     case "$opts" in
       '' | 'approve|hold')
-        write_fields "$1" options "drop|keep"
-        case "$(field "$1" recommend)" in approve) write_fields "$1" recommend drop ;; hold) write_fields "$1" recommend keep ;; esac ;;
+        FM_LOCKED=1 fm_set "$1" options "drop|keep"
+        case "$(field "$1" recommend)" in approve) FM_LOCKED=1 fm_set "$1" recommend drop ;; hold) FM_LOCKED=1 fm_set "$1" recommend keep ;; esac ;;
       *)
         rm -f -- "$1"
         # gate: aa-human-work
@@ -321,7 +323,7 @@ human_work_approval() {
     esac
   fi
   [ "$(field "$1" kind)" != approval ] || return 0
-  write_fields "$1" kind approval
+  FM_LOCKED=1 fm_set "$1" kind approval
   # gate: aa-human-work
   echo "agent-ask post: the ask could take $floor off the queue, work the human asked for, so it is an approval for the human" >&2
 }
@@ -402,29 +404,12 @@ drop_lines() {
 
 queue_changed() { : > "$ASKS_ROOT/.changed" 2>/dev/null || true; }
 
-# write_fields <file> <key> <value>...: those keys in one rewrite, each in place or appended. The
-# caller holds the project lock. The temp file sits beside the ask, as in drop_field.
-write_fields() {
-  local f="$1" tmp; shift
-  tmp="$(mktemp "$f.XXXXXX")"
-  awk '
-    BEGIN { for (i = 1; i < ARGC - 1; i += 2) { k[++n] = ARGV[i]; v[ARGV[i]] = ARGV[i + 1]; ARGV[i] = ARGV[i + 1] = "" } }
-    { p = index($0, ": "); key = p ? substr($0, 1, p - 1) : "" }
-    key in v { print key ": " v[key]; done[key] = 1; next }
-    { print }
-    END { for (i = 1; i <= n; i++) if (!(k[i] in done)) print k[i] ": " v[k[i]] }
-  ' "$@" "$f" > "$tmp" && mv "$tmp" "$f"
-}
-
-# set_field <file> <key> <value> [<key> <value>...]: update keys in place, as one change.
-# Under a per-project lock: the judge writes an ask in the background while the human may be
-# answering it, and two unlocked rewrites lose whichever finished first.
-set_field() {
-  (
-    command -v flock >/dev/null 2>&1 && flock 9
-    write_fields "$@"
-  ) 9>"$(dirname "$1")/.lock"
-}
+FM_FLAT=1   # an ask is flat: no line of it is a body
+# Writing an ask's fields is fm_set (frontmatter.sh), which takes the per-project lock (`.lock` beside the
+# ask) itself: the judge writes an ask in the background while the human may be answering it, and two
+# unlocked rewrites lose whichever finished first. A caller already inside that lock (a `flock 9` block
+# on the same file, post's own write) says so with FM_LOCKED=1, since a second flock on it would wait on
+# the caller itself.
 
 # age_of <iso>: "5m", "3h", "2d" since an ask's `created`; empty when it does not parse.
 age_of() {
@@ -873,7 +858,7 @@ detach_session() {
     # The last session that asked to be reopened left: nothing is left to reopen, and a resume still
     # set would read as an ask from before the reopen: lines and reopen whichever session is first.
     if [ "$had" -gt 0 ] && ! grep -q '^reopen: ' "$1" && [ "$(field "$1" resume)" = "$REOPEN_RESUME" ]; then
-      write_fields "$1" resume ""
+      FM_LOCKED=1 fm_set "$1" resume ""
     fi
   ) 9>"$(dirname "$1")/.lock"
   queue_changed
@@ -1109,7 +1094,7 @@ quote_picks() {
 relay_proof() {
   local id="$1" quote="$2" answer="$3" f made hits why rc; RELAY_NOTE=""
   f="$(find_ask "$id")"; [ -n "$f" ] || { echo "no ask '$id'" >&2; return 1; }
-  id="$(field "$f" id)"; made="$(date -u -d "$(field "$f" created)" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  id="$(field "$f" id)"; made="$(now_utc "$(field "$f" created)" 2>/dev/null)"
   [ -n "$made" ] || { echo "ask $id has no created time to look after" >&2; return 1; }
   [ -n "$answer" ] || { echo "no answer given, only the words" >&2; return 1; }
   case "$(field "$f" status):$(field "$f" answered_by)" in
@@ -1152,7 +1137,7 @@ cmd_said() {
   [ "${1:-}" = --since ] && { since="${2:-}"; shift 2 2>/dev/null || shift $#; }
   local quote; quote="$(oneline "$*")"
   [ -n "$since" ] && [ -n "$quote" ] || { echo "usage: agent-ask said --since <time> <the human's words>" >&2; return 2; }
-  since="$(date -u -d "$since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" || { echo "agent-ask said: --since does not read as a time" >&2; return 2; }
+  since="$(now_utc "$since" 2>/dev/null)" || { echo "agent-ask said: --since does not read as a time" >&2; return 2; }
   human_words "$quote" "$since" >/dev/null
 }
 
@@ -1184,7 +1169,7 @@ cmd_answer_cli() {
       relay_proof "$id" "$quote" "$(oneline "$*")" || { echo "agent-ask: cannot record this as the human's answer (why: above)" >&2; return 1; }
       f="$(find_ask "$id")"
       cmd_answer --by human "$id" "$@" || return $?
-      set_field "$f" relayed_by "$CLAUDE_CODE_SESSION_ID" answer_note "relayed in session $CLAUDE_CODE_SESSION_ID: $RELAY_NOTE$(cut -c1-300 <<<"$quote")"
+      fm_set "$f" relayed_by "$CLAUDE_CODE_SESSION_ID" answer_note "relayed in session $CLAUDE_CODE_SESSION_ID: $RELAY_NOTE$(cut -c1-300 <<<"$quote")"
       return 0
     else
       echo "agent-ask: an agent session answers as agent, not $by; the human answers from a board or in the session, and an attended session relays their words with --by human --quote '<their words>'" >&2; return 2
@@ -1229,7 +1214,7 @@ cmd_answer() {
   # is the one that resumes the session, and a beside answer resumes nothing.
   if [ -n "$beside" ]; then
     [ "$(field "$f" delivery)" != queued ] || cmd_deliver "$id"
-    set_field "$f" delivery queued delivery_at "$(now_iso)" delivery_answer "$answer"
+    fm_set "$f" delivery queued delivery_at "$(now_iso)" delivery_answer "$answer"
     queue_changed
   else
     record_answer "$f" "$by" "$answer" delivery queued delivery_at "$(now_iso)" || return 1
@@ -1307,7 +1292,7 @@ cmd_return() {
       [ "$(field "$f" status):$(field "$f" answered_by)" = answered:agent ] || exit 1
       case "$(field "$f" delivery)" in queued|delivering) exit 1 ;; esac
       tmp="$(mktemp "$f.XXXXXX")" && cp "$f" "$tmp" &&
-        write_fields "$tmp" status pending agent_answer "$(field "$f" answer)" \
+        FM_LOCKED=1 fm_set "$tmp" status pending agent_answer "$(field "$f" answer)" \
           agent_answered_at "$(field "$f" answered_at)" returned_at "$(now_iso)" &&
         drop_lines "$tmp" answer answered_at answered_by resumed_at delivery delivery_at delivery_note delivery_answer &&
         mv "$tmp" "$f" || { rm -f "$tmp"; exit 1; }
@@ -1328,7 +1313,7 @@ record_answer() {
   (
     command -v flock >/dev/null 2>&1 && flock 9
     case "$by" in judge|hold|agent) [ "$(field "$f" status)" = pending ] || exit 1 ;; esac
-    write_fields "$f" status answered answer "$answer" answered_at "$(now_iso)" answered_by "$by" "$@"
+    FM_LOCKED=1 fm_set "$f" status answered answer "$answer" answered_at "$(now_iso)" answered_by "$by" "$@"
   ) 9>"$(dirname "$f")/.lock" || return 1
   queue_changed
 }
@@ -1344,7 +1329,7 @@ start_resume() {
   local f r
   if [ -n "${2:-}" ] && f="$(find_ask "$1")" && [ -n "$f" ] && r="$(field "$f" resume)" &&
     [ -n "$r" ] && [[ "$r" != run:* ]] && [ -z "$(field "$f" resumed_at)" ]; then
-    [ -n "${AGENT_ASK_NO_RESUME:-}" ] || set_field "$f" resumed_at "$(now_iso)"
+    [ -n "${AGENT_ASK_NO_RESUME:-}" ] || fm_set "$f" resumed_at "$(now_iso)"
     echo "agent-ask: $1's resume did not start: $2 has the answer and carries on with it" >&2
     return 0
   fi
@@ -1463,7 +1448,7 @@ deliver_one() {
         [ $(( $(date +%s) - at )) -ge "${AGENT_ASK_DELIVERY_STALE:-600}" ] || exit 1 ;;
       *) exit 1 ;;
     esac
-    write_fields "$f" delivery delivering delivery_at "$stamp"
+    FM_LOCKED=1 fm_set "$f" delivery delivering delivery_at "$stamp"
   ) 9>"$lock" || return 1
 
   id="$(field "$f" id)"
@@ -1540,9 +1525,9 @@ deliver_one() {
     [ -z "$beside" ] || spent=(delivery_answer "")
     if [ -n "$note" ]; then
       echo "agent-ask: $id not delivered: $note" >&2
-      write_fields "$f" delivery failed delivery_at "$(now_iso)" delivery_note "$(oneline "$note")" "${spent[@]}"
+      FM_LOCKED=1 fm_set "$f" delivery failed delivery_at "$(now_iso)" delivery_note "$(oneline "$note")" "${spent[@]}"
     else
-      write_fields "$f" delivery done delivery_at "$(now_iso)" delivery_note "$(IFS=';'; printf '%s' "${went[*]}" | sed 's/;/; /g')" "${spent[@]}"
+      FM_LOCKED=1 fm_set "$f" delivery done delivery_at "$(now_iso)" delivery_note "$(IFS=';'; printf '%s' "${went[*]}" | sed 's/;/; /g')" "${spent[@]}"
     fi
   ) 9>"$lock"
   queue_changed
@@ -1554,14 +1539,14 @@ cmd_delivery_seen() {
   local f; f="$(find_ask "${1:-}")"
   [ -n "$f" ] || { echo "usage: agent-ask delivery-seen <id>" >&2; return 2; }
   [ "$(field "$f" delivery)" = failed ] || return 0
-  set_field "$f" delivery seen
+  fm_set "$f" delivery seen
   queue_changed
 }
 
 # cmd_wait_delivered <id>: wait until the ask's delivery is no longer queued or delivering, then
 # print where it ended (done, failed, seen; none for an ask with no delivery). The panel runs it in
 # the background after an answer, so its row changes once the answer went. It waits on the ask's
-# directory (write_fields replaces the file), the watch set up before the first read so no write
+# directory (fm_set replaces the file), the watch set up before the first read so no write
 # falls between them, and gives up after AGENT_ASK_WAIT_TIMEOUT seconds (120): a guard for a
 # delivery that never runs, which then prints the state it is still in.
 cmd_wait_delivered() {
@@ -1670,7 +1655,7 @@ live_due() {
   wait="$(delay_of "$(field "$f" judge_rule)" "$(field "$f" judge_level)" 2>/dev/null)"
   [ "${wait:-0}" -gt 0 ] || return 0
   [ -n "$(field "$f" assume_at)" ] && [ "$(field "$f" assume_answer)" = "$ans" ] && return 1
-  set_field "$f" assume_answer "$ans" assume_at "$(now_iso "+$wait minutes")"
+  fm_set "$f" assume_answer "$ans" assume_at "$(now_iso "+$wait minutes")"
   queue_changed
   return 1
 }
@@ -1707,7 +1692,7 @@ told_at_post() {
   # it goes out through delivery, past the asker, who has it here. No session attaches once it is
   # answered (attach_session), so the count read now is final.
   if [ "$(ask_sessions "$f" | wc -l)" -gt 1 ]; then
-    set_field "$f" delivery queued delivery_at "$(now_iso)" delivery_skip "$(field "$f" claude_session)"
+    fm_set "$f" delivery queued delivery_at "$(now_iso)" delivery_skip "$(field "$f" claude_session)"
     delivery_changed
   fi
   # An asker with a session is reading this line now, so it carries on; a script with none has its resume.
@@ -1733,7 +1718,7 @@ judge_guarded() {
 }
 
 # verdict_save <file> / verdict_restore <file>: the ask's verdict keys to and from `<file>.first`,
-# one `key<TAB>value` a line. The restore writes only those keys (set_field locks), never the whole
+# one `key<TAB>value` a line. The restore writes only those keys (fm_set locks), never the whole
 # file, so a session that attached to the ask meanwhile keeps its lines.
 VERDICT_KEYS="$VERDICT_FIELDS judge judge_reason judged_at judge_human_said"
 verdict_save() {
@@ -1745,7 +1730,7 @@ verdict_restore() {
   while IFS=$'\t' read -r k v; do kv+=("$k" "$v"); done < "$1.first"
   # shellcheck disable=SC2086 # a word list
   drop_field "$1" $VERDICT_KEYS
-  [ "${#kv[@]}" -eq 0 ] || set_field "$1" "${kv[@]}"
+  [ "${#kv[@]}" -eq 0 ] || fm_set "$1" "${kv[@]}"
   queue_changed
 }
 
@@ -2567,7 +2552,7 @@ cmd_settle_session() {
     [ "$(field "$f" status)" = pending ] || continue
     opts="$(field "$f" options)"
     if [ -n "$opts" ] && pick="$(named_option "$opts" "$text")" && [ -n "$pick" ]; then
-      set_field "$f" answer_note "in session: $text"
+      fm_set "$f" answer_note "in session: $text"
       record_answer "$f" human "$pick"
     elif is_parked "$f"; then
       # Parked: only a named option settles it; other talk in the session leaves it until its date.
@@ -2577,10 +2562,10 @@ cmd_settle_session() {
       # "yes" to a card that marks a recommendation takes it (bare_yes), unless other sessions
       # share the ask; a cancel here left a drain the human approved waiting 12 hours
       # (2026-11-18, ar-3091).
-      set_field "$f" answer_note "in session: $text (a bare yes: the recommendation)"
+      fm_set "$f" answer_note "in session: $text (a bare yes: the recommendation)"
       record_answer "$f" human "$pick"
     elif [ -z "$opts" ] && ! not_an_answer "$full"; then
-      set_field "$f" answer_note "in session: $text"
+      fm_set "$f" answer_note "in session: $text"
       record_answer "$f" human "in session: ${text:-(no text)}"
     elif queue_waits "$(field "$f" id)"; then
       continue
@@ -2628,15 +2613,15 @@ review_judge_answer() {
   fi
   pick="$(named_option "${ASK[options]:-}" "$text")"
   if [ -n "$pick" ] && [ "${pick,,}" != "${said,,}" ]; then
-    set_field "$f" judge_override "$pick" judge_override_note "$where: $text" judge_override_at "$(now_iso)"
+    fm_set "$f" judge_override "$pick" judge_override_note "$where: $text" judge_override_at "$(now_iso)"
     queue_changed
     # A standing order's answer is the human's own rule, not a judge cell: nothing to demote.
     [ -n "${ASK[standing_order]:-}" ] || judge_demote_check "$f"
   elif [ -n "$pick" ]; then
-    set_field "$f" judge_override kept judge_override_note "$where: $text" judge_override_at "$(now_iso)"
+    fm_set "$f" judge_override kept judge_override_note "$where: $text" judge_override_at "$(now_iso)"
     queue_changed
   elif [ -z "$pending" ] && [ "$where" = "in session" ]; then
-    set_field "$f" judge_override none
+    fm_set "$f" judge_override none
   fi
 }
 
@@ -2646,9 +2631,9 @@ close_ask() {
   [ -n "$id" ] || { echo "usage: agent-ask cancel <id> [reason...]" >&2; return 2; }
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
-  set_field "$f" status "$to"
-  set_field "$f" closed_at "$(now_iso)"
-  [ $# -gt 0 ] && set_field "$f" closed_reason "$(oneline "$*")"
+  fm_set "$f" status "$to"
+  fm_set "$f" closed_at "$(now_iso)"
+  [ $# -gt 0 ] && fm_set "$f" closed_reason "$(oneline "$*")"
   queue_changed
   echo "$to $id" >&2
 }
@@ -2703,7 +2688,7 @@ cmd_park() {
   # A parked ask is out of the judge's way too: an arm would answer it while the human is away.
   # A park by hand is the human's own, so it drops expire's idle mark (cmd_expire).
   drop_arm "$f" parked_by
-  set_field "$f" parked_until "$at" parked_at "$(now_iso)"
+  fm_set "$f" parked_until "$at" parked_at "$(now_iso)"
   queue_changed
   echo "parked $id until $(date -d "$at" '+%a %b %-d %H:%M')" >&2
 }
@@ -2800,7 +2785,7 @@ cmd_expire() {
     printf '%s\t%s\t%s\t%s\n' "${ASK[project]:-}" "$id" "$act" "$why"
     [ "$dry" = 0 ] || continue
     if [ "$act" = park ]; then
-      cmd_park "$id" 2>/dev/null && set_field "$f" parked_by idle
+      cmd_park "$id" 2>/dev/null && fm_set "$f" parked_by idle
     else
       close_ask cancelled "$id" "$why" 2>/dev/null
     fi
@@ -2886,9 +2871,9 @@ cmd_recommend() {
     *"|$opt|"*) ;;
     *) echo "agent-ask recommend: '$opt' is not one of '$options'" >&2; return 2 ;;
   esac
-  set_field "$f" recommend "$opt"
+  fm_set "$f" recommend "$opt"
   # A why belongs to the option it argued for, so a new recommendation replaces or clears it.
-  set_field "$f" recommend_why "$(oneline "$*")"
+  fm_set "$f" recommend_why "$(oneline "$*")"
   # The asker changed its mind, and an `answer:` verdict would not notice at the deadline.
   [ "$(field "$f" status)" = pending ] && [ -n "$(field "$f" assume_at)" ] && drop_arm "$f"
   echo "recommend $id: $opt${*:+ ($*)}" >&2
@@ -2933,7 +2918,7 @@ cmd_mark_resumed() {
   local f; f="$(find_ask "$id")"
   [ -n "$f" ] || { echo "agent-ask: no ask '$id'" >&2; return 1; }
   [ -z "$(field "$f" resumed_at)" ] || { echo "agent-ask: $id already resumed" >&2; return 0; }
-  set_field "$f" resumed_at "$(now_iso)"
+  fm_set "$f" resumed_at "$(now_iso)"
   echo "resumed $id" >&2
 }
 
@@ -3066,7 +3051,7 @@ Return the verdict in the structured output."
     else rule=grounded   # nothing to take: no recommendation and no answer of its own
     fi
   fi
-  local fields=(judge_type "$(jq -r .type <<<"$verdict")" judge_met "$(jq -r .met <<<"$verdict")"
+  local fields=(judge_type "$(oneline "$(jq -r .type <<<"$verdict")")" judge_met "$(oneline "$(jq -r .met <<<"$verdict")")"
     judge_evidence "$(oneline "$(jq -r .evidence <<<"$verdict")")")
   # The level: the judge's widest rating, raised to fleet by a policy floor name.
   # judge_level_raised says a floor raised it, which judge-eval counts per cell. judge_human_only
@@ -3448,7 +3433,7 @@ add_reopen() {
   [ "$(field "$f" resume)" != "$REOPEN_RESUME" ] || grep -q '^reopen: ' "$f" ||
     printf 'reopen: %s\n' "$(field "$f" claude_session)" >> "$f"
   for sid; do grep -qxF "reopen: $sid" "$f" || printf 'reopen: %s\n' "$sid" >> "$f"; done
-  [ "$(field "$f" resume)" = "$REOPEN_RESUME" ] || write_fields "$f" resume "$REOPEN_RESUME"
+  [ "$(field "$f" resume)" = "$REOPEN_RESUME" ] || FM_LOCKED=1 fm_set "$f" resume "$REOPEN_RESUME"
 }
 
 # ask_text <file>: the ask's words the judge reads, on one line, for the policy's floors.
@@ -3465,7 +3450,7 @@ judge_record() {
   [ -n "$3" ] && kv+=(judge_rule "$3")
   kv+=(judge_reason "$(oneline "$4")")
   [ -n "$5" ] && kv+=(judge_call "$5")
-  set_field "$f" "${kv[@]}" judged_at "$(now_iso)"
+  fm_set "$f" "${kv[@]}" judged_at "$(now_iso)"
   queue_changed
 }
 

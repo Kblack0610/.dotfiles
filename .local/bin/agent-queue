@@ -168,6 +168,10 @@ AQ_SCHEDULES="$AQ_BIN/schedules-sync"
 AQ_ASKS="$(ask_root)"
 # shellcheck source=../lib/fmt.sh
 . "$AQ_BIN/../lib/fmt.sh"   # now_utc, oneline
+# shellcheck source=../lib/frontmatter.sh
+. "$AQ_BIN/../lib/frontmatter.sh"   # fm_get, fm_set
+# Every item write runs under the queue lock (lock, below), so fm_set takes none of its own.
+FM_LOCKED=1
 # shellcheck source=../lib/agent-merge-proof.sh
 . "$AQ_BIN/../lib/agent-merge-proof.sh"   # merge_proof_ref: the one reader of a repo's default branch
 # A `hold:<resource>` item waits while this tree's agent-hold says that resource is held.
@@ -264,12 +268,7 @@ TMUX_CLOSE="${TMUX_CLOSE:-$AQ_BIN/tmux-close}"
 
 # --- the file format ---
 # `key: value` lines, a `---` line, then the task as typed.
-fm_get() { # file key
-  awk -v k="$2" '$0 == "---" { exit }
-    index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^ +/, "", v); print v; exit }' 2>/dev/null <"$1"
-}
-# The file is read by redirect, never as an awk operand: awk reads stdin for an empty operand, and a
-# caller whose item lookup came back empty hung on the tool shell's open stdin (ar-3455).
+# fm_get and fm_set are frontmatter.sh's. fm_body reads the file by redirect for the same reason (ar-3455).
 fm_body() { awk 'f { print } $0 == "---" { f = 1 }' 2>/dev/null <"$1"; }
 
 # item_row <file> -> the "<board>:<key>" of the row the item works, as ITEM_JQ reads `row`: its
@@ -692,7 +691,7 @@ item_grant_names() {
 }
 
 # admission_since -> the UTC start of the window the log and the held count keep.
-admission_since() { date -u -d "$AQ_HELD_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ; }
+admission_since() { now_utc "$AQ_HELD_DAYS days ago"; }
 
 # admit <from> <priority> <tags> <project> <slug> <title> -> 0 when the add may go in; else says
 # why on stderr, logs the hold and returns 1. An unreadable queue admits with a warning: the check
@@ -771,7 +770,7 @@ cmd_admission() {
   read -r r l <<<"$now"
   since="$(admission_since)"
   if [ -s "$AQ_ADMISSION_LOG" ]; then
-    read -r held boarded returned day < <(jq -rs --arg s "$since" --arg d "$(date -u -d '1 day ago' +%Y-%m-%dT%H:%M:%SZ)" '
+    read -r held boarded returned day < <(jq -rs --arg s "$since" --arg d "$(now_utc '1 day ago')" '
       def items: map([.project, .slug]) | unique | length;
       def held: map(select(.why | IN("board-only", "gated", "returned") | not));
       [.[] | select(.at >= $s)] as $w | [$w[] | select(.at >= $d)] as $x
@@ -1510,7 +1509,7 @@ SKIP_AWK='function skip_headerless(f,  lg, line, seen, now, a, cmd) {
   while ((getline line < lg) > 0) { split(line, a, "\t"); if (a[2] == f) seen = 1 }
   close(lg)
   if (seen) return
-  cmd = "date -u +%Y-%m-%dT%H:%M:%SZ"; cmd | getline now; close(cmd)
+  now = ENVIRON["AQ_NOW"]
   cmd = "{ cat >> \"$AQ_HEADERLESS_LOG\"; } 2>/dev/null || cat >/dev/null"; printf "%s\t%s\tno slug header\n", now, f | cmd; close(cmd) }'
 
 # item_recs <file>... -> one record per item file for ITEM_JQ, all read by one awk: state, file,
@@ -1520,7 +1519,7 @@ SKIP_AWK='function skip_headerless(f,  lg, line, seen, now, a, cmd) {
 # after the listing) is no item: read as one, it kept its listed state and lost every header, and
 # stats crashed on its missing queued: (ar-1405).
 item_recs() {
-  printf '%s\n' "$@" | AQ_DONE="$AQ_DIR/done/" AQ_HEADERLESS_LOG="$AQ_HEADERLESS_LOG" awk "$HDR_AWK$SKIP_AWK"'{
+  printf '%s\n' "$@" | AQ_DONE="$AQ_DIR/done/" AQ_HEADERLESS_LOG="$AQ_HEADERLESS_LOG" AQ_NOW="$(now_utc)" awk "$HDR_AWK$SKIP_AWK"'{
     f = $0; task = ""; body = 0; w = ""; sw = 0; kv = ""; hs = 0; got = 0
     while ((r = (getline line < f)) > 0) {
       got = 1
@@ -1908,18 +1907,6 @@ collect() { snap_json "$(order_filter "$@")" "$@"; }
 # under the exclusive lock (link_row, repoint_row, add_plan): no hold, weight, ready or order is
 # derived, which asked gh, rbw and asks for every queued item, about 2.5 s on 611 items (ar-2544).
 collect_rows() { snap_json --rows . "$@"; }
-
-# header_set <file> <key> <value> -> rewrite the header field in place, atomically.
-header_set() {
-  local f="$1" k="$2" v="$3" tmp
-  case "$v" in *$'\n'*) die "a value cannot span lines: $k" ;; esac
-  tmp="$(mktemp "$(dirname "$f")/.set.XXXXXX")" || die "cannot write in $(dirname "$f")"
-  # The value rides in the environment: awk -v would read a backslash in a free-text value as an escape.
-  HV="$v" awk -v k="$k" '
-    !done && $0 == "---" { if (!seen) print k ": " ENVIRON["HV"]; done = 1; print; next }
-    !done && index($0, k ":") == 1 { print k ": " ENVIRON["HV"]; seen = 1; next }
-    { print }' "$f" > "$tmp" && mv -- "$tmp" "$f"
-}
 
 # header_del <file> <key>... -> drop those header fields in place, atomically.
 header_del() {
@@ -3169,7 +3156,7 @@ phases_resolve() {
   if [ "$now" = "?" ]; then
     echo "agent-queue: $(fm_get "$f" slug): a phase line it was filed for is gone from $plan, or written twice, so phases: $cur is kept (agent-queue set $(fm_get "$f" slug) phases=<N>)" >&2
   elif [ -n "$now" ] && [ "$now" != "$cur" ]; then
-    header_set "$f" phases "$now"
+    fm_set "$f" phases "$now"
     echo "agent-queue: $(fm_get "$f" slug): phases: $cur -> $now, where its lines sit in $plan now" >&2
   fi
 }
@@ -3365,12 +3352,12 @@ cmd_claim() {
   # start) records the account it launched on itself. An item another harness worked (agent: codex,
   # claude-cloud) keeps none: a Claude session landing it did not do its work.
   case "$(fm_get "$f" agent)" in ''|claude)
-    [ -z "$own" ] || [ -n "$(fm_get "$f" account)" ] || header_set "$f" account "$(claude_account)" ;;
+    [ -z "$own" ] || [ -n "$(fm_get "$f" account)" ] || fm_set "$f" account "$(claude_account)" ;;
   esac
   cur="$(fm_get "$f" sessions)"
   case " $cur " in
     *" $sid "*) echo "$slug: $sid already claimed" ;;
-    *) header_set "$f" sessions "${cur:+$cur }$sid"
+    *) fm_set "$f" sessions "${cur:+$cur }$sid"
       item_event item-claimed "$f" --why "$sid"
       echo "$slug: claimed by $sid" ;;
   esac
@@ -3383,8 +3370,8 @@ cmd_claim() {
   local session='' window=''
   IFS=$'\t' read -r session window < <(hand_start)
   f="$(find_item "$slug")"
-  [ -z "$session" ] || header_set "$f" session "$session"
-  [ -z "$window" ] || header_set "$f" window "$window"
+  [ -z "$session" ] || fm_set "$f" session "$session"
+  [ -z "$window" ] || fm_set "$f" window "$window"
   [ -z "$session" ] || set_hand_host "$f" "$session"
   unlock
   [ -z "${AQ_MARK-}" ] || mark_row "$f" "$AQ_MARK"
@@ -3392,7 +3379,7 @@ cmd_claim() {
 # set_hand_host <file> <session> -- host: goes with session:, so a stale one from an earlier run never pairs with this machine's session.
 set_hand_host() {
   local host; host="$(hand_host "$2")"
-  if [ -n "$host" ]; then header_set "$1" host "$host"; else header_del "$1" host; fi
+  if [ -n "$host" ]; then fm_set "$1" host "$host"; else header_del "$1" host; fi
 }
 
 # close_on <host> <tmux-close args...> -- tmux-close here, or on that fleet worker over ssh.
@@ -3435,12 +3422,12 @@ cancel_close() {
   # A session on a fleet worker is closed there: here the same name is some other session.
   host="$(fm_get "$f" host)"
   was="$(state_of "$f")" origin="$(fm_get "$f" origin)"
-  header_set "$f" status cancelled
-  header_set "$f" finished "$(now_utc)"
+  fm_set "$f" status cancelled
+  fm_set "$f" finished "$(now_utc)"
   header_del "$f" end_reason
   cancel_stamp "$f" "$why"
-  [ -z "$cause" ] || header_set "$f" cancel_cause "$cause"
-  [ -z "$end" ] || header_set "$f" end_reason "$end"
+  [ -z "$cause" ] || fm_set "$f" cancel_cause "$cause"
+  [ -z "$end" ] || fm_set "$f" end_reason "$end"
   stamp_outcome "$f"
   dest="$(move_to "$f" "done")" || die "could not move $f"
   # A return says so in the chain record too, where the item file is no longer at hand.
@@ -3830,7 +3817,7 @@ cmd_bump() {
   prio_rank "$prio" >/dev/null || die "priority is urgent, high, normal or low, not $prio"
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
-  header_set "$f" priority "$prio"
+  fm_set "$f" priority "$prio"
   item_event item-set "$f" --why "priority=$prio"
   echo "$slug -> $prio"
   # The row is where the order reads it (row_prios); notes writes it, so the lock goes first.
@@ -3935,7 +3922,7 @@ cmd_set() {
       phases=*) kv="phases=$(word_list "${kv#*=}")"; header_del "$f" phase_keys ;;
       title=*) kv="title=$(oneline "${kv#*=}")" ;;
     esac
-    header_set "$f" "${kv%%=*}" "${kv#*=}"
+    fm_set "$f" "${kv%%=*}" "${kv#*=}"
     set_kv+=("$kv")
   done
   [ "$(state_of "$f")" != done ] || stamp_outcome "$f"
@@ -4031,10 +4018,10 @@ cmd_rehome() {
     [ "${rb,,}" = "${from,,}" ] || { [ -n "$(project_resolve "$rb")" ] && [ "$(project_resolve "$rb")" = "$(project_resolve "$from")" ]; } || continue
     f="$(find_item "$slug" any)"; [ -n "$f" ] || continue
     old="$rb:$id"
-    header_set "$f" row "$board:$id"
-    [ "$(fm_get "$f" from)" != "board:$old" ] || header_set "$f" from "board:$board:$id"
-    [ -z "$prof" ] || header_set "$f" profile "$prof"
-    [ -z "$lane" ] || header_set "$f" lane "$lane"
+    fm_set "$f" row "$board:$id"
+    [ "$(fm_get "$f" from)" != "board:$old" ] || fm_set "$f" from "board:$board:$id"
+    [ -z "$prof" ] || fm_set "$f" profile "$prof"
+    [ -z "$lane" ] || fm_set "$f" lane "$lane"
     item_event item-set "$f" --why "row=$board:$id (the row moved boards)"
     echo "$slug: row $board:$id"
     n=$((n + 1))
@@ -4201,9 +4188,9 @@ cmd_attribute() {
   res="$(credit_of "$project")" || die "could not read $AQ_MAP"
   [ -n "$res" ] || return 0
   win="${res%%$'\t'*}" touches="${res#*$'\t'}"
-  header_set "$f" touches "$touches"
+  fm_set "$f" touches "$touches"
   if [ -n "$win" ] && [ "$win" != "$project" ]; then
-    header_set "$f" project "$win"
+    fm_set "$f" project "$win"
     echo "credited to $win (touches $touches)"
   else
     echo "touches $touches"
@@ -4316,8 +4303,8 @@ cancel_why() { printf '%s' "$1${2:+${1:+ }(ask $2)}"; }
 # cancel_stamp <file> <why> -> cancelled_by: and cancel_why: on the item, the one record of a cancel.
 cancel_stamp() {
   local who; who="$(cancel_who)"
-  [ -z "$who" ] || header_set "$1" cancelled_by "$who"
-  [ -z "$2" ] || header_set "$1" cancel_why "$2"
+  [ -z "$who" ] || fm_set "$1" cancelled_by "$who"
+  [ -z "$2" ] || fm_set "$1" cancel_why "$2"
 }
 
 # watch_close_check <slug>: a red item for a Sentinel watch (`check(watch): <w>`) closes ok only while
@@ -4427,11 +4414,11 @@ cmd_move() {
     # `first_started` keeps the first start, set once: stats measures a chain handoff to it (ar-4436).
     queued) local st; st="$(fm_get "$f" started)"
       if [ -n "$st" ]; then
-        header_set "$f" requeued "$(now_utc)"
-        [ -n "$(fm_get "$f" first_started)" ] || header_set "$f" first_started "$st"
+        fm_set "$f" requeued "$(now_utc)"
+        [ -n "$(fm_get "$f" first_started)" ] || fm_set "$f" first_started "$st"
       fi
       header_del "$f" session window started waiting review origin lane_run host desk_start ;;
-    running) [ -n "$(fm_get "$f" started)" ] || header_set "$f" started "$(now_utc)"
+    running) [ -n "$(fm_get "$f" started)" ] || fm_set "$f" started "$(now_utc)"
       phases_resolve "$f"
       # A new run has not ended yet: the last run's reason goes.
       header_del "$f" end_reason
@@ -4441,18 +4428,18 @@ cmd_move() {
       # Its desk_start keeps the next waiter off the resource until this session claims it; its
       # desk: class stays, so a later requeue keeps its rank.
       case " $tags " in *" hold:"*)
-        header_set "$f" desk_start "$(tr ' ' '\n' <<<"$tags" | sed -n 's/^hold://p' | awk 'NR==1')"
+        fm_set "$f" desk_start "$(tr ' ' '\n' <<<"$tags" | sed -n 's/^hold://p' | awk 'NR==1')"
         tags="$(tr ' ' '\n' <<<"$tags" | grep -v '^hold:' | paste -sd' ')"
-        if [ -n "$tags" ]; then header_set "$f" tags "$tags"; else header_del "$f" tags; fi ;;
+        if [ -n "$tags" ]; then fm_set "$f" tags "$tags"; else header_del "$f" tags; fi ;;
       esac ;;
-    waiting) header_set "$f" waiting "$(now_utc)" ;;
-    review) header_set "$f" review "$(now_utc)" ;;
+    waiting) fm_set "$f" waiting "$(now_utc)" ;;
+    review) fm_set "$f" review "$(now_utc)" ;;
     # A run that landed or was cancelled has no end to report: a reason left from a wait on its PR goes.
-    done) header_set "$f" status "$status"; header_set "$f" finished "$(now_utc)"
+    done) fm_set "$f" status "$status"; fm_set "$f" finished "$(now_utc)"
       [ "$status" != cancelled ] || cancel_stamp "$f" "$why"
       case "$status" in ok | cancelled) header_del "$f" end_reason; end="" ;; esac ;;
   esac
-  [ -z "$end" ] || header_set "$f" end_reason "$end"
+  [ -z "$end" ] || fm_set "$f" end_reason "$end"
   [ "$to" != done ] || stamp_outcome "$f"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "$from -> $to${status:+ ($status)}${why:+: $why}"
@@ -4678,7 +4665,7 @@ cmd_requeue() {
   # One class per item: a new --class replaces the last.
   [ -z "$cls" ] || want="$(tr ' ' '\n' <<<"$want" | grep -v '^desk:' | paste -sd' ') desk:$cls"
   want="${want# }"
-  [ "$want" = "$tags" ] || { header_set "$f" tags "$want"; item_event item-set "$f" --why "tags=$want"; }
+  [ "$want" = "$tags" ] || { fm_set "$f" tags "$want"; item_event item-set "$f" --why "tags=$want"; }
   header_del "$f" lane_run
   unlock
   # Its row takes the gate (#ask/<id>, #hold/<res>, with #desk/<class>) and the item closes returned:
@@ -4735,9 +4722,9 @@ cmd_handoff() {
   AQ_LOCKED=1 cmd_move "$slug" queued --end handoff --if running || return
   f="$(find_item "$slug")"; [ -n "$f" ] || die "$slug left the queue on its move to queued: nothing to hand off to"
   # An older salvage: (a lost run's) is not this head: the next start begins from the trunk or the PR instead.
-  if [ -n "$sv" ]; then header_set "$f" salvage "$sv"; else header_del "$f" salvage; fi
-  header_set "$f" handoff "$note"
-  header_set "$f" handoffs "$((n + 1))"
+  if [ -n "$sv" ]; then fm_set "$f" salvage "$sv"; else header_del "$f" salvage; fi
+  fm_set "$f" handoff "$note"
+  fm_set "$f" handoffs "$((n + 1))"
   item_event item-set "$f" --why "handoff $((n + 1)) of $max: $note${sv:+, from $sv}"
   unlock
   [ -z "${AQ_MARK-}" ] || mark_row "$f" "$AQ_MARK"
@@ -4897,16 +4884,16 @@ cmd_reopen() {
       [ "${refs[i],,}" = "${unland,,}" ] || [ "${refs[i]}" = "${unland##*#}" ] || kr+=("${refs[i]}") ko+=("${oids[i]:-}")
     done
     [ "${#kr[@]}" -lt "${#refs[@]}" ] || die "$slug records pr:${refs[*]:-nothing}, not $unland"
-    header_set "$f" pr "${kr[*]}"
-    header_set "$f" merged "${ko[*]}"
+    fm_set "$f" pr "${kr[*]}"
+    fm_set "$f" merged "${ko[*]}"
     cp="$(fm_get "$f" closing_pr)"
     [ "${cp,,}" != "${unland,,}" ] || header_del "$f" closing_pr
   else
     [ "$status" = failed ] || die "$slug closed $status, not failed: that is new work under the slug (agent-queue add${status:+ --repeat})${status:+, or --unland <owner>/<repo>#<N> when it closed on a PR that was not its work}"
   fi
   header_del "$f" status finished outcome
-  [ "$to" = running ] || header_set "$f" waiting "$(now_utc)"
-  header_set "$f" note "reopened from done ($status${unland:+, unlanded $unland}${note:+: $note})${why:+: $why}"
+  [ "$to" = running ] || fm_set "$f" waiting "$(now_utc)"
+  fm_set "$f" note "reopened from done ($status${unland:+, unlanded $unland}${note:+: $note})${why:+: $why}"
   dest="$(move_to "$f" "$to")" || die "could not move $f"
   item_event item-moved "$dest" --to "$to" --why "done ($status) -> $to: reopened${why:+: $why}"
   echo "$slug: done -> $to (reopened, was $status)"
@@ -4977,7 +4964,7 @@ outcome_writes() {
 stamp_outcome() {
   local f o
   while IFS=$'\x1f' read -r f o _; do
-    if [ -n "$o" ]; then header_set "$f" outcome "$o"; else header_del "$f" outcome; fi
+    if [ -n "$o" ]; then fm_set "$f" outcome "$o"; else header_del "$f" outcome; fi
   done < <(outcome_writes "$1")
 }
 
@@ -5242,7 +5229,7 @@ cmd_backfill_outcome() {
   while IFS=$'\x1f' read -r f o slug; do
     n=$((n + 1))
     if [ -n "$dry" ]; then echo "$slug: ${o:-no outcome}"
-    elif [ -n "$o" ]; then header_set "$f" outcome "$o"
+    elif [ -n "$o" ]; then fm_set "$f" outcome "$o"
     else header_del "$f" outcome; fi
   done < <([ ${#files[@]} -eq 0 ] || outcome_writes "${files[@]}")
   unlock

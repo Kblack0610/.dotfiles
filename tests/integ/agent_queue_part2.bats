@@ -3109,7 +3109,7 @@ already"
 @test "fm_get and fm_body given no file return at once, never reading the caller's stdin (ar-3455)" {
   # An awk operand of "" reads stdin, and a tool shell's stdin never closes: a lookup that came back empty hung a local run.
   # The stand-in is a fifo held open for read and write on fd 4: no writer process to outlive the test or hold bats' fd 3.
-  fns="$(sed -n '/^fm_get() {/,/^}/p; /^fm_body() {/p' "$AQ")"
+  fns="$(sed -n '/^fm_get() {/,/^}/p' "$REPO_ROOT/.local/lib/frontmatter.sh"; sed -n '/^fm_body() {/p' "$AQ")"
   mkfifo "$BATS_TEST_TMPDIR/open-stdin"
   exec 4<>"$BATS_TEST_TMPDIR/open-stdin"
   run timeout 10 bash -c "$fns"'; declare -F fm_get fm_body >/dev/null && [ -z "$(fm_get "" slug)" ] && [ -z "$(fm_body "")" ]' <&4

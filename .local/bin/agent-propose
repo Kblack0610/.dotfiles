@@ -16,6 +16,9 @@
 # agent-ask, whose `resume` is a model prompt that runs whatever the answer was.
 set -uo pipefail
 
+# shellcheck source=../lib/fmt.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fmt.sh"   # now_utc
+
 AP_DIR="${AGENT_PROPOSE_DIR:-$HOME/.agent/proposals}"
 AP_TTL_DAYS="${AGENT_PROPOSE_TTL_DAYS:-30}"   # an unread proposal is stale: dream's block expiry
 AP_KEEP_DAYS="${AGENT_PROPOSE_KEEP_DAYS:-90}" # a decided record, long enough to stop a repeat
@@ -38,7 +41,6 @@ AP_W="$(jq -cn --arg w "$AP_WINDOWS" '[$w | splits(" +") | select(. != "") | spl
 # any sweep has written it. jq runs it with --argjson w "$AP_W".
 AP_STATE='def state: $w[.stream // ""] as $d | if .status == "open" and $d != null
   and .created < (now - $d * 86400 | todate) then "expired" else .status end;'
-now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 records() { find "$AP_DIR" -maxdepth 1 -name '*.json' -print0 2>/dev/null | xargs -0 -r cat; }
 
 # One writer at a time: a repeat check and its write, or a decision and its verb, are one step.
@@ -84,7 +86,7 @@ cmd_add() {
   local seen id open_n ts
   seen="$(records | jq -rs --arg k "$key" 'map(select(.key == $k and .status != "expired")) | last | .id // empty')"
   if [ -n "$seen" ]; then echo "$seen"; return 0; fi
-  ts="$(now)"
+  ts="$(now_utc)"
   # A past-due one still open is an ask that did not post: the sweep retries it, the cap skips it.
   open_n="$(records | jq -s --arg s "$stream" --arg p "$project" --arg t "$ts" \
     'map(select(.status == "open" and .expires >= $t and .stream == $s and .project == $p)) | length')"
@@ -92,7 +94,7 @@ cmd_add() {
   id="$(printf '%s' "$key" | sha256sum | cut -c1-12)"
   write "$id" "$(jq -cn --arg id "$id" --arg stream "$stream" --arg project "$project" --arg title "$title" \
     --arg why "$why" --arg evidence "$evidence" --arg verb "$verb" --arg arg "$arg" --arg key "$key" \
-    --arg created "$ts" --arg expires "$(date -u -d "+$AP_TTL_DAYS days" +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg created "$ts" --arg expires "$(now_utc "+$AP_TTL_DAYS days")" \
     '{id: $id, stream: $stream, project: $project, title: $title, why: $why, evidence: $evidence,
       verb: $verb, arg: $arg, key: $key, status: "open", created: $created, expires: $expires}')"
   echo "$id"
@@ -178,7 +180,7 @@ decide() { # <accepted|rejected|expired> [--by who] <id>
       die "$id: its ${status%ed} failed: $result"
     fi
   fi
-  write "$id" "$(jq -c --arg s "$status" --arg by "$by" --arg t "$(now)" --arg r "$result" \
+  write "$id" "$(jq -c --arg s "$status" --arg by "$by" --arg t "$(now_utc)" --arg r "$result" \
     '.status = $s | .decided_by = $by | .decided_at = $t | .result = $r | del(.error)' "$f")"
   echo "$id $status"
 }
@@ -216,8 +218,8 @@ ask_expiring() {
 # evidence went stale, not its question, so it is written expired with no ask (AP_WINDOWS).
 sweep() {
   local ts cut f id ask n=0
-  ts="$(now)"
-  cut="$(date -u -d "-$AP_KEEP_DAYS days" +%Y-%m-%dT%H:%M:%SZ)"
+  ts="$(now_utc)"
+  cut="$(now_utc "-$AP_KEEP_DAYS days")"
   while IFS= read -r -d '' f; do
     if jq -e --argjson w "$AP_W" "$AP_STATE"'.status == "open" and state == "expired"' "$f" >/dev/null; then
       write "$(jq -r .id "$f")" "$(jq -c --arg t "$ts" --argjson w "$AP_W" \
