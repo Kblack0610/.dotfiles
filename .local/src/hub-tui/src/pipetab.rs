@@ -144,9 +144,10 @@ fn state_style(state: &str, p: Palette) -> Style {
 fn row(r: &Pipeline, p: Palette, now: i64) -> Vec<Cell> {
     let secs = |v: Option<i64>| v.map_or("-".into(), |s| dur_secs(s as f64));
     let pass = match r.pass {
-        Some(n) if n < 70 => cell(format!("{n}%"), p.bad()),
-        Some(n) if n < 90 => cell(format!("{n}%"), p.warn()),
-        Some(n) => format!("{n}%").into(),
+        Some(n) => cell(
+            format!("{n}%"),
+            p.hue(hub_core::vocab::pass_level(Some(f64::from(n) / 100.0))),
+        ),
         None => "-".into(),
     };
     let last = match r.last {

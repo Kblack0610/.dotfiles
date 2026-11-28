@@ -346,6 +346,8 @@ pub fn machinery(infra: &Infra) -> Vec<String> {
             s.label("state")
         ));
     }
+    // A queued job no online runner can take: the Runners head's red line, the same words here.
+    items.extend(infra.ci.red.iter().cloned());
     items.extend(stuck_runs(infra).iter().map(StuckRun::line));
     if let Some(why) = infra.feed() {
         items.insert(0, why.into());
@@ -1443,6 +1445,18 @@ mod tests {
                 "stuck run: api dev, 1m, no jobs",
             ]
         );
+    }
+
+    #[test]
+    fn a_queued_job_no_runner_can_take_is_a_machinery_red_beside_the_down_runners() {
+        let mut i = Infra {
+            ok: true,
+            ..Default::default()
+        };
+        i.ci.red = vec!["Tests (web) needs [gpu]: no online runner holds gpu".into()];
+        assert!(machinery(&i)
+            .iter()
+            .any(|l| l == "Tests (web) needs [gpu]: no online runner holds gpu"));
     }
 
     #[test]

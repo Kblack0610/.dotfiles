@@ -39,51 +39,17 @@ const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
-// hub_core::ci::Glance::head: `4 running, 23 queued (oldest 21m), taken 4.4/64 units (7%), 12/12 runners up,
-// 6 done 1h, 80 done 5h, 759 done 24h, 91% passed`; the windows only once a kind reports them; the units only once a CI node reports.
-// Glance::up_line: `12/12` runners up of the roster, `-/-` with no runner read.
-const upLine = (g) => (g.expected ? `${g.up}/${g.expected}` : "-/-");
-function glanceHead(g) {
-  let s = `${g.busy} running, ${g.queued} queued`;
-  if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  if (g.units) s += `, ${g.units.brief}`;
-  s += `, ${upLine(g)} runners up`;
-  if (g.done_1h != null) s += `, ${g.done_1h} done 1h`;
-  if (g.done_5h != null) s += `, ${g.done_5h} done 5h`;
-  if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
-  return s;
-}
-// hub_core::ci::Glance::pending_line: `waiting for room: arc-org-light x3 (1.69 cpu 1.2G each)`.
-// The cores read as hub_core::jobpods::request does: two places, trailing zeros dropped.
-const pendingText = (p) => `${p.kind}${p.n > 1 ? ` x${p.n}` : ""} (${+p.cpu.toFixed(2)} cpu ${bytes(p.mem)}${p.n > 1 ? " each" : ""})`;
-const pendingLine = (g) => (g && g.pending && g.pending.length ? `<div class="cline warn">waiting for room: ${esc(g.pending.map(pendingText).join(", "))}</div>` : "");
+// The head and the waiting line are hub_core::ci::Glance's (`head`, `pending_line`), served as words.
+const pendingLine = (g) => (g && g.pending_line ? `<div class="cline warn">${esc(g.pending_line)}</div>` : "");
 
-// `g` is hub_core::ci::Glance: jobs running, the queue and runners up.
-// A tile's hue is the rollup's verdict on its domain (cc:domain_status, the max of the domain's
-// components and watches that cc:overall_status is the max of), so a tile never reads red under
-// an OK OVERALL or green under a RED one (ar-5013); the text keeps the count. A component alone
-// would not do: k3s/nodes, ci/pools and agents/runners stop at 1, and the red comes from the
-// domain's watches row. WATCHES spans domains, so its hue is the worst of the rollup's watches
-// rows (cc:component_status{component="watches"}), not a tripped count of its own. No series is
-// no data, never a guess.
-function kpis(cc, g) {
-  const one = (n) => (cc[n] || {})[""];
-  const hue = (d) => { const [w, c] = statusOf((cc["cc:domain_status"] || {})[d]); return [c, `${d} rollup ${w}`]; };
-  const watchRows = Object.entries(cc["cc:component_status"] || {}).filter(([k]) => k.endsWith("/watches")).map(([, v]) => v);
-  const [ww, hw] = statusOf(watchRows.length ? Math.max(...watchRows) : undefined);
-  const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
-  const beats = [one("cc:machines_up"), one("cc:machines_total")];
-  const hosted = one("cc:github_hosted_running");
-  const where = [g ? `${g.queued} queued, ${upLine(g)} runners up` : "", hosted > 0 ? `+${hosted} github-hosted` : ""].filter(Boolean).join(", ");
-  const [hn, tn] = hue("k3s"), [hb, tb] = hue("machines"), [hc, tc] = hue("ci"), [hr, tr] = hue("agents");
-  return `<div class="tiles roomy">${
-    tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, hn, tn)}${
-    tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, hb, tb)}${
-    tile("CI RUNNING", g ? `${g.busy}` : "?", hc, [where, tc].filter(Boolean).join("; "))}${
-    tile("AGENT RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, hr, `of ${one("cc:runners_total") ?? "?"}; ${tr}`)}${
-    tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, hw, `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale; watches rollup ${ww}`, "#alerts/watches")}${
-    tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
-    tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
+// The tiles are hub_core::infra::Infra::kpis: the value, the lines and the hue, judged once for the
+// hub too. A tile's colour is its level; a count with no verdict (SESSIONS) is blue, and SPEND, a
+// link to Costs, is fixed.
+const KPI_HUE = { ok: "var(--b-done)", warn: "var(--b-stalled)", red: "var(--b-needs)", nodata: "var(--c-other)" };
+function kpis(list) {
+  const tiles = list.map((k) => tile(esc(k.name), esc(k.value), k.level ? KPI_HUE[k.level] : "var(--b-working)", esc(k.sub), k.href));
+  tiles.splice(tiles.length - 1, 0, tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs"));
+  return `<div class="tiles roomy">${tiles.join("")}</div>`;
 }
 
 // The Space section (hub_core::workload::Space): the cluster's cores and memory by class, the
@@ -111,10 +77,7 @@ function coreStrip(cores) {
   return `<span class="cores">${cores.map((v, i) => `<i title="cpu ${i}: ${pct(v)}"><b style="height:${(Math.max(0, Math.min(1, v || 0)) * 100).toFixed(0)}%;background:${busyColor(v)}"></b></i>`).join("")}</span>`;
 }
 
-// Free share of a machine's fullest disk (the NodeDisk* alerts' rule, home-config): amber under
-// NodeDiskLow's 20%, red under NodeDiskCritical's 10%. A cloud machine with
-// no data is amber, needs attention: the AWS hosts are never scraped, so nothing alerts on
-// their disks.
+// The cells' hues are `m.level`, hub_core::machines::Machine::levels (the hub draws the same).
 const GIB = 1024 ** 3;
 // A reading as the slots table says it, as hub_core::machine_page::used_of does: 0, 2.8, 140.
 const short = (v) => (v === 0 ? "0" : v < 100 ? v.toFixed(1) : Math.round(v).toString());
@@ -125,8 +88,8 @@ const gbOf = (used, total) => (used == null || total == null ? NO_DATA : `${Math
 
 function diskCell(m) {
   const free = m.disk;
-  if (free == null) return `<td class="n${m.where === "cloud" ? " warn" : " muted"}" title="no disk metrics for this name: nothing alerts on its disk">${NO_DATA}</td>`;
-  return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
+  if (free == null) return `<td class="n${lvl(m.level.disk)}" title="no disk metrics for this name: nothing alerts on its disk">${NO_DATA}</td>`;
+  return `<td class="n${lvl(m.level.disk)}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
 // hub_core::jobpods::Booked: what the pods on a CI node request, its fuller share and `4.4/32 2.5G/92G`.
@@ -170,7 +133,8 @@ function runnerTitle(m) {
   return names.map((n) => `${n}: ${cores[n] == null ? NO_DATA : cores[n].toFixed(1)} cores, mem ${usedOf(mem[n], null, GIB, "G")}`).join("\n");
 }
 const ciRef = (x) => (x.pr ? `${x.repo}#${x.pr}` : x.branch || x.repo || "");
-const passCls = (p) => (p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : "");
+// A judged cell's class, hub_core's level word: bad and warn colour it, the rest do not.
+const lvl = (l) => (l === "bad" || l === "warn" ? ` ${l}` : l === "neutral" ? " muted" : "");
 const td = (cls, html) => `<td${cls ? ` class="${cls}"` : ""}>${html}</td>`;
 
 // Each table's cells by column, in the order the summary's columns come (hub_core Row::COLUMNS);
@@ -182,12 +146,12 @@ const MACH_COLS = { machine: ["machine"], state: ["state"], booked: ["booked", "
 const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
-  booked: (m) => `<td class="n${m.off || (m.booked && bookedShare(m.booked) >= 1) ? " warn" : ""}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m.booked ? `${meter(bookedShare(m.booked), "var(--c1)")} ` : ""}${bookedCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
-  cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
+  booked: (m) => `<td class="n${lvl(m.level.booked)}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m.booked ? `${meter(bookedShare(m.booked), "var(--c1)")} ` : ""}${bookedCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
+  cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.level.cpu === "warn" ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
   "6h": (m) => td("n", pct(m.cpu6h)),
-  load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
-  mem: (m) => `<td class="m" title="${esc(`mem ${gbOf(m.mem_used, m.mem_total)}`)}">${meter(m.mem, m.mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")} ${pct(m.mem)}</td>`,
-  temp: (m) => td(`n${m.temp >= HOT_C ? " warn" : ""}`, degC(m.temp)),
+  load: (m) => td(`n${lvl(m.level.load)}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
+  mem: (m) => `<td class="m" title="${esc(`mem ${gbOf(m.mem_used, m.mem_total)}`)}">${meter(m.mem, m.level.mem === "warn" ? "var(--b-stalled)" : "var(--c3)")} ${pct(m.mem)}</td>`,
+  temp: (m) => td(`n${lvl(m.level.temp)}`, degC(m.temp)),
   disk: diskCell,
   running: (m) => td("wrap", esc(m.running.join(", ")) || "-"),
   next: (m) => td("wrap", m.next ? esc(nextLine(m.next)) : "-"),
@@ -208,7 +172,7 @@ const POOL_CELLS = {
   done_5h: (p) => td("n", num(p.done_5h)),
   done: (p) => td("n", num(p.done)),
   usual: (p) => td("n muted", secs(p.usual)),
-  pass: (p) => td(`n ${passCls(p.pass)}`, pct(p.pass)),
+  pass: (p) => td(`n${lvl(p.pass_level)}`, pct(p.pass)),
   machines: (p) => td("wrap", poolSeats(p)),
 };
 
@@ -303,7 +267,7 @@ function failed24h() {
 }
 function runnersSection(ci) {
   // The head the TUI and the waybar hover read too (hub_core::ci::Glance): each slot once.
-  const g = ci.glance, head = g ? `<div class="cline">${esc(glanceHead(g))}</div>` : "";
+  const g = ci.glance, head = g ? `<div class="cline">${esc(g.head)}</div>` : "";
   let html = secHead("ci", "Runners", infraN("runners"), ci.red.length ? "bad" : bld.data?.counts?.recent_red ? "warn" : "") + head + poolSection(g && g.units) + failed24h();
   // A waiting job no online runner can take: hub_core::ci words the line, once for both surfaces.
   if (ci.red.length) html += `<div class="panel down">${ci.red.map((r) => `<div class="pr"><span class="chip sm" style="--c:var(--b-needs)">RED</span><span class="pt">${esc(r)}</span></div>`).join("")}</div>`;
@@ -576,7 +540,7 @@ function drawInfra() {
   const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
     : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
   let html = strip + `<div class="bhead"><span>${overallPill(cc)}${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${pendingLine(d.ci.glance)}`);
+  html += innerWrap("infra", "machines", `${kpis(d.kpis)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${pendingLine(d.ci.glance)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(d.ci));
