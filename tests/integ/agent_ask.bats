@@ -3389,9 +3389,13 @@ audit_of() {
   run "$AGENT_ASK" show "$b"
   assert_line 'judge_reason: the judge call timed out after 1s, at post and again on the next pass'
   assert_line 'status: pending'
+  # The third pass calls nothing: no new call line and the same judged_at. Not a total of 3, since a
+  # 1s guard on a loaded runner can end a stub before its first line logs the call (run 46159532473).
+  local calls judged; calls=$(wc -l < "$BATS_TEST_TMPDIR/stuck.calls"); judged=$(grep '^judged_at:' <<<"$output")
   "$AGENT_ASK" assume-due 2>/dev/null
-  # Posts of a and b, then b once more: the third pass called nothing.
-  assert_equal "$(wc -l < "$BATS_TEST_TMPDIR/stuck.calls")" 3
+  assert_equal "$(wc -l < "$BATS_TEST_TMPDIR/stuck.calls")" "$calls"
+  run "$AGENT_ASK" show "$b"
+  assert_line "$judged"
 }
 
 @test "override: the human's next message naming another option labels the live answer; one miss does not demote" {
