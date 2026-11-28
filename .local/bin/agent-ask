@@ -233,6 +233,8 @@ ASKS_ROOT="$(ask_root)"
 # The panels' palette (C_*): a card reads like the panel that shows it and follows a theme swap.
 # shellcheck source=../src/tmux/panel-palette.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/panel-palette.sh"
+# shellcheck source=../lib/origin-repo.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"   # is_linked_checkout
 # shellcheck source=../lib/typed-prefixes.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/typed-prefixes.sh"
 # shellcheck source=../lib/mem0.sh
@@ -1943,8 +1945,7 @@ reopen_session() {
   # A gone directory, or one that is a linked worktree (its git dir is not the common dir), goes
   # through wt revive: that puts the first back and refuses the second when wt new re-cut the slot
   # for another session (it is on another branch than the conversation last ran on).
-  if [ ! -d "$cwd" ] || [ "$(git -C "$cwd" rev-parse --path-format=absolute --git-dir 2>/dev/null)" != \
-    "$(git -C "$cwd" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]; then
+  if [ ! -d "$cwd" ] || is_linked_checkout "$cwd"; then
     out="$(wt revive "$cwd" --branch "$(session_branch "$sid")" </dev/null 2>&1)" ||
       { echo "could not put back $cwd: ${out##*$'\n'}; resume with claude --resume $sid" >&2; return 1; }
   fi

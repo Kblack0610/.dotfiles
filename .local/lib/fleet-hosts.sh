@@ -225,7 +225,7 @@ fleet_host_run() {
 # fleet_host_panel <name> -> that worker's `agent-panel list --json` rows, each with the worker in
 # `host`, its target as <host>@<server>/<session>:<window>, which names no tmux server here, so
 # nothing aimed at the row lands on a local session that shares its name, and `git`, its checkout's
-# facts read on the worker in the same ssh call (agent-merge-proof.sh, for merge_proof_ref, and fleet-worker-panel.sh, sent as text). The one reader of a
+# facts read on the worker in the same ssh call (origin-repo.sh, for main_checkout, agent-merge-proof.sh, for merge_proof_ref, and fleet-worker-panel.sh, sent as text). The one reader of a
 # worker's sessions: fleet-sessions (which publishes what it read, fleet_panel_publish) and the walk of
 # the peers when no snapshot is fresh (fleet_panel_row) go through it.
 # Rc is the call's: 255 the host did not answer, 3 a read with a gap (its rows still print), any
@@ -234,7 +234,7 @@ fleet_host_run() {
 _FH_PANEL_SECS=45
 fleet_host_panel() {
   local out rc=0
-  out=$(fleet_host_run "$1" timeout "$_FH_PANEL_SECS" bash -c "$(<"$_fh_lib/agent-merge-proof.sh")"$'\n'"$(<"$_fh_lib/fleet-worker-panel.sh")"$'\nwp_main' fleet-worker-panel 2>/dev/null) || rc=$?
+  out=$(fleet_host_run "$1" timeout "$_FH_PANEL_SECS" bash -c "$(<"$_fh_lib/origin-repo.sh")"$'\n'"$(<"$_fh_lib/agent-merge-proof.sh")"$'\n'"$(<"$_fh_lib/fleet-worker-panel.sh")"$'\nwp_main' fleet-worker-panel 2>/dev/null) || rc=$?
   [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return "$rc"
   jq -c --arg h "$1" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
   return "$rc"

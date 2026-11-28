@@ -152,7 +152,7 @@ repo_roots() {
 #
 # A linked worktree's `.git` is a FILE (a gitdir: pointer) where a main checkout's is a
 # directory, so that one test both finds worktrees and rejects whatever else was parked here.
-# worktree.sh:wt_is_linked is the fuller version of the same rule.
+# is_linked_checkout (lib/origin-repo.sh) is the fuller version of the same rule.
 worktree_dirs() {
   local d
   for d in "$WT_ROOT"/*/; do

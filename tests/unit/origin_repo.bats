@@ -147,3 +147,75 @@ repo_of() {
   run pr_store o/r
   assert_failure 1
 }
+
+# checkout_fixture: $CLONE with one commit, a linked worktree $LINKED of it, a submodule $SUP/sub (its
+# own worktree $SUBWT), and a bare repo $BARE. file:// submodules are refused by default since git 2.38.1.
+checkout_fixture() {
+  local g=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always)
+  "${g[@]}" -C "$CLONE" commit -q --allow-empty -m init
+  LINKED="$BATS_TEST_TMPDIR/linked"
+  git -C "$CLONE" worktree add -q "$LINKED" -b linked
+  SUP="$BATS_TEST_TMPDIR/sup"
+  git init -q "$SUP"
+  "${g[@]}" -C "$SUP" commit -q --allow-empty -m init
+  "${g[@]}" -C "$SUP" submodule -q add "$CLONE" sub 2>/dev/null
+  SUBWT="$BATS_TEST_TMPDIR/subwt"
+  git -C "$SUP/sub" worktree add -q "$SUBWT" -b x
+  BARE="$BATS_TEST_TMPDIR/bare.git"
+  git init -q --bare "$BARE"
+}
+
+@test "main_checkout: the main checkout from itself, a linked worktree, and a subdirectory (ar-3541)" {
+  checkout_fixture
+  mkdir "$CLONE/d"
+  for d in "$CLONE" "$CLONE/d" "$LINKED"; do
+    run main_checkout "$d"
+    assert_success
+    assert_output "$CLONE"
+  done
+}
+
+@test "main_checkout: a submodule, and its linked worktree, resolve to the submodule's checkout (ar-255)" {
+  checkout_fixture
+  run main_checkout "$SUP/sub"
+  assert_success
+  assert_output "$SUP/sub"
+  run main_checkout "$SUBWT"
+  assert_success
+  assert_output "$SUP/sub"
+  # A deinitialised submodule keeps core.worktree, so its checkout must still exist.
+  rm -rf "$SUP/sub"
+  run main_checkout "$SUBWT"
+  assert_failure
+}
+
+@test "main_checkout: a bare repo, a directory outside any repo and no directory are nothing" {
+  checkout_fixture
+  mkdir "$BATS_TEST_TMPDIR/plain"
+  for d in "$BARE" "$BATS_TEST_TMPDIR/plain" "$BATS_TEST_TMPDIR/missing"; do
+    run main_checkout "$d"
+    assert_failure
+    assert_output ''
+  done
+}
+
+@test "is_linked_checkout: only a linked worktree, a submodule's included; no main checkout, bare repo or plain directory" {
+  checkout_fixture
+  mkdir "$BATS_TEST_TMPDIR/plain" "$CLONE/d"
+  run is_linked_checkout "$LINKED"
+  assert_success
+  run is_linked_checkout "$SUBWT"
+  assert_success
+  # NEGATIVE CONTROL: the main checkout and its subdirectory, a submodule's own checkout, a bare
+  # repo and a directory outside any repo are all rc 1.
+  for d in "$CLONE" "$CLONE/d" "$SUP/sub" "$BARE" "$BATS_TEST_TMPDIR/plain" "$BATS_TEST_TMPDIR/missing"; do
+    run is_linked_checkout "$d"
+    assert_failure
+  done
+}
+
+@test "forge_repo_name reads the main checkout's name from a linked worktree" {
+  checkout_fixture
+  run forge_repo_name "$LINKED"
+  assert_output clone
+}

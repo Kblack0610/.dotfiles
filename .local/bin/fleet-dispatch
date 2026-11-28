@@ -3293,12 +3293,7 @@ gateway_launch() {
 }
 
 # cloud_repo <dir> -> owner/repo of the GitHub remote a cloud session would clone; rc 1 for any other host.
-cloud_repo() {
-  local url; url=$(git -C "$1" remote get-url origin 2>/dev/null) || return 1
-  [[ "$url" == *github.com[:/]* ]] || return 1
-  url=${url#*github.com[:/]}; url=${url%.git}
-  [[ "$url" == */* && "$url" != */*/* ]] && printf '%s\n' "$url"
-}
+cloud_repo() { origin_repo "$1" github.com; }
 
 # cloud_routed <slug> -> rc 0 when the queued item is a claude one tagged cloud-ok, which runs in a cloud
 # session: the tag is the human's word that it is self-contained, on GitHub, and needs no local skill.
@@ -3710,7 +3705,7 @@ trainee_brief() {
 # tail resets its worktree to that base, which in a main checkout would discard work.
 linked_base() {
   local b
-  b=$(git rev-parse HEAD 2>/dev/null) && [ "$(cd "$(git rev-parse --git-dir)" && pwd -P)" != "$(cd "$(git rev-parse --git-common-dir)" && pwd -P)" ] && echo "$b"
+  b=$(git rev-parse HEAD 2>/dev/null) && is_linked_checkout . && echo "$b"
 }
 
 # cmd_trainee_review <slug> -- the tail of a trainee's run (gateway_launch), outside its sandbox, in its
@@ -7664,8 +7659,8 @@ item_repo() {
   local dir url
   dir=$(repo_dir "$1"); [ -n "$dir" ] || return 0
   url=$(git -C "$dir" remote get-url origin 2>/dev/null) || url=$dir
-  url=${url%/}; url=${url##*/}; url=${url##*:}
-  printf '%s' "${url%.git}"
+  url=$(url_repo "$url"); url=${url##*/}   # owner/repo -> repo
+  printf '%s' "${url##*:}"                 # an scp-form origin with no owner: host:repo
 }
 
 # pool_pass <item json> <held_by output> -- an urgent item held by starved pools alone goes past them,

@@ -14,6 +14,10 @@
 # It reads the manifests and never asks tmux: the question is where something BELONGS, and the
 # answer must be the same whether that world is up, down or was never booted on this machine.
 
+# is_linked_checkout, for world_is_linked.
+# shellcheck source=../../lib/origin-repo.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../lib/origin-repo.sh" || { return 1 2>/dev/null || exit 1; }   # sourced: return; run as tmux-world: exit
+
 MANIFEST_DIR="${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"
 
 # world_hidden <name> -- rc 0 when THIS machine opts out of a world. The opt-out is
@@ -138,14 +142,8 @@ world_of_repo() {
   printf '%s\n' "${best:-$fallback}"
 }
 
-# world_is_linked <dir> -- rc 0 anywhere inside a LINKED worktree: its git dir is not its common
-# dir. A submodule's common dir sits under the superproject's .git/modules, so it does not end
-# in .git.
-world_is_linked() {
-  local gitdir common
-  { read -r gitdir && read -r common; } < <(git -C "$1" rev-parse --path-format=absolute --git-dir --git-common-dir 2>/dev/null)
-  [ "${gitdir:-}" != "${common:-}" ] && [ "${common##*/}" = .git ]
-}
+# world_is_linked <dir> -- rc 0 anywhere inside a LINKED worktree (is_linked_checkout, origin-repo.sh).
+world_is_linked() { is_linked_checkout "$1"; }
 
 # world_route <dir> -- "<world> <session>". The one rule:
 #   a directory a manifest names  -> that world, under the manifest's session name

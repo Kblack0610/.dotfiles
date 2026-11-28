@@ -313,6 +313,8 @@ roster_lists() {
 
 @test "wp_main adds each row's checkout facts where the checkout is: gone, outside git, or branch, dirty, ahead, unpushed (ar-3358)" {
   # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/origin-repo.sh"
+  # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/lib/agent-merge-proof.sh"
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/lib/fleet-worker-panel.sh"
@@ -357,6 +359,8 @@ exit \"\$(cat \"\$NOTES_FIXTURE/panel.rc\" 2>/dev/null || echo 0)\""
 }
 
 @test "wp_git in a submodule: a pin behind origin/master that the superproject pins counts ahead 0 (ar-2445)" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/origin-repo.sh"
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/lib/agent-merge-proof.sh"
   # shellcheck source=/dev/null

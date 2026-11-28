@@ -3420,7 +3420,7 @@ rules_changed() {
   iso=$(date -u -d "$since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || { say "rules --changed: not a time: $1"; return 2; }
   IFS=: read -ra dirs <<<"$BENCH_CANARY_CONFIG_REPOS"
   for dir in "${dirs[@]}"; do
-    slug=$(git -C "$dir" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
+    slug=$(origin_repo "$dir" github.com)
     [ -n "$slug" ] || { say "rules --changed: no GitHub origin in $dir"; return 1; }
     name="${slug##*/}"; name="${name#.}"
     prs=$(timeout "$RULES_CHANGED_GH_TIMEOUT" gh pr list -R "$slug" --state merged --search "merged:>=$iso" \
@@ -6201,9 +6201,8 @@ repo_path() {
   local f top url
   f=$(readlink -f "$1") && [ -d "${f%/*}" ] || return 1
   top=$(git -C "${f%/*}" rev-parse --show-toplevel 2>/dev/null) || return 1
-  url=$(git -C "$top" remote get-url origin 2>/dev/null) || return 1
-  url=${url%/}; url=${url%.git}
-  printf '%s\t%s\n' "$(sed -E 's#.*[:/]([^/:]+/[^/:]+)$#\1#' <<<"$url" | tr '[:upper:]' '[:lower:]')" "${f#"$top"/}"
+  url=$(origin_repo "$top") || return 1
+  printf '%s\t%s\n' "${url,,}" "${f#"$top"/}"
 }
 
 # liveness_reach -> repo_path of each file a runner the fleet-liveness probe names runs from: its
@@ -7371,8 +7370,8 @@ canary_script() {
 # Run only on a tree canary start and score own (start's, score's when it resets, verify's throwaway).
 canary_vendor() {
   local v="$1/tests/vendor" src ex
-  src=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../tests/vendor
-  src=$(realpath -e -- "$src" 2>/dev/null) && [ -x "$src/bats-core/bin/bats" ] || return 0
+  src=$(main_checkout "$1") || return 0
+  src=$(realpath -e -- "$src/tests/vendor" 2>/dev/null) && [ -x "$src/bats-core/bin/bats" ] || return 0
   [ "$(realpath -m -- "$v")" != "$src" ] && [ -z "$(git -C "$1" ls-tree --name-only "$2" -- tests/vendor)" ] || return 0
   rm -rf -- "$v" && mkdir -p -- "$1/tests" && ln -s -- "$src" "$v" || return 1
   git -C "$1" check-ignore -q tests/vendor && return 0
@@ -7752,7 +7751,7 @@ canary_restore() {
 # the tree is to stay as the run left it. canary score resets only a linked worktree detached at a
 # canary start: in a main checkout, or on a branch, the reset would discard real work.
 canary_keep() {
-  [ "$(git -C "$1" rev-parse --path-format=absolute --git-dir)" != "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)" ] ||
+  is_linked_checkout "$1" ||
     { say "canary score: $1 is no linked worktree, so it stays as the run left it"; return 1; }
   ! git -C "$1" symbolic-ref -q HEAD >/dev/null ||
     { say "canary score: $1 is on a branch, not detached by canary start, so it stays as the run left it"; return 1; }
