@@ -14,7 +14,7 @@ setup() {
   CB="$REPO_ROOT/.local/bin/credit-backfill"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue" AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
   export PROJECT_MAP_FILE="$AGENT_QUEUE_PROJECT_MAP"
-  export CREDIT_BACKFILL_DIR="$SANDBOX/bf" SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
+  export CREDIT_BACKFILL_DIR="$SANDBOX/bf"
   export CREDIT_BACKFILL_PLANS="$SANDBOX/plans" CREDIT_BACKFILL_LIVE_PLANS="$SANDBOX/live"
   export CREDIT_BACKFILL_SYSTEM_CHECK="$SANDBOX/bin/system-check" GH_PRS="$SANDBOX/prs"
   unset CLAUDE_CODE_SESSION_ID
@@ -29,15 +29,13 @@ setup() {
   git -C "$REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
   # schedules-sync prs <r> ...: the rows in $GH_PRS/N.json, newest first; $GH_PRS/store.err fails
   # the read with that message, as a stale store does.
-  cat >"$SANDBOX/bin/schedules-sync" <<'SH'
-#!/usr/bin/env bash
-echo "schedules-sync $*" >>"$NOTES_FIXTURE/ss.log"
+  ss_script <<'SH'
 [ ! -f "$GH_PRS/store.err" ] || { cat "$GH_PRS/store.err" >&2; exit 1; }
 cat "$GH_PRS"/*.json 2>/dev/null | jq -s 'sort_by(-.number)'
 SH
   printf '#!/bin/sh\ncat "$NOTES_FIXTURE/criteria-$1.json" 2>/dev/null\n' >"$SANDBOX/bin/system-check"
   printf '#!/bin/sh\nexit 0\n' >"$SANDBOX/bin/fleet-dispatch"
-  chmod +x "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/schedules-sync" "$SANDBOX/bin/system-check" "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/system-check" "$SANDBOX/bin/fleet-dispatch"
   mkdir -p "$GH_PRS" "$CREDIT_BACKFILL_PLANS/game" "$CREDIT_BACKFILL_LIVE_PLANS"
 }
 
@@ -116,12 +114,12 @@ lines() { grep -v '^#' "$CREDIT_BACKFILL_DIR/game.tsv" | cut -f1-9 | tr '\t' '|'
   assert_line 'story|-|game|-|m|done|pr:32|gone|gone'
   assert_line 'story|-|game|-|m|done|pr:33|unfetched|unfetched'
   refute_line --partial 'attr|'
-  run cat "$NOTES_FIXTURE/ss.log"
+  run grep '^schedules-sync' "$NOTES_FIXTURE/calls.log"
   assert_output 'schedules-sync prs acme/game --state merged'
   # a checkout whose origin is on Forgejo reads the store under its host
-  git -C "$REPO" remote set-url origin https://git.example.test/acme/game.git; : >"$NOTES_FIXTURE/ss.log"
+  git -C "$REPO" remote set-url origin https://git.example.test/acme/game.git; : >"$NOTES_FIXTURE/calls.log"
   run "$CB" propose game
-  run cat "$NOTES_FIXTURE/ss.log"
+  run grep '^schedules-sync' "$NOTES_FIXTURE/calls.log"
   assert_output 'schedules-sync prs git.example.test/acme/game --state merged'
 }
 

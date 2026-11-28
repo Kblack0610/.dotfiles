@@ -9,25 +9,26 @@ setup() {
   export FLEET_SHEPHERD_DIR="$HOME/.agent/shepherd"
   export FLEET_MAIN_TTL=0 # each test's gh answers decide
   # The run ledger stand-in: `runs <repo>` answers every $LEDGER_DIR/<branch>.json (see ledger),
-  # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists.
+  # no runs when there is none, and fails like a stale sync while $LEDGER_DIR/FAIL exists, or like a
+  # ledger down for every repo (exit 5, the file's line on stderr: a rate limit) while $LEDGER_DIR/DOWN does.
   # The PR store stand-in: `prs <repo>` answers $LEDGER_DIR/prs_<owner_repo>.tsv, else prs.tsv
   # (rows "branch \t number \t state \t ci \t head \t red \t merged_at \t title \t labels, comma-joined"), no PRs when there is neither,
   # `sync-prs [--wait] <repo>` (the poll catching up) copies $LEDGER_DIR/after_sync_<owner_repo>.tsv over that repo's rows, and fails while $LEDGER_DIR/SYNC_FAIL exists;
   # fails like a stale store while $LEDGER_DIR/PRS_FAIL exists, or PRS_FAIL_<x> for a repo whose
   # owner_repo name ends in <x>, and lists no
   # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" LEDGER_DIR="$SANDBOX/ledger"
+  export LEDGER_DIR="$SANDBOX/ledger"
   mkdir -p "$LEDGER_DIR"
   # No estimates unless a test writes one: the host's fleet-bench reads the host's sessions, and a
   # failed read there is named unreadable (fleet-bench eta), so a test must never reach it.
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"; chmod +x "$SANDBOX/bin/fleet-bench"
-  cat > "$SCHEDULES_SYNC" <<'SS'
-#!/usr/bin/env bash
+  ss_script <<'SS'
 echo "$*" >> "$LEDGER_DIR/calls"
 case "$1" in
   runs)
     [ $# -eq 2 ] || exit 2
     [ ! -e "$LEDGER_DIR/FAIL" ] || { echo "$2 last synced 2026-10-25T09:00:00Z, older than 30m" >&2; exit 1; }
+    [ ! -e "$LEDGER_DIR/DOWN" ] || { cat "$LEDGER_DIR/DOWN" >&2; exit 5; }
     cat "$LEDGER_DIR"/*.json 2>/dev/null | jq -cs 'add // []' ;;
   prs)
     for f in "$LEDGER_DIR"/PRS_FAIL*; do
@@ -48,7 +49,6 @@ case "$1" in
   *) exit 2 ;;
 esac
 SS
-  chmod +x "$SCHEDULES_SYNC"
   # The repo's agent-queue, run by its path so its libs resolve: every pass reads the queue, a runner
   # has none on PATH, and a read that fails is unreadable (ar-2839). A test may overwrite this file.
   printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$REPO_ROOT/.local/bin/agent-queue" > "$SANDBOX/bin/agent-queue"
@@ -288,8 +288,8 @@ pr_transcript() {
   } > "$1"
 }
 
-# pr_store: the PR store holds o/one#7 (open) and o/two#9 (merged).
-pr_store() {
+# seed_pr_store: the PR store holds o/one#7 (open) and o/two#9 (merged).
+seed_pr_store() {
   printf -- '-\t7\tOPEN\tNONE\t-\t-\n' > "$LEDGER_DIR/prs_o_one.tsv"
   printf -- '-\t9\tMERGED\tPASS\t-\t-\t2026-10-30T12:00:00Z\n' > "$LEDGER_DIR/prs_o_two.tsv"
   CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"

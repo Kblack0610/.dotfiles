@@ -729,10 +729,9 @@ GH
   cat >> "$SANDBOX/bin/agentctl-run" <<'AR'
 echo "agentctl-run $*" >> "$D/reviewer.log"
 AR
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
-  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
-  cat >> "$SCHEDULES_SYNC" <<'SS'
-echo "schedules-sync $*" >> "$D/calls.log"
+  export SS_FIXTURE="$GHD"
+  ss_script <<'SS'
+D=$_dir
 if [ "$1" = sync-prs ]; then
   [ ! -e "$D/sync-fails" ] || { echo "schedules-sync: PRs of $3: HTTP 502" >&2; exit 1; }
   rm -f "$D/prs-stale"; exit 0
@@ -745,11 +744,12 @@ if [ "$1" = prs ]; then
 fi
 [ -e "$D/unsynced" ] && { echo "$2 is not in the run ledger" >&2; exit 3; }
 [ -e "$D/later" ] && { echo "$2 not yet past $6" >&2; exit 4; }
+[ -e "$D/down" ] && { echo "ledger down: GitHub API rate limit hit" >&2; exit 5; }
 [ "$1 $3 $5" = "runs --branch --until" ] || exit 2
 jq -c 'map({workflow: .workflowName, path, sha: .headSha, status: "completed", conclusion,
   created_at: .createdAt, started_at: .startedAt, ended_at: .updatedAt})' "$D/runs-$4.json"
 SS
-  chmod +x "$SANDBOX/bin/agentctl-run" "$SCHEDULES_SYNC"
+  chmod +x "$SANDBOX/bin/agentctl-run"
   mkdir -p "$HOME/.agent/outcomes/game"
 }
 
@@ -826,6 +826,21 @@ merged_pr() {
   assert_success
   run jq -s -c 'map(.number) | sort' "$FLEET_BENCH_DIR/pr-ci.jsonl"
   assert_output '[7,8,9]'
+}
+
+@test "a run ledger down for every repo (runs exit 5) is a PR it cannot count now, never one its forge calls gone (ar-230)" {
+  stub_review
+  merged_pr s1 7 35
+  touch "$GHD/down"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_failure
+  assert_output --partial 'cannot count'
+  refute_output --partial 'no such PR'
+  rm "$GHD/down"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -s -c 'map(.number)' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7]'
 }
 
 # stub_forgejo: session-outcomes names git.example.test/o/audio#12, merged an hour ago; its API
@@ -2541,6 +2556,41 @@ fix_item() {
   assert_output --regexp " retry:ar-1 --raw "
 }
 
+# 2026-11-28 (ar-1945): #1443 merged at 10:41Z; triage re-filed lab-sync's STALLED from 10:20Z at 11:18Z,
+# past the 30 minute patience, and the runner's After-deploy run read WORKED at 11:20Z.
+@test "triage: a merged fix that closed after a runner's verdict stands for it until the runner runs again" {
+  log_triage_setup
+  mkdir -p "$AGENTCTL_STATE_DIR/beta"
+  printf "NAME=beta\nSCHEDULE='*-*-* 04:00'\n" > "$LEDGER_CONF_DIR/beta.conf"
+  printf STALLED > "$AGENTCTL_STATE_DIR/beta/last-outcome"
+  printf '[2026-10-30T04:00:00-07:00] outcome=STALLED why: regen exited 1\n' > "$AGENTCTL_STATE_DIR/beta/activity.log"
+  route '^fix.runner.: ([a-z-]+) is' agent fix-red 'fix it'
+  local c; c=$(printf '%s' 'fix(runner):beta' | sha256sum | cut -c1-8)
+  at() { date -u -d "@$((T0 + $1))" +%FT%TZ; }
+  item() { jq -cn --arg c "red cause:$c" --arg f "$(at "$1")" \
+    '{slug: "ar-1", tags: $c, state: "done", status: "ok", queued: "2020-01-01T00:00:00Z", pr: "o/r#5", merged: "abc", finished: $f}' > "$ITEMS"; }
+  # the verdict is from before the fix, which closed 40 minutes ago, past TRIAGE_WATCH_AFTER
+  touch -d "@$((T0 - 3600))" "$AGENTCTL_STATE_DIR/beta/last-outcome"
+  item -2400
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # NEGATIVE CONTROL: the runner ran after the fix and still reads STALLED, so it did not hold
+  touch -d "@$((T0 - 600))" "$AGENTCTL_STATE_DIR/beta/last-outcome"
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$c retry:ar-1 --raw "
+  # a runner that never runs again holds its fix only TRIAGE_PROVES_MAX past the merge
+  : > "$PLOG"; : > "$BOARD"
+  touch -d "@$((T0 - 9000))" "$AGENTCTL_STATE_DIR/beta/last-outcome"
+  item -7200
+  TRIAGE_PROVES_MAX=3600 run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp " cause:$c retry:ar-1 --raw "
+}
+
 # ar-4018: Needs you holds only what the human can do. A red whose fixes did not hold is the agent
 # system's still: it files no human row and pages no one. reflective-penguin P2 (ask UfRZaR): it gets one
 # escalation, a root-cause pass pinned to Opus, and only when that did not hold either one ask.
@@ -3543,10 +3593,10 @@ hold_setup() {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"; printf '[]' > "$GHD/runs"
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
-  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
-  cat >> "$SCHEDULES_SYNC" <<'SS'
-[ "$1" = repos ] && exec cat "$D/repos"   # the watched list; none: hold_ledger falls back to the repo and main
+  export SS_FIXTURE="$GHD"
+  ss_script <<'SS'
+D=$_dir
+[ "$1" = repos ] && { cat "$D/repos"; exit; }   # the watched list; none: hold_ledger falls back to the repo and main
 [ -e "$D/down" ] && exit 1
 [ -e "$D/unsynced" ] && exit 3
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
@@ -3562,7 +3612,6 @@ case "$*" in
 esac
 GH
   } | gh_script
-  chmod +x "$SCHEDULES_SYNC"
 }
 
 # cleanup <slug> <finished offset> <pr number> <sha> <changed file...>: a merged cleanup item
@@ -3575,7 +3624,7 @@ cleanup() {
   hold_setup
   echo '[{"forge":"github","repo":"O/other","base":"trunk","host":null,"clone":null},
     {"forge":"forgejo","repo":"O/R","base":"master","host":"git.example.test","clone":null}]' > "$GHD/repos"
-  sed -i 's|\[ "$1 $3 $4" = "runs --branch main" \]|[ "$1 $2 $3 $4" = "runs forgejo:o/r --branch master" ]|' "$SCHEDULES_SYNC"
+  sed -i 's|\[ "$1 $3 $4" = "runs --branch main" \]|[ "$1 $2 $3 $4" = "runs forgejo:o/r --branch master" ]|' "$SS_FIXTURE/ss.script"
   cleanup hit -7200 5 aaa11111 .local/bin/tool
   ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201
   run "$SUBJECT" triage --dry-run

@@ -2,7 +2,7 @@
 # fleet-dispatch - start one session per easy board row, for the shepherd to see through.
 #
 #   fleet-dispatch run [--dry-run]   one pass: start the queue items the gates allow, else fill from the board and start those
-#   fleet-dispatch kick              the fast path an event runs: start the queued items the gates and room allow, in seconds; no reap, triage, judge or board fill; it stands down while a pass runs, until that pass is past its starts
+#   fleet-dispatch kick              the fast path an event runs: start the queued items the gates and room allow, KICK_STARTS at most; no reap, triage, judge or board fill; it stands down while a pass runs, until that pass is past its starts
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch suggest [--json|--write]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held; --write stores them for the hub fold
 #   fleet-dispatch covered           the projects an untagged worker takes: stage dev or later, a repo, not on DISPATCH_OFF_PROJECTS
@@ -33,6 +33,7 @@
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
 #   fleet-dispatch trainee-reject SLUG [--cause C | --end E] --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch validate SLUG --pr OWNER/REPO#N --head SHA --why TEXT  queue a second agent's review of an item's critical PR (agent-land)
+#   fleet-dispatch adopt-prs [--dry-run]  queue an owner item for each stranded PR no queue item names (run calls it once a pr-stranded probe)
 #   fleet-dispatch rollup [--dry]  each cause of a run that did not land (a trainee reject, a failed or no-PR item, a model-lane demote or retire) seen DISPATCH_ROLLUP_MIN times in DISPATCH_ROLLUP_DAYS: one fix row on the board, joined night to night by its cause (nightly-measure runs it)
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
@@ -646,7 +647,8 @@ def row_area($d; $games): ((.text // "") | split("<!--") | .[0] // "" | ascii_do
 detail_sig_set() { if [ "$1" = '""' ]; then DSIG=none; else sig_set "$1"; DSIG=$SIG; fi; }
 detail_sig() { detail_sig_set "$1"; echo "$DSIG"; }
 
-# load_gates -- GATE_ST, GATE_WHY, GATE_Q and GATE_STACK by board gate tag: its state (clear, pending or dead),
+# load_gates -- SCOPE_HOLDS, `agent-hold scopes` (resource, repo, path, granted per --scope entry of a hold in
+# force, which scope_off_set reads), and GATE_ST, GATE_WHY, GATE_Q and GATE_STACK by board gate tag: its state (clear, pending or dead),
 # hold_for's words, its queue form, and the slug of the item an #after/ gate cleared as stacked on (its open PR), for every gate an open row carries, from one
 # `agent-queue gate --json --all` (the one evaluator; it reads rbw and the board once). Once a pass:
 # each entry point calls it before its subshells, as fleet_hosts, and load_extras when none did. A
@@ -655,8 +657,13 @@ detail_sig() { detail_sig_set "$1"; echo "$DSIG"; }
 load_gates() {
   [ -z "${GATES_LOADED:-}" ] || return 0
   declare -gA GATE_ST=() GATE_WHY=() GATE_Q=() GATE_STACK=()
-  GATES_LOADED=1 GATES_FAILED=''
+  GATES_LOADED=1 GATES_FAILED='' SCOPE_HOLDS=''
   local out rc=0
+  SCOPE_HOLDS=$("${DISPATCH_AGENT_HOLD:-$HERE/agent-hold}" scopes 2>/dev/null) || {
+    GATES_FAILED="agent-hold scopes failed"
+    say "$GATES_FAILED, so no board row starts this pass"
+    return 0
+  }
   out=$(agent-queue gate --json --all 2>/dev/null) || rc=$?
   if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
     GATES_FAILED="agent-queue gate --all failed (exit $rc)"
@@ -858,6 +865,39 @@ row_off_set() {
   row_kind_set "$3"; kind_off_set "$KIND"
   OFF=$KIND_OFF
   [ -n "$OFF" ] || [ -z "${PAR[$2]:-}" ] || OFF="a parent: open rows name it in #of/"
+  [ -n "$OFF" ] || [ -z "${SCOPE_HOLDS:-}" ] || scope_off_set "$1" "$2" "$3"
+}
+
+# scope_off_set <project> <key> <text> -> sets OFF to the hold whose --scope the row's work lands in
+# (SCOPE_HOLDS, load_gates), whatever project the row is on: a whole-repo entry covers each row of a
+# project whose repo it is (item_repo, SCOPE_REPO keeps one per project) and each row whose text names
+# that repo; a path entry each row whose text names the path or its last segment. A hold that grants
+# the row by its id or an #of/ epic passes it, as agent-hold check --for does. Its text is all a row
+# says before the work, so agent-land's hold_gate, on the PR's changed files, refuses the rest. Why:
+# home-config #1333, a unity-core-playground row's work, changed apps/ci-runner-governor 40 minutes
+# after the human locked home-config by #hold/ tags on its own rows (2026-11-20, ar-4187).
+declare -gA SCOPE_REPO=()
+scope_off_set() {
+  local res repo path granted t g w b='(^|[^[:alnum:]_-])' e='([^[:alnum:]_-]|$)' gs
+  t=${3%%<!--*}; t=${t,,}
+  while IFS=$'\t' read -r res repo path granted; do
+    [ -n "$res" ] || continue
+    IFS=, read -ra gs <<<"$granted"
+    for g in "${gs[@]}"; do
+      [ "$g" = "$2" ] || [[ " $t " == *" #of/${g,,} "* ]] && continue 2
+    done
+    [ "$path" != - ] || path=''
+    w=${path,,}
+    # A full path named in the text holds a row of any project; a whole repo, or a path's last
+    # segment alone, only a row of that repo's project or one whose text names the repo.
+    if [ -z "$w" ] || ! [[ "$t" =~ $b"$w"$e ]]; then
+      [ -n "${SCOPE_REPO[$1]+x}" ] || SCOPE_REPO[$1]=$(item_repo "$1")
+      [ "${SCOPE_REPO[$1],,}" = "${repo,,}" ] || [[ "$t" =~ $b"${repo,,}"$e ]] || continue
+      [ -z "$w" ] || { w=${w##*/}; [[ "$t" =~ $b"$w"$e ]]; } || continue
+    fi
+    OFF="held by the $res hold, whose scope $repo${path:+:$path} its work lands in (agent-hold show $res)"
+    return 0
+  done <<<"$SCOPE_HOLDS"
 }
 
 # held_load <judged> -- the judged_keys lines into HELD, which held reads; a walk loads them once.
@@ -4571,7 +4611,7 @@ cmd_start() {
       # agent-queue refuses to move a held item to running (ar-3260): asked before the launch, so a
       # refused start leaves no session working an item still queued.
       hold=$(jq -r '.hold // empty' <<<"$it")
-      [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }
+      [ -z "$hold" ] || { say "start: $item waits on $hold; it starts once that clears"; return 1; }; start_merged "$item" "$it" && { exec 7>&-; return 4; }
     fi
     project=$(jq -r .project <<<"$it")
     [ -n "$area" ] || area=$(jq -r '.area // empty' <<<"$it")
@@ -5602,6 +5642,25 @@ item_pr_state() {
     "select(any(.body | split(\"\n\")[] | rtrimstr(\"\r\"); . == \"Item: $1\")) | $PR_STATE_JQ"
 }
 
+# start_merged <slug> <item json> -- a queued item whose recorded pr: its forge reads MERGED (item_pr_state, with a
+# merge commit) is done ok with that merge recorded, and its row closes on merge proof (close_row): returns 0.
+# Returns 1 when the PR is open, closed unmerged, unreadable or has no merge commit, so the start goes on; cmd_start
+# then exits 4 (no session started, the item taken: start_item reads that as another start's), and a validate item,
+# which reviews its author's PR, is never closed by it.
+# Why: an item on a PR another session had already merged started a session that found nothing to do (#2539).
+start_merged() {
+  local info state oid
+  [ -n "$(jq -r '.pr // ""' <<<"$2")" ] && ! jq -e '(.tags // "") | split(" ") | index("validate")' <<<"$2" >/dev/null || return 1
+  info=$(item_pr_state "$1" "$2") || return 1
+  read -r state oid _ <<<"$info"; oid=${oid#-} oid=${oid//,/ }
+  [ "$state" = MERGED ] && [ -n "$oid" ] && own_record "$1" "$2" || return 1
+  agent-queue set "$1" "merged=$oid" >/dev/null || return 1
+  agent-queue move "$1" done --status ok --if queued >/dev/null || { agent-queue set "$1" merged= >/dev/null; return 1; }
+  logline "start: queue item $1 not started: its PR $(jq -r .pr <<<"$2") merged; closed done"
+  say "start: $1 not started: its PR $(jq -r .pr <<<"$2") already merged; closed done"
+  close_row "$1" || true
+}
+
 # own_record <slug> <item json> -- the slug names this record: agent-queue show and set read a reused
 # slug's newest item, so a write by slug for an older record would land on another item (land_row).
 own_record() { [ "$(agent-queue show "$1" --json 2>/dev/null | jq -r '.file // ""')" = "$(jq -r '.file // ""' <<<"$2")" ]; }
@@ -6244,6 +6303,87 @@ own_parked_pr() {
   echo "agent row for queue item $slug (PR $pr $color after $tries $verb tries, $where)"
 }
 
+# The watch whose probe lists the stranded PRs (fleet-bench prs --check stranded), and where Sentinel
+# keeps its state: cmd_adopt_prs runs once for each probe while it reads TRIP (adopt_due).
+: "${ADOPT_WATCH:=pr-stranded}"
+: "${ADOPT_WATCH_DIR:=$HOME/.local/state/watch-companion}"
+
+# adopt_due -- the stranded-PR watch reads TRIP and has probed since the last adoption ($DIR/adopt-prs).
+# A session that ends without landing its PR emits nothing, so the watch's probe is the one signal, and
+# one adoption a probe keeps this to the watch's cadence with no timer of its own.
+adopt_due() {
+  local w="$ADOPT_WATCH_DIR/$ADOPT_WATCH"
+  [ "$(cat "$w.state" 2>/dev/null)" = TRIP ] && [ "$w.lastrun" -nt "$DIR/adopt-prs" ]
+}
+
+# adopt_task <ref> <title> -> the task of an item cmd_adopt_prs files: what land_brief and fix_ci_brief
+# say, in one line, for the row it files and for a start that reads it before its stamps are set.
+adopt_task() {
+  printf 'chore(review): land or close stranded PR %s\n\n' "$1"
+  printf 'PR %s (%s) sat idle past a day with no queue item, and its session has ended. Land it (fix-ci on a red or a conflict, then agent-land), or close it with a one-line comment naming what superseded it. Never close one whose branch holds work not on its base.\n' "$1" "$2"
+}
+
+# cmd_adopt_prs [--dry-run] -- give each stranded PR that no queue item names the owner own_parked_pr
+# gives a parked one: a queued oneshot item stamped pr:, pr_owner and `<owner>_tries: 1 <head>[ conflict]`,
+# so item_brief hands its session land_brief (green, or in conflict with its base) or fix_ci_brief (red),
+# and once that session parks it in review/, own_parked_pr's tries and escalation carry it. On 2026-11-28
+# 34 of the 43 stranded PRs had no item, and only a red session working the whole pile by hand ever
+# owned one, so the pile grew back after each (ar-4011). Each add goes in under the queue cap, the one
+# bound on adds: one the cap holds ends the run, and the next probe tries again. GitHub PRs only, since
+# both briefs read and land through gh. A PR whose item (pr-<owner>-<repo>-<N>) exists in any state has had
+# its owner: it stays on the watch for a red session, never adopted twice.
+cmd_adopt_prs() {
+  local dry='' prs ref url checks mergeable title repo project slug owner why head it out rc as=()
+  case "$*" in
+  '') ;;
+  --dry-run) dry=1 ;;
+  *) say "usage: fleet-dispatch adopt-prs [--dry-run]"; return 2 ;;
+  esac
+  # Before the read, so a read that fails waits for the next probe too, never every pass.
+  [ -n "$dry" ] || { mkdir -p "$DIR" && touch "$DIR/adopt-prs"; }
+  prs=$(fleet-bench prs --json 2>/dev/null | jq -r '.prs[] | select(.class == "stranded" and .owner == null)
+      | [.ref, .url // "", .checks // "", .mergeable // "", (.title // "" | gsub("[\r\n\u001f]+"; " "))] | join("\u001f")') ||
+    { say "adopt-prs: fleet-bench prs could not be read, so no PR was adopted"; return 1; }
+  while IFS=$'\x1f' read -r ref url checks mergeable title; do
+    [ -n "$ref" ] || continue
+    [[ "$url" == https://github.com/* ]] || continue
+    # The same choice as own_parked_pr: a conflict needs its base merged in first, whatever its checks read.
+    why=''
+    case "$mergeable:$checks" in
+    CONFLICTING:*) owner=land why=' conflict' ;;
+    *:FAILURE | *:ERROR) owner=fix ;;
+    *:SUCCESS) owner=land ;;
+    *) continue ;;   # checks still running or none: nothing to own yet
+    esac
+    repo=${ref%#*}
+    project=$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_of_repos_json "${repo#*/}" 2>/dev/null | jq -r '.[]' 2>/dev/null)
+    # The resolver hands back the bare name when no project claims it: a project with no checkout here has no session to own it.
+    [ -n "$project" ] && [ -n "$(repo_dir "$project")" ] || { logline "adopt-prs: PR $ref is stranded, but no project here maps its repo"; continue; }
+    # Owner and repo in the slug, so two repos' PR #N never share one.
+    slug=$(tr 'A-Z' 'a-z' <<<"pr-${repo%%/*}-${repo#*/}-${ref##*#}" | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g')
+    [ -z "$(item_state "$slug")" ] || continue
+    if [ -n "$dry" ]; then echo "would adopt $ref as $slug (${owner/fix/fix-ci}$why)"; continue; fi
+    head=$(gh pr view "${ref##*#}" -R "$repo" --json headRefOid -q .headRefOid 2>/dev/null) && [ -n "$head" ] ||
+      { logline "adopt-prs: PR $ref is stranded, but gh did not read its head; the next probe tries again"; continue; }
+    rc=0
+    out=$(adopt_task "$ref" "$title" | AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add \
+      --project "$project" --slug "$slug" --tags adopt --from auto:adopt 2>&1) || rc=$?
+    if [ "$rc" -eq "$AQ_EX_HELD" ]; then logline "adopt-prs: the queue cap held $slug ($ref); the next probe tries again"; break; fi
+    [ "$rc" -eq 0 ] || { say "adopt-prs: could not queue $slug for $ref: ${out##*$'\n'}"; continue; }
+    it=$(agent-queue show "$slug" --json 2>/dev/null) || it='{}'
+    # A tier-3 lander runs on claude, as own_parked_pr's does: agent-land asks it for /code-review high.
+    as=()
+    [ "$owner" != land ] || [ "$(item_tier "$it")" != 3 ] || as=(agent=claude)
+    agent-queue set "$slug" "pr=$ref" "pr_owner=$owner" "${owner}_tries=1 $head$why" mode=oneshot "${as[@]}" \
+      "note=PR $ref stranded with no item; ${owner/fix/fix-ci} try 1 of $DISPATCH_FIX_TRIES" >/dev/null ||
+      { say "adopt-prs: queued $slug but could not stamp its PR $ref, so it is cancelled"
+        agent-queue move "$slug" done --status cancelled --why "adopt-prs could not stamp its PR $ref" >/dev/null; continue; }
+    logline "adopt-prs: queued $slug to ${owner/fix/fix-ci} stranded PR $ref"
+    dispatch_event requeued "$project" "stranded PR with no item: ${owner/fix/fix-ci} try 1" --item "$slug" --pr "$ref" --sha "$head"
+    echo "adopted $ref as $slug (${owner/fix/fix-ci})"
+  done <<<"$prs"
+}
+
 # settle_sessionless <slug> <started> -- a started item recording no session, tmux or Claude: nothing
 # witnesses it ending and nothing can nudge it, so PRs #909 and #910 sat open with nobody on them. Its
 # PR or report still decides what it can (settle_item): merged or closed settles it, open parks it in
@@ -6867,6 +7007,8 @@ start_items() {
   # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
   # Not on a floor past a full fleet: the pace target already holds the rest, by design.
   [ "${FLOOR_QUIET:-0}" = 0 ] || return 0
+  # A kick at its cap stops by design, and kick_start names the cap: no gate read for an under-used line.
+  [ "${KICK_AT_CAP:-0}" = 0 ] || return 0
   why=$(gate)
   [ -z "$why" ] || return 0
   local limit="the $TARGET_WHEN pace target $TARGET"; [ "$PER_PASS" -gt 0 ] && [ "${PASS_AT_CAP:-0}" = 1 ] && limit=DISPATCH_PER_PASS
@@ -9206,13 +9348,18 @@ triage_pass() {
 # whole line when the pass ends, so a slow pass names its slow step (ar-4911: 6 to 16 min a pass).
 pass_mark() { PASS_TIMES+="${PASS_TIMES:+, }$1 $(( SECONDS - ${PASS_MARK:-0} ))s"; PASS_MARK=$SECONDS; }
 
-# The longest a timed pass waits for a kick's lock: a kick starts a session or two, so well under it.
+# The longest a timed pass waits for a kick's lock: a kick's reads take about 15 s and each start about 15 s
+# more (p50; p90 near 60 s a start), and KICK_STARTS caps the starts, so a kick ends well under it (ar-5068).
 KICK_WAIT_S=${KICK_WAIT_S:-120}
 # The longest a reap waits for another to finish (cmd_reap); a reap takes seconds to minutes, so this
 # is the guard against a wedged holder, not a timing.
 REAP_WAIT_S=${REAP_WAIT_S:-300}
 # The most times one kick reads the queue again because its wake file moved during the run.
 KICK_ROUNDS=${KICK_ROUNDS:-3}
+# The most sessions one kick starts, over all its rounds; the rest of the room waits for the next wake or
+# pass. A start costs about 15 s past the kick's 15 s of reads: uncapped, 5 starts held the lock 190 s at
+# p50, past KICK_WAIT_S, so the timed pass behind it stood down (ar-5068). 0 is no cap.
+KICK_STARTS=${KICK_STARTS:-1}
 
 # pass_reset -- the per-pass state a `run` pass and a `kick` start from.
 pass_reset() {
@@ -9247,7 +9394,7 @@ pass_room() {
   return 0
 }
 
-# cmd_kick -- the fast path an event runs: start what is already queued against the room, in seconds.
+# cmd_kick -- the fast path an event runs: start what is already queued against the room, KICK_STARTS at most.
 # The same gates, pace target and start as a pass (load_gates, pass_room, run_queue), over the queue as it
 # stands: no reap, triage, judge, board fill or floor, which the timed `run` keeps. A pass holding the lock
 # covers the event until its starts are done, so the kick stands down then; past them (pass_past_starts) the
@@ -9272,13 +9419,20 @@ cmd_kick() {
   [ "$locked" = 0 ] || : > "$DIR/.kick"
   # A wake that lands while this runs is lost to systemd (the .path finds its unit already running), and
   # this run may have read the queue before the write: look again while the wake file moved, KICK_ROUNDS at most.
+  # The cap is the kick's, not a round's: a round past it would start again.
   local rc round seen
+  KICK_STARTED=0 PASS_TIMES='' PASS_MARK=$SECONDS
   for ((round = 0; round < KICK_ROUNDS; round++)); do
+    KICK_ROUND=""; [ "$round" = 0 ] || KICK_ROUND="round $((round + 1)): "
     seen=$(stat -c %y "$DIR/.wake" 2>/dev/null)
     kick_start; rc=$?
+    KICK_STARTED=$(( KICK_STARTED + ${STARTED:-0} ))
+    [ "$KICK_STARTS" -gt 0 ] && [ "$KICK_STARTED" -ge "$KICK_STARTS" ] && break
     [ "$(stat -c %y "$DIR/.wake" 2>/dev/null)" != "$seen" ] || break
   done
   [ "$locked" = 0 ] || rm -f "$DIR/.kick"
+  # Each step's seconds, as a pass says its own (main): a slow kick names its slow step.
+  [ -z "$PASS_TIMES" ] || say "kick steps: $PASS_TIMES; ${SECONDS}s in all"
   return "$rc"
 }
 
@@ -9294,13 +9448,14 @@ pass_past_starts() {
   grep -qa fleet-dispatch "/proc/$pid/cmdline" 2>/dev/null
 }
 
-# kick_start -- cmd_kick past its lock: the gates, the room, the start.
+# kick_start -- cmd_kick past its lock: the gates, the room (KICK_STARTS caps it), the start.
 kick_start() {
   local live room gap
+  KICK_AT_CAP=0
   fleet_hosts >/dev/null
   # `agent-hold check` exits 0 when nothing holds dispatch, as cmd_run reads it.
   agent-hold check dispatch >/dev/null 2>&1 || { settle NOOP "kick: held (agent-hold dispatch), starting nothing"; return 0; }
-  GATES_LOADED=''; load_gates
+  GATES_LOADED=''; load_gates; pass_mark "${KICK_ROUND:-}gates"
   pass_reset
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle NOOP "kick: live sessions unreadable (the fleet state document is missing or stale), the pass reads it"; return 0; }
@@ -9311,14 +9466,22 @@ kick_start() {
   fresh_started=$(agent-queue list --json --state running 2>/dev/null | jq -s --argjson s "${since:-0}" \
     '[.[] | select(((.started // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) >= $s)] | length' 2>/dev/null)
   TOTAL_LIVE=$(( TOTAL_LIVE + ${fresh_started:-0} ))
-  pass_room
+  pass_mark pace
+  pass_room; pass_mark room
   [ "$room" -gt 0 ] || { settle NOOP "kick: at the pace target ($TOTAL_LIVE of $TARGET live), starting nothing"; return 0; }
-  local items; items=$(next_items --points)
+  # KICK_STARTED counts this kick's earlier rounds; cmd_kick runs no round once it reaches the cap.
+  if [ "$KICK_STARTS" -gt 0 ] && [ "$room" -gt $(( KICK_STARTS - ${KICK_STARTED:-0} )) ]; then
+    room=$(( KICK_STARTS - ${KICK_STARTED:-0} )) KICK_AT_CAP=1
+  fi
+  local items; items=$(next_items --points); pass_mark queue
   [ -n "$items" ] || { settle NOOP "kick: nothing queued to start"; return 0; }
   run_queue "$items" "$room"; local rc=$?
+  pass_mark "starts (${STARTED:-0})"
   # run_queue settles only a stop of its own (BLOCKED, a held floor): a clean end is settled here, so the
   # unit declares an outcome and agentctl does not read the silent run as STALLED.
   if [ "$rc" -ne 0 ]; then :
+  elif [ "$KICK_AT_CAP" = 1 ] && [ "${STARTED:-0}" -ge "$room" ]; then
+    settle WORKED "kick: started $STARTED, the kick's cap (KICK_STARTS=$KICK_STARTS); the rest of the room waits for the next wake or pass"
   elif [ "${STARTED:-0}" -gt 0 ]; then settle WORKED "kick: started $STARTED"
   else settle NOOP "kick: started nothing"; fi
   return "$rc"
@@ -10201,7 +10364,7 @@ main() {
   case "${1:-}" in
     run) lease_guard "$1" || return $(($? == 2)) ;;   # another holder is no fault, a lease no remote can say is
     kick) lease_guard "$1" || return $(($? == 2)) ;;   # the kick unit and the pass share the lease, and its rcs
-    reap | start | fill | promote | pull-after | exits) lease_guard "$1" || return 1 ;;
+    reap | start | fill | promote | pull-after | exits | adopt-prs) lease_guard "$1" || return 1 ;;
   esac
   case "${1:-}" in
     run)
@@ -10212,6 +10375,9 @@ main() {
       # After the pass, so the floors and the cap's let-go have started what they would; under its lock.
       [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || share_return
       pass_mark share
+      # A stranded PR no item names gets one, once for each probe of the watch that lists them (adopt_due).
+      [ "$DRY" = 1 ] || ! flock -n 9 2>/dev/null || ! agent-hold check dispatch >/dev/null 2>&1 || ! adopt_due || cmd_adopt_prs >/dev/null || true
+      pass_mark adopt
       # Past its starts: a kick may start beside the rest of this pass (pass_past_starts).
       local past=''
       if [ "$DRY" != 1 ] && flock -n 9 2>/dev/null; then printf '%s\n' "$$" > "$DIR/.past-starts" && past=1; fi
@@ -10256,6 +10422,7 @@ main() {
     trainee-review) shift; cmd_trainee_review "$@" ;;
     trainee-reject) shift; cmd_trainee_reject "$@" ;;
     validate) shift; cmd_validate "$@" ;;
+    adopt-prs) shift; cmd_adopt_prs "$@" ;;
     rollup) shift; cmd_rollup "$@" ;;
     direct-land) shift; cmd_direct_land "$@" ;;
     hosts) shift; cmd_hosts "$@" ;;
