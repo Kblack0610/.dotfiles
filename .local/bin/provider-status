@@ -5,7 +5,7 @@
 # runners), so the sentinel `provider-status` watch reads each Statuspage feed to name it.
 # Only incidents on components we use count: GitHub's feed is mostly Copilot, Cloudflare's
 # is mostly regional, and Claude's carries connector incidents under "Claude Code". A major
-# Cloudflare incident counts unless every component it names is one we do not run. A page
+# Cloudflare incident counts unless every component it names is one the fleet does not touch. A page
 # that cannot be read is not evidence that all is well, so it never exits 0. The watch keeps
 # what it prints as the trip's evidence, so a red names its incident.
 #
@@ -24,9 +24,11 @@ PROVIDERS=(
   'SambaNova|status.sambanova.ai|any(.components[]?.name; . == "SambaCloud API Gateway")'
 )
 # Groq, OpenRouter, Hugging Face and Together have no Statuspage JSON feed (read 2026-11-19): no row.
-# Cloudflare products the fleet does not run, so a major incident naming only these is not
-# ours (Magic Transit tripped the watch 2026-11-24, ar-4698). Names are components.json leaves.
-CF_UNUSED=('Magic Transit' 'Spectrum' 'Cloud Network Interconnect (CNI)' 'China Network')
+# Cloudflare components the fleet does not touch, so a major incident naming only these is not
+# ours (Magic Transit tripped the watch 2026-11-24, ar-4698; Dashboard login emails 2026-11-28).
+# The fleet's calls go by API token (component "API"), so a Dashboard-only incident is the web
+# UI alone; one that also names API still counts. Names are components.json leaves.
+CF_UNUSED=('Magic Transit' 'Spectrum' 'Cloud Network Interconnect (CNI)' 'China Network' 'Dashboard')
 
 case "${1:-}" in
   "") ;;

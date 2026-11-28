@@ -27,6 +27,9 @@ DOC_REL = ".local/src/docs/fleet-states.md"
 RULES_REL = ".config/fact-owners/rules.json"
 BOARDS = [os.path.join(HOME, ".notes/lab/projects/current/agent-runtime", f) for f in ("agent/README.md", "README.md")]
 TREES = [".local/bin/", ".local/lib/", ".local/src/", ".config/shared-hooks/", ".claude/"]
+# The private repo's code: its bin, its lib (live-sessions.sh) and its skill scripts (model-lane), where
+# public CI cannot look. Why: VOIDABLE got in there, 36 minutes after UNRATED_ENDS (private #707).
+PRIVATE_TREES = [".local/bin/", ".local/lib/", ".claude/"]
 COLS = ["fact", "writer", "home", "copy", "lock", "pinned", "debt"]
 SEP = "\x1e"
 KNOWN_FLAGS = {"cells", "pins", "copies", "generated", "debt", "rows", "unowned", "json"}
@@ -122,7 +125,7 @@ def owned_files():
                 continue
         out.append(os.path.realpath(p) if os.path.islink(p) else p)
     if PRIVATE:
-        pl = subprocess.run(["git", "-C", PRIVATE, "ls-files", "--", ".local/bin"], capture_output=True, text=True).stdout.split("\n")
+        pl = subprocess.run(["git", "-C", PRIVATE, "ls-files", "--"] + PRIVATE_TREES, capture_output=True, text=True).stdout.split("\n")
         out += [os.path.join(PRIVATE, f) for f in pl if f and not re.search(r"\.(md|svg|bats)$", f)]
     return list(dict.fromkeys(out))
 

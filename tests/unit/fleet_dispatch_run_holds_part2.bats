@@ -96,6 +96,32 @@ load 'fleet_dispatch/fleet_dispatch_run_holds'
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
 }
 
+# 2026-11-25: tuf-b550 read 101-105 C at under 1x cores and powered off at 110 C, so heat holds a worker at any load.
+@test "a worker whose CPU reads at or over the critical mark takes nothing, and the skip names its temperature" {
+  game_ready
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  worker '2.0 16 1 50 0 1 101.5'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop: CPU at 101.5 C is at or over the 100 C critical mark'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new --host'
+  # At the mark exactly it still holds; the mark is cpu-temp.sh's knob.
+  worker '2.0 16 1 50 0 1 100.0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop: CPU at 100.0 C is at or over the 100 C critical mark'
+  # Negative control: under the mark, no sensor (-) and an older probe with no field all take the item.
+  for p in '2.0 16 1 50 0 1 99.9' '2.0 16 1 50 0 1 -' '2.0 16 1 50 0 1'; do
+    worker "$p"
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+    refute_output --partial 'critical mark'
+  done
+  worker '2.0 16 1 50 0 1 96'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
+}
+
 # 2026-11-18: canary work filled the workstation first while razer-laptop sat idle.
 @test "fleet_first: a canary item goes to a worker that lists canary while this machine has room" {
   project game beta "$SANDBOX/repos/game"   # no board row: the canary is the only item
