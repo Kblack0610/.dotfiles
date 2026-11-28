@@ -27,7 +27,7 @@
 #   fleet-dispatch stopped [--json]  rc 1 and one line when a hold has stopped every pass for DISPATCH_STARVED_MIN:
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #                                    (nothing when it is missing or stale): fleet-sessions wakes a kick when the count drops
-#   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
+#   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items, and each open sprint's size, rows in and out, days left
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
 #   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
@@ -8179,7 +8179,10 @@ last_run_start() {
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
 # the agent board's open rows (`notes board --json` totals: board_agent the agent board (Today),
 # board_backlog the agent rows still carrying the retired backlog token, counted in neither), left out when the board
-# is unreadable, so the chip reads - and never 0; held_s, how long a
+# is unreadable, so the chip reads - and never 0; sprints, from the same read, one object per open
+# (not queued) sprint: project, version, size (committed), rows_in (the unstarted agent rows it does
+# not hold, which dispatch ranks as its own), rows_out (done), opened, due and days_left (due minus
+# the board's today, negative once overdue, null with no due day), left out with the totals; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
 # recomputing it here made stats take 18s of the publisher's lock (ar-2310).
@@ -8190,8 +8193,16 @@ cmd_stats() {
   [ -n "$(find "$HEADROOM" -mmin -45 2>/dev/null)" ] && hr=$(jq -c . "$HEADROOM" 2>/dev/null) || hr=null
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
-  board=$(notes board --json 2>/dev/null | jq -c '.totals | select(.open != null)
-    | {board_agent: .agent, board_backlog: .backlog}' 2>/dev/null)
+  board=$(notes board --json 2>/dev/null | jq -c 'select(.totals.open != null)
+    | def day: strptime("%Y-%m-%d") | mktime;
+      (try (.today | day) catch null) as $today
+      | {board_agent: .totals.agent, board_backlog: .totals.backlog}
+      + (if (.sprints | type) == "array" then
+          {sprints: [.sprints[] | select(.queued != true) | . as $s
+            | {project: $s.project, version: $s.version, size: $s.committed, rows_in: ($s.uncommitted | length),
+               rows_out: $s.done, opened: $s.opened, due: $s.due,
+               days_left: (try (if $s.due == null then null else (($s.due | day) - $today) / 86400 end) catch null)}]}
+         else {} end)' 2>/dev/null)
   load_focus
   read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
