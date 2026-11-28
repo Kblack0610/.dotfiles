@@ -249,7 +249,7 @@ J
 }
 
 @test "session_prs: each PR with its state from its own repo's store, viewed PRs not counted, one read per repo a pass" {
-  pr_store; pr_transcript "$SANDBOX/t.jsonl"
+  seed_pr_store; pr_transcript "$SANDBOX/t.jsonl"
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
   [ "$(jq -c 'map([.repo, .number, .state, .merged_at])' <<<"$output")" = '[["o/one",7,"OPEN",null],["o/two",9,"MERGED","2026-10-30T12:00:00Z"]]' ]
@@ -260,7 +260,7 @@ J
 }
 
 @test "session_prs: a repo the store cannot answer leaves a null state, is read once a pass, and not kept past it" {
-  pr_store; pr_transcript "$SANDBOX/t.jsonl"
+  seed_pr_store; pr_transcript "$SANDBOX/t.jsonl"
   touch "$LEDGER_DIR/PRS_FAIL_o_two"
   run session_prs "$SANDBOX/t.jsonl"
   assert_success
@@ -323,10 +323,25 @@ J
   [ ! -s "$LEDGER_DIR/calls" ] || ! grep -q '^sync-prs' "$LEDGER_DIR/calls"
   # a repo the store does not list is no fault
   rm -f "$LEDGER_DIR/SYNC_FAIL" "$CACHE/blind_row" "$CACHE"/refreshed_*
-  printf '#!/usr/bin/env bash\n[ "$1" = sync-prs ] && exit 3\necho "[]"\n' > "$SCHEDULES_SYNC"
+  ss_script '[ "$1" = sync-prs ] && exit 3; echo "[]"'
   rm -f "$CACHE"/*_origin
   CLOSE_SELF=sid-1 prs_for "$SANDBOX/fjwt" >/dev/null
   [ ! -f "$CACHE/blind_row" ]
+}
+
+@test "repo_prs: one prs read per repo per pass, under a pass cache whose path has capitals (mktemp -d)" {
+  CACHE="$SANDBOX/PassCache"; mkdir -p "$CACHE"
+  printf 'feat/x\t11\tOPEN\tPENDING\tabc\t-\t\n' > "$LEDGER_DIR/prs_o_r.tsv"
+  : > "$LEDGER_DIR/calls"
+  run repo_prs o/r
+  assert_success
+  [ "$(jq -r '.[0].number' <<<"$output")" = 11 ]
+  pr_states o/r >/dev/null
+  repo_prs o/r >/dev/null
+  [ "$(grep -c '^prs ' "$LEDGER_DIR/calls")" = 1 ]
+  ss_script 'exit 3'
+  run repo_prs o/other
+  assert_failure 3
 }
 
 @test "store_key: a Forgejo alias host is the store's host, any other repo as given (ar-2786)" {
@@ -1540,7 +1555,7 @@ validated_item() {
     [ "$(jq -r .reason <<<"$output")" = 'PR #2166 closed without merging' ]
     [ "$(jq -r .finished <<<"$output")" = false ]
   done
-  done_item ok "$sha"; pr_transcript "$SANDBOX/t.jsonl"; pr_store
+  done_item ok "$sha"; pr_transcript "$SANDBOX/t.jsonl"; seed_pr_store
   printf -- '-\t9\tCLOSED\tPASS\t-\t-\n' > "$LEDGER_DIR/prs_o_two.tsv"
   PANEL_TRANSCRIPT="$SANDBOX/t.jsonl" panel "$SANDBOX/wt"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
@@ -2361,8 +2376,8 @@ GH
   holder_doc() { jq -nc --argjson t "$1" --argjson r "$2" '{generated_epoch: $t, sessions: [$r]}' > "$f"; }
   holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","idle_min":0,"blockers":[]}'
   # This machine's own pass would read blind (no PR store, no run ledger): the answer is the holder's.
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
-  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  ss_script 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_success
   assert_output "now: quiet 0m, nothing to land"
   # The holder reads no worker transcript: what will wake this session is read here (ar-3598).
@@ -2485,8 +2500,8 @@ GH
 
   # The lease holder's row for this session in the submodule
   holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":[],"cwd":"'"$sub"'"}'
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
-  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  ss_script 'exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_success
   assert_output "now: quiet 0m, nothing to land"
 

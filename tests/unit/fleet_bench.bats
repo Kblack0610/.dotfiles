@@ -729,10 +729,9 @@ GH
   cat >> "$SANDBOX/bin/agentctl-run" <<'AR'
 echo "agentctl-run $*" >> "$D/reviewer.log"
 AR
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
-  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
-  cat >> "$SCHEDULES_SYNC" <<'SS'
-echo "schedules-sync $*" >> "$D/calls.log"
+  export SS_FIXTURE="$GHD"
+  ss_script <<'SS'
+D=$_dir
 if [ "$1" = sync-prs ]; then
   [ ! -e "$D/sync-fails" ] || { echo "schedules-sync: PRs of $3: HTTP 502" >&2; exit 1; }
   rm -f "$D/prs-stale"; exit 0
@@ -749,7 +748,7 @@ fi
 jq -c 'map({workflow: .workflowName, path, sha: .headSha, status: "completed", conclusion,
   created_at: .createdAt, started_at: .startedAt, ended_at: .updatedAt})' "$D/runs-$4.json"
 SS
-  chmod +x "$SANDBOX/bin/agentctl-run" "$SCHEDULES_SYNC"
+  chmod +x "$SANDBOX/bin/agentctl-run"
   mkdir -p "$HOME/.agent/outcomes/game"
 }
 
@@ -3572,10 +3571,10 @@ hold_setup() {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"
   GHD="$SANDBOX/gh"; mkdir -p "$GHD"; printf '[]' > "$GHD/runs"
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
-  printf '#!/usr/bin/env bash\nD=%q\n' "$GHD" > "$SCHEDULES_SYNC"
-  cat >> "$SCHEDULES_SYNC" <<'SS'
-[ "$1" = repos ] && exec cat "$D/repos"   # the watched list; none: hold_ledger falls back to the repo and main
+  export SS_FIXTURE="$GHD"
+  ss_script <<'SS'
+D=$_dir
+[ "$1" = repos ] && { cat "$D/repos"; exit; }   # the watched list; none: hold_ledger falls back to the repo and main
 [ -e "$D/down" ] && exit 1
 [ -e "$D/unsynced" ] && exit 3
 [ "$1 $3 $4" = "runs --branch main" ] || exit 2
@@ -3591,7 +3590,6 @@ case "$*" in
 esac
 GH
   } | gh_script
-  chmod +x "$SCHEDULES_SYNC"
 }
 
 # cleanup <slug> <finished offset> <pr number> <sha> <changed file...>: a merged cleanup item
@@ -3604,7 +3602,7 @@ cleanup() {
   hold_setup
   echo '[{"forge":"github","repo":"O/other","base":"trunk","host":null,"clone":null},
     {"forge":"forgejo","repo":"O/R","base":"master","host":"git.example.test","clone":null}]' > "$GHD/repos"
-  sed -i 's|\[ "$1 $3 $4" = "runs --branch main" \]|[ "$1 $2 $3 $4" = "runs forgejo:o/r --branch master" ]|' "$SCHEDULES_SYNC"
+  sed -i 's|\[ "$1 $3 $4" = "runs --branch main" \]|[ "$1 $2 $3 $4" = "runs forgejo:o/r --branch master" ]|' "$SS_FIXTURE/ss.script"
   cleanup hit -7200 5 aaa11111 .local/bin/tool
   ci 1 success zzz00000 -7300; ci 2 failure aaa11111 -7201
   run "$SUBJECT" triage --dry-run

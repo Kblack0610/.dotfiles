@@ -557,15 +557,14 @@ deploys() {
 # off GitHub); prs are the PR numbers in prev..tag, read from the squash subjects as the changelog
 # is. Raw facts only: which channel shipped a tag, and each PR's row, are hub_core::release_graph's joins.
 history() {
-  local proj="$1" repo glob line=release tags="" t p sha_at who out="[]" name host path
+  local proj="$1" repo glob line=release tags="" t p sha_at who out="[]" name path
   if ! project_tag_scope "$proj"; then
     jq -nc '{line: "none", glob: null, repo: null, error: "no checkout", tags: []}'
     return
   fi
   repo="$_PTS_REPO"
   path="$(project_field "$proj" path)"
-  name="$(origin_repo "$repo" || true)"; host="$(origin_host "$repo" || true)"
-  [ -z "$name" ] || [ -z "$host" ] || [ "$host" = github.com ] || name="$host/$name"
+  name="$(origin_store_name "$repo" || true)"
   glob="$(_gr_glob "$repo" "$proj" "$_PTS_SCOPED" "$_PTS_GLOB")"
   [ -n "$glob" ] && tags="$(git_tags "$repo" "$proj" "$_PTS_SCOPED" "$glob")"
   if [ -z "$tags" ] && [ -n "$_PTS_BUILDS" ]; then
