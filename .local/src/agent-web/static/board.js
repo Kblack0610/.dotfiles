@@ -6,7 +6,7 @@
 // `when` its queue state and forecast or its close day and PRs, the hub's words for both; each
 // profile's Focus is a count linking to the Daily tab. A closed row has no actions. A row opens under itself
 // with its actions: add, start, done, drop, move (to a project or a version), a release sooner
-// or later, edit and tags go through `notes ptask --exact` with the row's raw line (POST
+// or later, edit, priority and tags go through `notes ptask --exact` with the row's raw line (POST
 // /api/board), so a row changed elsewhere since this page read it fails the write, and the page
 // says so and re-reads. Nothing watches the notes vault, so the tab reads when shown, after each
 // write, on resync, and on Refresh.
@@ -118,6 +118,11 @@ function bRow(r, i) {
         `<select data-movedest="${i}"><option value="">this project</option>${bOpt(names, "")}</select>` +
         `<input data-forminput="${i}" placeholder="version vX.Y.Z (optional with a project)">` +
         `<button class="btn sm primary" data-formgo="${i}">Move</button>` + cancel;
+    } else if (kind === "priority") {
+      // A row has one priority; picking another replaces its tag.
+      acts = `<div class="opts">` +
+        `<select data-formprio="${i}">${bOpt(B_PRIORITIES, r.priority)}</select>` +
+        `<button class="btn sm primary" data-formgo="${i}">Set priority</button>` + cancel;
     } else if (kind === "tag") {
       // A row has one size, so adding size/m replaces its old one; a release is Move's.
       acts = `<div class="opts">` +
@@ -139,6 +144,7 @@ function bRow(r, i) {
         `<button class="btn sm" data-demote="${i}" title="one release later">Later</button>` +
         `<button class="btn sm" data-move="${i}">Move...</button>` +
         `<button class="btn sm" data-edit="${i}">Edit...</button>` +
+        `<button class="btn sm" data-prio="${i}">Priority...</button>` +
         `<button class="btn sm" data-tag="${i}">Tags...</button>` : "") +
       `<button class="btn sm" data-drop="${i}">Drop...</button></div>`;
   }
@@ -280,7 +286,7 @@ $("b-root").addEventListener("click", (e) => {
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
   const d = t.dataset;
-  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
+  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.prio || d.tag || d.formgo || d.formcancel];
   if (!r) {
     if (t.closest("a")) return;
     const line = t.closest("tr[data-row]");
@@ -298,18 +304,25 @@ $("b-root").addEventListener("click", (e) => {
     bWrite(Object.assign({ verb }, rowTarget(r)), d.promote ? "One release sooner." : "One release later.");
     return;
   }
-  const opened = d.done || d.drop || d.move || d.edit || d.tag;
+  const opened = d.done || d.drop || d.move || d.edit || d.prio || d.tag;
   if (opened) {
-    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : d.tag ? "tag" : "edit" };
+    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : d.prio ? "priority" : d.tag ? "tag" : "edit" };
     bst.render();
-    const i = $("b-root").querySelector(`[data-forminput="${opened}"]`);
+    const i = $("b-root").querySelector(`[data-forminput="${opened}"], [data-formprio="${opened}"]`);
     if (i) i.focus();
     return;
   }
   if (d.formcancel) { bst.form = null; bst.render(); return; }
   if (d.formgo && bst.form) {
     const i = d.formgo, q = (a) => $("b-root").querySelector(`[data-${a}="${i}"]`);
-    const v = q("forminput").value.trim(), kind = bst.form.kind;
+    const kind = bst.form.kind;
+    if (kind === "priority") {
+      const priority = q("formprio").value;
+      bst.form = null;
+      bWrite(Object.assign({ verb: "priority", priority }, rowTarget(r)), `Priority ${priority}.`);
+      return;
+    }
+    const v = q("forminput").value.trim();
     let body, ok;
     if (kind === "done" || kind === "drop") {
       const how = q("formkind").value;
