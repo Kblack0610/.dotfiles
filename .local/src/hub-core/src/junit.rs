@@ -24,6 +24,10 @@
 //! report (`report.xml`) has `testsuite`, `testcase` and a `failure`, `error` or `skipped` child.
 //! An NUnit file (`results.xml`, Unity's) has `test-case` elements, read as one suite per class;
 //! a test in several files of one tier (a shard rerun) is the newest file's.
+//!
+//! The per-case ledger (`cases`, `hub-cases ingest`, docs/operations/test-ledger.md) reads the same
+//! runs, every finished one (`all_finished`), once each, through `fetched`, and keeps one row per
+//! execution (a `repeatIteration` and a case's `label` are read here for it).
 
 use crate::display::fmt::counted;
 use std::collections::{HashMap, HashSet};
@@ -118,6 +122,47 @@ pub fn pickable(b: &Builds, registry: Option<&Registry>) -> Vec<PickRun> {
     let Some(reg) = registry else {
         return vec![];
     };
+    // a lane keeps its newest `PICK_RUNS` and, past them, its latest `schedule` run, so a busy
+    // PR workflow never pushes the nightly the lane opens on out of the list
+    let mut kept: HashMap<(&str, &str), usize> = HashMap::new();
+    let mut nightly: HashSet<(&str, &str)> = HashSet::new();
+    finished(b, reg)
+        .into_iter()
+        .filter(|(r, _)| {
+            let lane = (r.repo.as_str(), r.path.as_str());
+            let n = kept.entry(lane).or_default();
+            *n += 1;
+            let first_nightly = r.event == "schedule" && nightly.insert(lane);
+            *n <= PICK_RUNS || first_nightly
+        })
+        .map(|(r, rank)| pick_of(reg, r, rank))
+        .collect()
+}
+
+/// Every finished run of the repos' declared test workflows, newest first, uncapped: the case
+/// ledger (`cases`) reads each one once, where the picker offers `PICK_RUNS` a lane.
+pub fn all_finished(b: &Builds, registry: Option<&Registry>) -> Vec<PickRun> {
+    let Some(reg) = registry else {
+        return vec![];
+    };
+    finished(b, reg)
+        .into_iter()
+        .map(|(r, rank)| pick_of(reg, r, rank))
+        .collect()
+}
+
+fn pick_of(reg: &Registry, r: &Run, rank: usize) -> PickRun {
+    PickRun {
+        rank,
+        artifacts: reg.test_artifacts(&r.repo),
+        store: crate::artifact_store::lister(reg, &r.repo),
+        ..PickRun::of(r)
+    }
+}
+
+/// The ledger's runs of each declared workflow, one per run id (its latest attempt), with the
+/// workflow's place among the repo's `testWorkflows`.
+fn finished<'a>(b: &'a Builds, reg: &Registry) -> Vec<(&'a Run, usize)> {
     let mut declared: HashMap<&str, Vec<String>> = HashMap::new();
     let mut best: Vec<(&Run, usize)> = vec![];
     for r in b
@@ -140,25 +185,7 @@ pub fn pickable(b: &Builds, registry: Option<&Registry>) -> Vec<PickRun> {
             None => best.push((r, rank)),
         }
     }
-    // a lane keeps its newest `PICK_RUNS` and, past them, its latest `schedule` run, so a busy
-    // PR workflow never pushes the nightly the lane opens on out of the list
-    let mut kept: HashMap<(&str, &str), usize> = HashMap::new();
-    let mut nightly: HashSet<(&str, &str)> = HashSet::new();
-    best.into_iter()
-        .filter(|(r, _)| {
-            let lane = (r.repo.as_str(), r.path.as_str());
-            let n = kept.entry(lane).or_default();
-            *n += 1;
-            let first_nightly = r.event == "schedule" && nightly.insert(lane);
-            *n <= PICK_RUNS || first_nightly
-        })
-        .map(|(r, rank)| PickRun {
-            rank,
-            artifacts: reg.test_artifacts(&r.repo),
-            store: crate::artifact_store::lister(reg, &r.repo),
-            ..PickRun::of(r)
-        })
-        .collect()
+    best
 }
 
 /// The repos `runs` (from `pickable`) offer, the one with the newest run first.
@@ -243,6 +270,12 @@ pub struct Case {
     /// When its results file's run started, so a rerun's result replaces the earlier one.
     #[serde(skip)]
     pub at: String,
+    /// NUnit's `repeatIteration` property: which pass of a `-repeat` run this execution was.
+    #[serde(skip)]
+    pub repeat: Option<u32>,
+    /// NUnit's `label` on the test-case (`Cancelled`, `Error`, `Invalid`), empty when it has none.
+    #[serde(skip)]
+    pub label: String,
 }
 
 /// One bats file, or one NUnit class, of one tier.
@@ -711,6 +744,21 @@ fn from_github(part: &Path, run: &PickRun) -> Result<(), String> {
     Ok(())
 }
 
+/// A run's artifacts on disk under `cache`, downloaded on the first ask: the directory holding one
+/// folder per artifact, or None when the run has none (its source dropped them, or it uploaded no
+/// match for its globs).
+pub fn fetched(
+    cache: &Path,
+    run: &PickRun,
+    runner: &dyn Runner,
+) -> Result<Option<PathBuf>, String> {
+    let dir = run_dir(cache, &run.repo, run.id, run.attempt, &run.globs());
+    if !fetch(&dir, run, runner)? || dir.join(NONE_MARK).exists() {
+        return Ok(None);
+    }
+    Ok(Some(dir))
+}
+
 /// The tier an artifact's name says: its first word after the literal prefix of the glob it
 /// matched, so `junit-unit-1` is `unit` and `test-runs-playmode-3` is `playmode`.
 pub fn tier_of(artifact: &str, globs: &[&str]) -> String {
@@ -726,7 +774,7 @@ pub fn tier_of(artifact: &str, globs: &[&str]) -> String {
         .to_string()
 }
 
-fn reports(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
+pub(crate) fn reports(dir: &Path, depth: u8, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
@@ -1162,6 +1210,8 @@ fn parse_nunit(xml: &str, tier: &str) -> Result<Vec<Suite>, String> {
                     time: attr(&attrs, "duration").parse().unwrap_or(0.0),
                     message: String::new(),
                     at: at.clone(),
+                    repeat: None,
+                    label: attr(&attrs, "label"),
                 };
                 let class = attr(&attrs, "classname");
                 if empty {
@@ -1174,6 +1224,21 @@ fn parse_nunit(xml: &str, tier: &str) -> Result<Vec<Suite>, String> {
                         message: String::new(),
                         stack: String::new(),
                     });
+                }
+            }
+            (
+                Tok::Open {
+                    name: "property",
+                    attrs,
+                    empty,
+                },
+                Some(o),
+            ) => {
+                if attr(&attrs, "name") == "repeatIteration" {
+                    o.case.repeat = attr(&attrs, "value").parse().ok();
+                }
+                if !empty {
+                    o.path.push("property".to_string());
                 }
             }
             (Tok::Open { name, empty, .. }, Some(o)) if !empty => o.path.push(name.to_string()),
