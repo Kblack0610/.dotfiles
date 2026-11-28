@@ -265,6 +265,25 @@ fn repo_export_dead(root: &Path, target: &str) -> Option<bool> {
     Some(!(root.join(target).is_file() || root.join(format!("{target}.md")).is_file()))
 }
 
+/// Whether a `journal/refs/<date>/..` link names a file that `notes report archive` or `migrate`
+/// moved (the refs archive, the inbox): the scan skips `journal/`, so it cannot place the link,
+/// but `notes show` follows it (`resolve_link`: the same bases, and the same refusal of an
+/// absolute or `..` target), so it is not dead. A link to an unmoved live file is not covered.
+fn moved_on_disk(p: &Profile, target: &str) -> bool {
+    let t = Path::new(target);
+    if t.is_absolute()
+        || t.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    crate::report::moved_targets(p, target).iter().any(|m| {
+        [&p.root, &p.vault]
+            .iter()
+            .any(|base| base.join(format!("{m}.md")).is_file() || base.join(m).is_file())
+    })
+}
+
 pub fn scan(p: &Profile) -> Result<Scan> {
     let mut raw: Vec<(Kind, PathBuf, String)> = Vec::new();
     for (path, content) in collect(&p.zettel, false)? {
@@ -322,6 +341,7 @@ pub fn scan(p: &Profile) -> Result<Scan> {
                     .or_default()
                     .push(note.link.clone()),
                 None if repo_export_dead(&p.root, target) == Some(false) => {}
+                None if moved_on_disk(p, target) => {}
                 None => dead.push((note.link.clone(), target.clone())),
             }
         }
@@ -487,6 +507,62 @@ mod tests {
         write(&root, "knowledge/brightsign/Players.md", "# players\n");
         let s = scan(&crate::config::test_profile(root.to_str().unwrap())).unwrap();
         assert!(s.dead.is_empty(), "{:?}", s.dead);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A link written before `archive_past` moved its refs day keeps resolving where the file went.
+    #[test]
+    fn a_link_to_an_archived_or_migrated_ref_is_not_dead() {
+        let root = vault("moved");
+        write(
+            &root,
+            "knowledge/a.md",
+            "[[journal/refs/2026-11-19/kept]] [[journal/refs/2026-11-25/report]] [[journal/refs/2026-11-19/gone]]\n",
+        );
+        write(
+            &root,
+            "journal/refs/archive/2026/2026-11/2026-11-19/kept.md",
+            "# k\n",
+        );
+        write(&root, "inbox/archive/2026-11/2026-11-25/report.md", "# r\n");
+        let s = scan(&crate::config::test_profile(root.to_str().unwrap())).unwrap();
+        // negative control: a ref that exists nowhere still counts
+        assert_eq!(
+            s.dead,
+            vec![(
+                "knowledge/a".to_string(),
+                "journal/refs/2026-11-19/gone".to_string()
+            )]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// The refs day may sit under the vault while the profile root is a sub-tree of it, and a
+    /// `..` target is refused as `notes show` refuses it.
+    #[test]
+    fn a_moved_ref_is_found_under_the_vault_and_a_parent_segment_is_refused() {
+        let root = vault("movedvault");
+        let org = root.join("org");
+        write(
+            &root,
+            "org/knowledge/a.md",
+            "[[journal/refs/2026-11-19/kept]] [[journal/refs/2026-11-19/../../../../../../org/knowledge/a]]\n",
+        );
+        write(
+            &root,
+            "journal/refs/archive/2026/2026-11/2026-11-19/kept.md",
+            "# k\n",
+        );
+        let mut p = crate::config::test_profile(org.to_str().unwrap());
+        p.vault = root.clone();
+        let dead = scan(&p).unwrap().dead;
+        assert_eq!(
+            dead,
+            vec![(
+                "knowledge/a".to_string(),
+                "journal/refs/2026-11-19/../../../../../../org/knowledge/a".to_string()
+            )]
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -85,12 +85,14 @@ impl Palette {
             _ => (self.c(b.fg(Color::Black).bg(Color::Magenta)), "NODATA"),
         }
     }
-    /// A pass rate: red under 70%, amber under 90%.
-    pub fn pass(&self, ratio: Option<f64>) -> Style {
-        match ratio.map(|r| (r * 100.0).round()) {
-            Some(p) if p < 70.0 => self.bad(),
-            Some(p) if p < 90.0 => self.warn(),
-            _ => Style::new(),
+    /// The hue of a judged cell (`hub_core::vocab::Level`): red, amber, muted for a reading nobody
+    /// takes, plain when fine.
+    pub fn hue(&self, l: hub_core::vocab::Level) -> Style {
+        match l {
+            hub_core::vocab::Level::Bad => self.bad(),
+            hub_core::vocab::Level::Warn => self.warn(),
+            hub_core::vocab::Level::Neutral => self.dim(),
+            hub_core::vocab::Level::Ok => Style::new(),
         }
     }
 }

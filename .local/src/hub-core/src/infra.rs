@@ -15,6 +15,7 @@ use crate::jobpods::{self, JobPod};
 use crate::machines::{self, Machine, Pool};
 
 use crate::prom::{self, Series, W};
+use crate::reading::NO_DATA;
 use crate::workload::{self, Space};
 
 /// Keeps a machine's run ledger series only while its textfile is fresh, as `cc:host_local_done_24h`.
@@ -119,6 +120,29 @@ pub const OPTIONAL: &[&str] = &[
     "boot",
 ];
 
+/// One headline tile of the Infra board: the same on the hub's number line and agent-web's tiles.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Kpi {
+    pub name: &'static str,
+    pub value: String,
+    /// The line under the value.
+    pub detail: String,
+    /// The detail with the rollup that gave the hue, the tile's second line on the web.
+    pub sub: String,
+    /// The rollup's verdict on its domain; none for a count that gives no verdict.
+    pub level: Option<Level>,
+    /// Where the web tile links, when it does (a hub-relative hash).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub href: Option<&'static str>,
+}
+
+impl Kpi {
+    fn linked(mut self, href: &'static str) -> Self {
+        self.href = Some(href);
+        self
+    }
+}
+
 #[derive(Serialize, Default, Clone, Debug)]
 pub struct Infra {
     pub ok: bool,
@@ -146,6 +170,9 @@ pub struct Infra {
     pub pods: Vec<JobPod>,
     /// Where the cluster's cores and memory go, built once here (`workload::build`).
     pub space: Space,
+    /// The headline tiles, judged once here (`kpis`) so both surfaces draw the same numbers
+    /// and hues.
+    pub kpis: Vec<Kpi>,
     /// What Alertmanager says is firing, asked beside the queries so it is cached with them;
     /// none when it was not asked. Only the Alerts join reads it, so the Infra tab's JSON
     /// leaves it out.
@@ -257,6 +284,133 @@ impl Infra {
             });
         }
         self.ci.glance = ci::glance(self);
+        self.kpis = self.kpis();
+    }
+
+    /// GitHub-hosted jobs running now (`cc:github_hosted_running`), 0 when the rule is absent.
+    pub fn github_hosted(&self) -> f64 {
+        self.cc_values()
+            .get("cc:github_hosted_running")
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    /// The Infra board's headline tiles. A tile's hue is the rollup's verdict on its domain
+    /// (`cc:domain_status`, the max of the domain's components and watches that
+    /// `cc:overall_status` is the max of), so a tile never reads red under an OK overall or green
+    /// under a RED one (ar-5013); the text keeps the count. A component alone would not do:
+    /// k3s/nodes, ci/pools and agents/runners stop at 1, and the red comes from the domain's
+    /// watches row. WATCHES spans domains, so its hue is the worst of the rollup's watches rows
+    /// (`cc:component_status{component="watches"}`). No series is no data, never a guess.
+    /// Sessions is a count with no verdict: `cc:sessions_working` of `cc:sessions_total`, the one
+    /// series both surfaces read.
+    pub fn kpis(&self) -> Vec<Kpi> {
+        let v = self.cc_values();
+        let one = |n: &str| v.get(n).copied();
+        let count = |n: &str| one(n).map_or("?".to_string(), |x| format!("{x:.0}"));
+        let word = |l: Level| match l {
+            Level::Ok => "OK".to_string(),
+            Level::Warn => "WARN".to_string(),
+            Level::Red => "RED".to_string(),
+            Level::Nodata => NO_DATA.to_uppercase(),
+        };
+        let domain = |d: &str| Level::of(one(&format!("cc:domain_status/{d}")));
+        let tile = |name: &'static str, value: String, detail: String, rollup: String, level| Kpi {
+            name,
+            value,
+            sub: [detail.as_str(), rollup.as_str()]
+                .into_iter()
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+                .join("; "),
+            detail,
+            level,
+            href: None,
+        };
+        let roll = |d: &str| {
+            let l = domain(d);
+            (Some(l), format!("{d} rollup {}", word(l)))
+        };
+        let g = &self.ci.glance;
+        let hosted = self.github_hosted();
+        let queue = format!("{} queued, {} runners up", g.queued, g.up_line());
+        let (nodes_l, nodes_r) = roll("k3s");
+        let (beats_l, beats_r) = roll("machines");
+        let (ci_l, ci_r) = roll("ci");
+        let (run_l, run_r) = roll("agents");
+        let watches = self
+            .get("cc")
+            .iter()
+            .filter(|s| {
+                s.label("__name__") == "cc:component_status" && s.label("component") == "watches"
+            })
+            .filter_map(|s| s.value)
+            .fold(None, |m: Option<f64>, x| Some(m.map_or(x, |m| m.max(x))));
+        let watch_l = Level::of(watches);
+        vec![
+            tile(
+                "NODES",
+                format!(
+                    "{}/{}",
+                    count("cc:k3s_nodes_ready"),
+                    count("cc:k3s_nodes_total")
+                ),
+                String::new(),
+                nodes_r,
+                nodes_l,
+            ),
+            tile(
+                "HEARTBEATS",
+                format!("{}/{}", count("cc:machines_up"), count("cc:machines_total")),
+                String::new(),
+                beats_r,
+                beats_l,
+            ),
+            tile(
+                "CI RUNNING",
+                g.busy.to_string(),
+                if hosted > 0.0 {
+                    format!("{queue}, +{hosted:.0} github-hosted")
+                } else {
+                    queue
+                },
+                ci_r,
+                ci_l,
+            ),
+            tile(
+                "AGENT RUNNERS",
+                format!("{} failed", count("cc:runners_failed")),
+                format!("of {}", count("cc:runners_total")),
+                run_r,
+                run_l,
+            ),
+            tile(
+                "WATCHES",
+                format!("{} tripped", count("cc:watches_tripped")),
+                format!(
+                    "of {}, {} stale",
+                    count("cc:watches_total"),
+                    one("cc:watches_stale").unwrap_or(0.0)
+                ),
+                format!("watches rollup {}", word(watch_l)),
+                Some(watch_l),
+            )
+            .linked("#alerts/watches"),
+            tile(
+                "SESSIONS",
+                format!(
+                    "{}/{}",
+                    count("cc:sessions_working"),
+                    count("cc:sessions_total")
+                ),
+                format!(
+                    "working, {} need you",
+                    one("cc:sessions_attention").unwrap_or(0.0)
+                ),
+                String::new(),
+                None,
+            ),
+        ]
     }
 
     /// Hostname -> node name, for a machine whose runner series carry its
@@ -488,6 +642,40 @@ mod tests {
             value: Some(v),
             points: vec![],
         }
+    }
+
+    #[test]
+    fn a_tile_takes_its_hue_from_its_domain_rollup_and_sessions_read_one_series() {
+        let mut i = Infra::default();
+        let mut watches = cc("cc:component_status", ("component", "watches"), 2.0);
+        watches.labels.insert("domain".into(), "ci".into());
+        i.instant.insert(
+            "cc",
+            vec![
+                cc("cc:domain_status", ("domain", "k3s"), 0.0),
+                cc("cc:domain_status", ("domain", "ci"), 1.0),
+                watches,
+                cc("cc:sessions_working", ("x", "y"), 3.0),
+                cc("cc:sessions_total", ("x", "y"), 9.0),
+                cc("cc:agent_sessions_running", ("x", "y"), 26.0),
+            ],
+        );
+        let k = i.kpis();
+        let by = |n: &str| k.iter().find(|t| t.name == n).unwrap();
+        assert_eq!(by("NODES").level, Some(Level::Ok));
+        assert_eq!(by("NODES").value, "?/?");
+        assert_eq!(by("NODES").sub, "k3s rollup OK");
+        // No machines domain series: no data, never green.
+        assert_eq!(by("HEARTBEATS").level, Some(Level::Nodata));
+        assert_eq!(by("CI RUNNING").level, Some(Level::Warn));
+        assert_eq!(by("WATCHES").level, Some(Level::Red));
+        assert_eq!(by("WATCHES").href, Some("#alerts/watches"));
+        assert_eq!(by("NODES").href, None);
+        assert!(by("WATCHES").sub.ends_with("watches rollup RED"));
+        // Sessions give a count and no verdict, from cc:sessions_*, not the older gauge.
+        assert_eq!(by("SESSIONS").value, "3/9");
+        assert_eq!(by("SESSIONS").level, None);
+        assert_eq!(by("SESSIONS").detail, "working, 0 need you");
     }
 
     #[test]

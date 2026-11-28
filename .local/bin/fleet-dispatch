@@ -2,7 +2,7 @@
 # fleet-dispatch - start one session per easy board row, for the shepherd to see through.
 #
 #   fleet-dispatch run [--dry-run]   one pass: start the queue items the gates allow, else fill from the board and start those
-#   fleet-dispatch kick              the fast path an event runs: start the queued items the gates and room allow, in seconds; no reap, triage, judge or board fill; it stands down while a pass runs, until that pass is past its starts
+#   fleet-dispatch kick              the fast path an event runs: start the queued items the gates and room allow, KICK_STARTS at most; no reap, triage, judge or board fill; it stands down while a pass runs, until that pass is past its starts
 #   fleet-dispatch candidates        open rows eligible to judge, one JSON object per line
 #   fleet-dispatch suggest [--json|--write]  the Candidates: open rows of every dev+ project, ranked, with why, auto, verdict, held; --write stores them for the hub fold
 #   fleet-dispatch covered           the projects an untagged worker takes: stage dev or later, a repo, not on DISPATCH_OFF_PROJECTS
@@ -13,6 +13,7 @@
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--restart] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own; --restart takes a started row no live item holds (row_restart)
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless normal, low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok, and a pass runs it --queue-only for a row closed with no item (pull_closed_after)
+#   fleet-dispatch row-tries P LANE KEY [ITEM]  the failed runs row KEY has left before its failures hold it (in_force), ITEM's own records left out
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate was answered another way is held or dropped, one on a cancelled ask closes on its done item's merged PR, follows the ask it joined, or is asked again
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
@@ -2026,6 +2027,23 @@ IN_FORCE_JQ='def in_force($tries):
       else ([$f[] | .key] | max // -1) as $lf
         | [$e[] | select(.key > $lf and .value.verdict != "failed" and .value.verdict != "cleared") | .value]
       end;'
+
+# cmd_row_tries <project> <lane> <key> [<item>] -> the failed runs one row has left before its failures hold
+# it (in_force): DISPATCH_FIX_TRIES less the `failed` records since its last `cleared`, 0 once one with
+# hold: true is among them. The records <item> left (settle_row's "queue item <item> ended") are not
+# counted, so the caller counts that item's failure itself whether reap has recorded it yet or not.
+# agent-queue settle-after reads it to tell a failed phase that runs again from one that asks (ar-6144).
+cmd_row_tries() {
+  [ $# -ge 3 ] || { say "usage: fleet-dispatch row-tries <project> <lane> <key> [<item>]"; return 2; }
+  [ -f "$VERDICTS" ] || { echo "$DISPATCH_FIX_TRIES"; return 0; }
+  jq -rRn --arg p "$1" --arg l "$2" --arg k "$3" --arg it "${4:-}" --argjson tries "$DISPATCH_FIX_TRIES" '
+    [inputs | fromjson? | objects | select(.project == $p and .lane == $l and .key == $k)
+      | select(.verdict == "failed" or .verdict == "cleared")]
+    | ([to_entries[] | select(.value.verdict == "cleared") | .key] | max // -1) as $c
+    | [to_entries[] | select(.key > $c and .value.verdict == "failed") | .value
+      | select($it == "" or ((.reason // "") | startswith("queue item \($it) ended") | not))] as $n
+    | if any($n[]; .hold == true) then 0 else ([$tries - ($n | length), 0] | max) end' "$VERDICTS"
+}
 
 # judged_keys -> "<project>\t<lane>\t<key>\t<line sig>\t<details sig>" for each verdict in force
 # (in_force): made under the current policy, or a dispatch or skip whose rule the policy still has
@@ -7007,6 +7025,8 @@ start_items() {
   # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
   # Not on a floor past a full fleet: the pace target already holds the rest, by design.
   [ "${FLOOR_QUIET:-0}" = 0 ] || return 0
+  # A kick at its cap stops by design, and kick_start names the cap: no gate read for an under-used line.
+  [ "${KICK_AT_CAP:-0}" = 0 ] || return 0
   why=$(gate)
   [ -z "$why" ] || return 0
   local limit="the $TARGET_WHEN pace target $TARGET"; [ "$PER_PASS" -gt 0 ] && [ "${PASS_AT_CAP:-0}" = 1 ] && limit=DISPATCH_PER_PASS
@@ -8612,6 +8632,12 @@ reap_once() {
       jq -r 'select((.row // "") != "" and .status != "ok") | .slug' 2>/dev/null |
       while IFS= read -r s; do settle_row "$s"; done
   done
+  # The guard for queued items a failed close left waiting on it for good (ar-6144): agent-queue move
+  # settles them as it closes the item, so this finds only a close from before that, or a settle that
+  # did not finish. Idempotent: an item already returned or asked about is left as it is.
+  local settled
+  settled=$(agent-queue settle-after --all </dev/null 2>&1) || logline "reap: agent-queue settle-after --all failed: ${settled##*$'\n'}"
+  [ -z "$settled" ] || logline "reap: settle-after: ${settled//$'\n'/; }"
   while IFS=$'\x1f' read -r slug server sess _by project area state _weight agent started sids host; do
     [ -n "$slug" ] || continue
     active+=("$slug")
@@ -9346,13 +9372,18 @@ triage_pass() {
 # whole line when the pass ends, so a slow pass names its slow step (ar-4911: 6 to 16 min a pass).
 pass_mark() { PASS_TIMES+="${PASS_TIMES:+, }$1 $(( SECONDS - ${PASS_MARK:-0} ))s"; PASS_MARK=$SECONDS; }
 
-# The longest a timed pass waits for a kick's lock: a kick starts a session or two, so well under it.
+# The longest a timed pass waits for a kick's lock: a kick's reads take about 15 s and each start about 15 s
+# more (p50; p90 near 60 s a start), and KICK_STARTS caps the starts, so a kick ends well under it (ar-5068).
 KICK_WAIT_S=${KICK_WAIT_S:-120}
 # The longest a reap waits for another to finish (cmd_reap); a reap takes seconds to minutes, so this
 # is the guard against a wedged holder, not a timing.
 REAP_WAIT_S=${REAP_WAIT_S:-300}
 # The most times one kick reads the queue again because its wake file moved during the run.
 KICK_ROUNDS=${KICK_ROUNDS:-3}
+# The most sessions one kick starts, over all its rounds; the rest of the room waits for the next wake or
+# pass. A start costs about 15 s past the kick's 15 s of reads: uncapped, 5 starts held the lock 190 s at
+# p50, past KICK_WAIT_S, so the timed pass behind it stood down (ar-5068). 0 is no cap.
+KICK_STARTS=${KICK_STARTS:-1}
 
 # pass_reset -- the per-pass state a `run` pass and a `kick` start from.
 pass_reset() {
@@ -9387,7 +9418,7 @@ pass_room() {
   return 0
 }
 
-# cmd_kick -- the fast path an event runs: start what is already queued against the room, in seconds.
+# cmd_kick -- the fast path an event runs: start what is already queued against the room, KICK_STARTS at most.
 # The same gates, pace target and start as a pass (load_gates, pass_room, run_queue), over the queue as it
 # stands: no reap, triage, judge, board fill or floor, which the timed `run` keeps. A pass holding the lock
 # covers the event until its starts are done, so the kick stands down then; past them (pass_past_starts) the
@@ -9412,13 +9443,20 @@ cmd_kick() {
   [ "$locked" = 0 ] || : > "$DIR/.kick"
   # A wake that lands while this runs is lost to systemd (the .path finds its unit already running), and
   # this run may have read the queue before the write: look again while the wake file moved, KICK_ROUNDS at most.
+  # The cap is the kick's, not a round's: a round past it would start again.
   local rc round seen
+  KICK_STARTED=0 PASS_TIMES='' PASS_MARK=$SECONDS
   for ((round = 0; round < KICK_ROUNDS; round++)); do
+    KICK_ROUND=""; [ "$round" = 0 ] || KICK_ROUND="round $((round + 1)): "
     seen=$(stat -c %y "$DIR/.wake" 2>/dev/null)
     kick_start; rc=$?
+    KICK_STARTED=$(( KICK_STARTED + ${STARTED:-0} ))
+    [ "$KICK_STARTS" -gt 0 ] && [ "$KICK_STARTED" -ge "$KICK_STARTS" ] && break
     [ "$(stat -c %y "$DIR/.wake" 2>/dev/null)" != "$seen" ] || break
   done
   [ "$locked" = 0 ] || rm -f "$DIR/.kick"
+  # Each step's seconds, as a pass says its own (main): a slow kick names its slow step.
+  [ -z "$PASS_TIMES" ] || say "kick steps: $PASS_TIMES; ${SECONDS}s in all"
   return "$rc"
 }
 
@@ -9434,13 +9472,14 @@ pass_past_starts() {
   grep -qa fleet-dispatch "/proc/$pid/cmdline" 2>/dev/null
 }
 
-# kick_start -- cmd_kick past its lock: the gates, the room, the start.
+# kick_start -- cmd_kick past its lock: the gates, the room (KICK_STARTS caps it), the start.
 kick_start() {
   local live room gap
+  KICK_AT_CAP=0
   fleet_hosts >/dev/null
   # `agent-hold check` exits 0 when nothing holds dispatch, as cmd_run reads it.
   agent-hold check dispatch >/dev/null 2>&1 || { settle NOOP "kick: held (agent-hold dispatch), starting nothing"; return 0; }
-  GATES_LOADED=''; load_gates
+  GATES_LOADED=''; load_gates; pass_mark "${KICK_ROUND:-}gates"
   pass_reset
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle NOOP "kick: live sessions unreadable (the fleet state document is missing or stale), the pass reads it"; return 0; }
@@ -9451,14 +9490,22 @@ kick_start() {
   fresh_started=$(agent-queue list --json --state running 2>/dev/null | jq -s --argjson s "${since:-0}" \
     '[.[] | select(((.started // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) >= $s)] | length' 2>/dev/null)
   TOTAL_LIVE=$(( TOTAL_LIVE + ${fresh_started:-0} ))
-  pass_room
+  pass_mark pace
+  pass_room; pass_mark room
   [ "$room" -gt 0 ] || { settle NOOP "kick: at the pace target ($TOTAL_LIVE of $TARGET live), starting nothing"; return 0; }
-  local items; items=$(next_items --points)
+  # KICK_STARTED counts this kick's earlier rounds; cmd_kick runs no round once it reaches the cap.
+  if [ "$KICK_STARTS" -gt 0 ] && [ "$room" -gt $(( KICK_STARTS - ${KICK_STARTED:-0} )) ]; then
+    room=$(( KICK_STARTS - ${KICK_STARTED:-0} )) KICK_AT_CAP=1
+  fi
+  local items; items=$(next_items --points); pass_mark queue
   [ -n "$items" ] || { settle NOOP "kick: nothing queued to start"; return 0; }
   run_queue "$items" "$room"; local rc=$?
+  pass_mark "starts (${STARTED:-0})"
   # run_queue settles only a stop of its own (BLOCKED, a held floor): a clean end is settled here, so the
   # unit declares an outcome and agentctl does not read the silent run as STALLED.
   if [ "$rc" -ne 0 ]; then :
+  elif [ "$KICK_AT_CAP" = 1 ] && [ "${STARTED:-0}" -ge "$room" ]; then
+    settle WORKED "kick: started $STARTED, the kick's cap (KICK_STARTS=$KICK_STARTS); the rest of the room waits for the next wake or pass"
   elif [ "${STARTED:-0}" -gt 0 ]; then settle WORKED "kick: started $STARTED"
   else settle NOOP "kick: started nothing"; fi
   return "$rc"
@@ -10379,6 +10426,7 @@ main() {
     fill) shift; cmd_fill "$@" ;;
     promote) shift; PULL=$(start_pull) cmd_promote "$@" ;;
     pull-after) shift; PULL=after cmd_pull_after "$@" ;;
+    row-tries) shift; cmd_row_tries "$@" ;;
     report) cmd_report ;;
     verdicts) cmd_verdicts ;;
     exits) shift; skip_exits "$@" ;;
