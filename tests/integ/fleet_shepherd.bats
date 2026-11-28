@@ -124,6 +124,21 @@ aged() {
 }
 ago() { echo $(( $(date +%s) - $1 * 60 )); }
 
+@test "due: the run ledger row of a rate limit waits for its wait_until, one line past it; a real red is due all along (ar-230)" {
+  local main='{"repo":"run ledger","id":"main-run-ledger","reason":"CI run ledger unreadable: GitHub API rate limit hit, resets 13:47 (main CI of a, b, c waits on it)","escalated":false,"owners":[],"wait_until":'
+  doc "[]" "[${main}$(( $(date +%s) + 600 ))},{\"repo\":\"r1\",\"reason\":\"r1 red: Tests\",\"escalated\":false}]"
+  run "$SH" due
+  assert_success
+  assert_line 'nightly red: r1 (r1 red: Tests)'
+  refute_output --partial 'run ledger'
+  # past its reset and grace, the one row is due as an ownerless nightly red: one line, not one a repo
+  doc "[]" "[${main}$(( $(date +%s) - 60 ))}]"
+  run "$SH" due
+  assert_success
+  [ "$(grep -c '^nightly red: ' <<<"$output")" -eq 1 ]
+  assert_line 'nightly red: run ledger (CI run ledger unreadable: GitHub API rate limit hit, resets 13:47 (main CI of a, b, c waits on it))'
+}
+
 @test "due lists unnudged DONE/LANDED/STALLED, unescalated NEEDS rows for the human, and nightly red; no other bucket escalates" {
   doc "[$(row a DONE false false), $(row b LANDED true false), $(row c NEEDS false false), $(row d WORKING false false), $(row e STALLED true true)]" \
       '[{"repo":"r1","reason":"ci red","escalated":false},{"repo":"r2","escalated":true},{"repo":"r3","reason":"ci red","escalated":false,"owners":["sid-8"]}]'
