@@ -1069,7 +1069,7 @@ OUT
   # every read, the checks too, carries the token on stdin, and rbw is asked once
   run grep -vc 'header = "Authorization: token sekret-token"' "$NOTES_FIXTURE/fj.auth"
   assert_output 0
-  grep -q '/commits/1111111111111111111111111111111111111111/status' "$NOTES_FIXTURE/fj.auth" || fail "checks not read"
+  grep -q '/commits/1111111111111111111111111111111111111111/statuses' "$NOTES_FIXTURE/fj.auth" || fail "checks not read"
   run grep -c 'rbw get forgejo_repo_admin' "$RBW_FIXTURE/calls.log"
   assert_output 1
 }
@@ -1079,12 +1079,12 @@ OUT
   run cmd_reap
   assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
   # a warning is a pass, as Forgejo's combined state reads it: a lander, never fix-ci
-  jq -c '.statuses[0].status = "warning"' "$NOTES_FIXTURE/fj.status" > "$NOTES_FIXTURE/s" && mv "$NOTES_FIXTURE/s" "$NOTES_FIXTURE/fj.status"
+  jq -c '.[0].status = "warning"' "$NOTES_FIXTURE/fj.status" > "$NOTES_FIXTURE/s" && mv "$NOTES_FIXTURE/s" "$NOTES_FIXTURE/fj.status"
   run cmd_reap
   refute_output --partial 'fix-ci'
   assert_output --partial 'land queue item fix-crash (PR o/game#12 green at 111111111111, try 1 of 2)'
   agent-queue move fix-crash running >/dev/null; agent-queue set fix-crash session=lab:game-agent-1 >/dev/null; agent-queue move fix-crash review >/dev/null
-  jq -cn '{state: "failure", statuses: [{status: "failure"}, {status: "success"}]}' > "$NOTES_FIXTURE/fj.status"
+  jq -cn '[{id: 2, status: "failure", context: "checks / test"}, {id: 1, status: "success", context: "checks / lint"}]' > "$NOTES_FIXTURE/fj.status"
   run cmd_reap
   assert_output --partial 'fix-ci queue item fix-crash (PR o/game#12 red at 111111111111, try 1 of 2)'
   agent-queue move fix-crash running >/dev/null; agent-queue set fix-crash session=lab:game-agent-1 >/dev/null

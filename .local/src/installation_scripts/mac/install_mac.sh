@@ -186,13 +186,6 @@ install_runtime() {
         brew install python@3.12 &>/dev/null
         brew install uv &>/dev/null
     fi
-    
-    # Rust
-    if ! command -v cargo &>/dev/null; then
-        log_info "Installing Rust..."
-        brew install rustup &>/dev/null
-        rustup-init -y &>/dev/null
-    fi
 }
 
 # Override: Install Zsh
@@ -403,6 +396,7 @@ install_all() {
     step dev        install_tmux
     step dev        install_lazygit
     step dev        install_kitty
+    step dev        install_rust
 
     # Kubernetes & Containers
     step containers install_kubernetes
