@@ -46,9 +46,9 @@ const pendingLine = (g) => (g && g.pending_line ? `<div class="cline warn">${esc
 // hub too. A tile's colour is its level; a count with no verdict (SESSIONS) is blue, and SPEND, a
 // link to Costs, is fixed.
 const KPI_HUE = { ok: "var(--b-done)", warn: "var(--b-stalled)", red: "var(--b-needs)", nodata: "var(--c-other)" };
-function kpis(list) {
+function kpis(list = []) {
   const tiles = list.map((k) => tile(esc(k.name), esc(k.value), k.level ? KPI_HUE[k.level] : "var(--b-working)", esc(k.sub), k.href));
-  tiles.splice(tiles.length - 1, 0, tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs"));
+  tiles.splice(Math.max(0, list.findIndex((k) => k.name === "SESSIONS")), 0, tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs"));
   return `<div class="tiles roomy">${tiles.join("")}</div>`;
 }
 
