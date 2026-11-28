@@ -183,8 +183,9 @@ load 'agent_land/common'
   run "$LAND" 42 --item ship
   assert_line 'fetch: merged origin/main (1 behind) into the head and pushed it'
   second_wait
+  # one read of each, the policy the checks wait takes (required_unlisted); the catch-up reads none more
   run grep -c '^gh api repos/o/r/rules/branches/main$\|^gh api repos/o/r/branches/main/protection$' "$LOG"
-  assert_output 0
+  assert_output 2
   # The merge, then submodule_follow from the pre-merge head (rev-parse's stub answer), then the push.
   local m d p
   m=$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | cut -d: -f1)
@@ -727,6 +728,8 @@ gh pr checks 42 --watch --fail-fast -i 30
 gh pr checks 42 --json name,bucket,workflow
 git rev-parse HEAD
 gh run list --commit 0123456789abcdef --limit 100 --json status,conclusion,workflowName,attempt
+gh api repos/o/r/rules/branches/main
+gh api repos/o/r/branches/main/protection
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git rev-parse HEAD
@@ -1282,7 +1285,7 @@ GATE_LISTED='[{"name":"gate guard","bucket":"pass","workflow":"gate guard"},{"na
   echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
   printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
   fake_sleep
-  run "$LAND" 42 --item ship
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship
   assert_success
   assert_line 'checks: green so far, but origin/main requires gate, which the head has not registered yet; waiting on it'
   assert_line 'landed #42'
@@ -1297,7 +1300,7 @@ GATE_LISTED='[{"name":"gate guard","bucket":"pass","workflow":"gate guard"},{"na
   echo '{"required_status_checks":{"strict":false,"contexts":["gate"]}}' >"$NOTES_FIXTURE/protection.json"
   printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
   fake_sleep
-  run "$LAND" 42 --item ship
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=5 run "$LAND" 42 --item ship
   assert_success
   assert_line 'checks: green so far, but origin/main requires gate, which the head has not registered yet; waiting on it'
   assert_line 'landed #42'

@@ -226,6 +226,7 @@ unlisted=0
 required_unlisted() {
   local missing
   checks_policy
+  [ -n "$required_names" ] && [ "$required_names" != '[]' ] || return 1
   missing=$(jq -r --argjson n "$required_names" '[.[].name] as $l | $n - $l | join(", ")' <<<"$1" 2>/dev/null) || fail checks "reading the checks after the watch: not a check list: $(lastline "$1")"
   [ -n "$missing" ] || return 1
   ((++unlisted <= CHECKS_FIRST_RUN_TRIES)) || fail checks "required check $missing never registered on the head $(git rev-parse --short HEAD) in $CHECKS_FIRST_RUN_TRIES x ${CHECKS_QUEUED_POLL}s, so $remote/$base would refuse the merge: gh run list --commit $(git rev-parse HEAD) shows whether its workflow ran"
