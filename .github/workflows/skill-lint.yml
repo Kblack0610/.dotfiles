@@ -25,7 +25,7 @@ on:
           one runner label, or a JSON label list such as a Unity repo's LINUX_RUNNER_LIGHT.
           Any slot may take it, a warm Unity one too: on a self-hosted runner the first step
           sets that tree's untracked state aside (home-config roles/ci-host, ci-fresh-workspace). The private repo
-          passes ["self-hosted","light"], a seat the governor lends, since GitHub bills hosted minutes there.
+          passes ["self-hosted","light"], its ARC scale set arc-repo-dotfiles-private, since GitHub bills hosted minutes there.
         type: string
         default: ubuntu-24.04
 

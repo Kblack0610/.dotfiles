@@ -346,6 +346,44 @@ load 'fleet_sessions/common'
   [ "$output" = - ]
 }
 
+@test "a running item whose recorded PR is open elsewhere carries the session: WORKING, not STALLED (ar-3580)" {
+  # 2026-11-19: ucp-671's PR #2506 rode agent-37's branch, in train #2919, and agent-15's idle session read STALLED
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  printf 'agent-37-x\t2506\tOPEN\tPASS\tabc\t-\t\nold\t2400\tMERGED\tPASS\tdef\t-\t\nred\t2407\tOPEN\tFAIL\tghi\t-\t\n' > "$LEDGER_DIR/prs.tsv"
+  printf 'b\t9\tOPEN\tPENDING\tjkl\t-\t\n' > "$LEDGER_DIR/prs_o_s.tsv"
+  local q='{"slug":"ucp-671","state":"running","sessions":"sidA","open_pr":"o/r#2506"}
+{"slug":"ucp-672","state":"running","sessions":"sidA","pr":"o/r#2400"}
+{"slug":"ucp-673","state":"running","sessions":"sidA","pr":"o/r#2506 o/s#9 o/r#2400","open_pr":"o/r#2506"}
+{"slug":"ucp-675","state":"running","sessions":"sidA","pr":"o/r#2407"}
+{"slug":"ucp-674","state":"done","sessions":"sidC","pr":"o/r#2506"}'
+  run item_open_prs "$q" ucp-671
+  assert_output 'o/r#2506'
+  # both fields, several refs and a second repo: each open one once; a merged one drops
+  run item_open_prs "$q" ucp-673
+  assert_output 'o/r#2506,o/s#9'
+  # only the slugs passed count, never every running item: a merged PR, a red one, a done item, a stranger carry nothing
+  for s in ucp-672 ucp-675 ucp-674 nope; do
+    run item_open_prs "$q" "$s"
+    [ "$output" = - ]
+  done
+  # a store that cannot answer carries nothing (the old STALLED read)
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; touch "$LEDGER_DIR/PRS_FAIL"
+  run item_open_prs "$q" ucp-671
+  [ "$output" = - ]
+  # session_carried joins them with the items filed from it; only an own: answer reads the store
+  q="$q"$'\n''{"slug":"fix-1","state":"running","from":"item:ucp-671","sessions":"sidB"}'
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; rm -f "$LEDGER_DIR/PRS_FAIL"
+  run session_carried "$q" sidA own:ucp-671 lab:me ucp-671
+  assert_output 'fix-1,o/r#2506'
+  run session_carried "$q" sidA 'moved:ucp-671 moved on (done)' lab:me ucp-671
+  [ "$output" = - ]
+  # the bucket: carried by the open PR is WORKING; none is the old STALLED
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:ucp-671' - - - 'o/r#2506'
+  assert_output 'WORKING clean, nothing on the branch, no plan file, its item ucp-671 is carried by live items: o/r#2506'
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:ucp-671' - - - -
+  assert_output 'STALLED clean, nothing on the branch, no plan file, its item ucp-671 is running here'
+}
+
 @test "a queued <slug>-close item held by its at: time carries the open item, so the session is not STALLED (ar-4582)" {
   local q
   q='{"slug":"ar-4554","state":"running","sessions":"sidA"}
@@ -3808,6 +3846,46 @@ SH
   [ "${f[2]} ${f[3]}" = "1 -" ]
   run work_blockers '' idle 0 0 0 30 "${f[@]:0:7}" - 1/1 - "${f[9]}" -
   assert_output --partial 'not on the default branch, no PR'
+}
+
+@test "branch_runs and main_health read a Forgejo-canonical checkout's run ledger under its Forgejo repo, not origin (ar-2727)" {
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) green red
+  git init -q --bare "$SANDBOX/gh-mirror.git"; git init -q --bare "$SANDBOX/fj.git"
+  git clone -q "$SANDBOX/gh-mirror.git" "$SANDBOX/wt" 2>/dev/null
+  "${g[@]}" remote add forgejo "$SANDBOX/fj.git"
+  mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
+  "${g[@]}" add .forgejo; "${g[@]}" commit -q -m init; green="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" commit -q --allow-empty -m 'feat: x (#7)'; red="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" push -q forgejo HEAD:master 2>/dev/null; "${g[@]}" push -q origin HEAD:master 2>/dev/null
+  "${g[@]}" fetch -q forgejo; "${g[@]}" fetch -q origin
+  "${g[@]}" remote set-head forgejo master; "${g[@]}" remote set-head origin master
+  "${g[@]}" remote set-url forgejo "https://fj.example/o/r.git"
+  gh_script 'exit 1'
+  export SO_FORGEJO_HOSTS="fj.example"
+  CACHE="$SANDBOX/pass"; MAIN_CACHE="$SANDBOX/main"; mkdir -p "$CACHE"
+  # the ledger syncs the Forgejo repo only: the GitHub mirror is not in it (exit 3)
+  ledger master "[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
+  cp "$LEDGER_DIR/master.json" "$SANDBOX/fj-runs.json"; rm "$LEDGER_DIR/master.json"
+  cat > "$SCHEDULES_SYNC" <<SS
+#!/usr/bin/env bash
+echo "\$*" >> "$LEDGER_DIR/calls"
+[ "\$1 \$2" = "runs forgejo:o/r" ] && { cat "$SANDBOX/fj-runs.json"; exit 0; }
+exit 3
+SS
+  run main_health "$SANDBOX/wt"
+  assert_output "RED"$'\t'"Tests @${red:0:8} (#7)"$'\t'"${red:0:8}"
+  grep -qx 'runs forgejo:o/r' "$LEDGER_DIR/calls"
+  # gate_ci and activity_line read the same rows through branch_runs
+  run branch_runs "$SANDBOX/wt" master
+  assert_success
+  [ "$(jq 'length' <<<"$output")" = 2 ]
+  # NEGATIVE CONTROL: without the mirror marker the checkout lands on origin, whose ledger has no runs
+  rm "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
+  rm -rf "$CACHE" "$MAIN_CACHE"; mkdir -p "$CACHE"; : > "$LEDGER_DIR/calls"
+  run main_health "$SANDBOX/wt"
+  assert_output OK
+  grep -q '^runs ' "$LEDGER_DIR/calls"
+  [ -z "$(grep 'forgejo:' "$LEDGER_DIR/calls")" ]
 }
 
 @test "end to end: behind and conflicts measure the branch against the remote tip" {

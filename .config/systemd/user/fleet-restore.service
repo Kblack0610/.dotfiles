@@ -1,7 +1,9 @@
 [Unit]
 Description=The next wake batch of a paced fleet-dispatch restore
-# Started without waiting by `fleet-dispatch record` (restore_tick) while a restore still owes wakes
-# and the wake budget has room. Its own unit, because fleet-state.service, where the record runs,
+# Started without waiting by `fleet-dispatch restore --defer` (session-snapshot up at boot), then by
+# `fleet-dispatch record` (restore_tick) while a restore still owes wakes and the wake budget has room;
+# a walk this unit's timeout cuts short is still owed, so the tick walks again. Dispatch starts nothing
+# while it runs (fleet-dispatch restore_walking). Its own unit, because fleet-state.service, where the record runs,
 # times out at 120s and kills its whole cgroup. A start while one runs folds into it.
 
 [Service]
@@ -11,5 +13,7 @@ Type=oneshot
 KillMode=process
 # Started from a timer's unit under linger, with no login PATH; restore calls tmx, agent-panel and claude by name.
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/bin:/usr/bin
+# Nobody reads this walk's output, so a failed reopen pages (restore_here).
+Environment=FLEET_RESTORE_PAGE=1
 ExecStart=%h/.local/bin/fleet-dispatch restore --here
 TimeoutStartSec=600
