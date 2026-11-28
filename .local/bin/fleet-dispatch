@@ -4349,13 +4349,16 @@ worker_store_pull() {
   [ "$st" = running ] || say "start: the store on $1 reads $2 as ${st:-unreadable}, not running (did this machine's store-sync reach origin?); a close there before its next sync conflicts"
 }
 
-# stack_base <item json> <project> <slug> [host] -> the head commit of the open PR the item is stacked on (its
-# `after:` item is live with an open PR, agent-queue stack_pr), the base its worktree is cut from, so the
-# phase builds on its dependency's code while that PR waits for its checks. Nothing for an item that
-# is not stacked. rc 1, and the item stays queued, when the head cannot be read or it is stacked on
-# several PRs (one worktree has one base). agent-land merges it only after the dependency closed ok.
+# stack_base <item json> <project> <slug> [host] -- sets the caller's (cmd_start's) `base` to the head commit of the
+# open PR the item is stacked on (its `after:` item is live with an open PR, agent-queue stack_pr), the base its
+# worktree is cut from, so the phase builds on its dependency's code while that PR waits for its checks; and its
+# `cwd` to that PR's checkout when it is another repo, normally only a validate item's (agent-queue holds a phase on
+# such a PR, ar-5124): the head is a commit of the PR's repo, and a validate item lands the PR from its worktree. Leaves both for an item that is not stacked. rc 1, and
+# the item stays queued, when the head cannot be read or it is stacked on several PRs (one worktree has one
+# base). agent-land merges it only after the dependency closed ok. Why: validate-ask-du3ev0 (agent-runtime), stacked on
+# home-config#1666, was cut in its project's repo, where wt found no such commit, and failed every pass (2026-11-27, ar-2940).
 stack_base() {
-  local on sha ref host=${4:-}
+  local on sha ref dir pk ck host=${4:-}
   on=$(jq -r '.stacked_on // empty' <<<"$1")
   [ -n "$on" ] || return 0
   [ -z "$host" ] || { say "start: $3 is stacked on an open PR, which only a worktree here builds on; start it without --host"; return 2; }
@@ -4363,11 +4366,21 @@ stack_base() {
   set -- $on "$2" "$3"
   [ $# -eq 3 ] || { say "start: ${!#} is stacked on ${on// /, }: one worktree builds on one open PR; it starts once all but one have merged"; return 1; }
   ref=${1#*=}
-  sha=$(so_pr_view "$ref" "$(pr_repo_dir "$ref" "$2")" headRefOid .headRefOid) && [ -n "$sha" ] ||
+  dir=$(pr_repo_dir "$ref" "$2")
+  sha=$(so_pr_view "$ref" "$dir" headRefOid .headRefOid) && [ -n "$sha" ] ||
     { say "start: could not read the head of $ref, which $3 is stacked on; it stays queued"; return 1; }
-  say "start: $3 is stacked on ${1%%=*}'s open PR $ref, so its worktree is cut from ${sha:0:12}"
-  echo "$sha"
+  if [ -n "$dir" ] && pk=$(repo_key "$dir") && ck=$(repo_key "$cwd") && [ "$pk" != "$ck" ]; then
+    say "start: $3 is stacked on ${1%%=*}'s open PR $ref, so its worktree is cut from ${sha:0:12} in $dir, that PR's repo"
+    cwd=$dir
+  else
+    say "start: $3 is stacked on ${1%%=*}'s open PR $ref, so its worktree is cut from ${sha:0:12}"
+  fi
+  base=$sha
 }
+
+# repo_key <dir> -> one name for the repo <dir> is in: its git common dir, which its worktrees share; rc 1 when
+# <dir> is no git checkout, so stack_base moves nothing it cannot tell apart.
+repo_key() { [ -n "$1" ] && git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null; }
 
 # start_host_checks <host> <harness> <hjson> <item json> <cwd> <slug> -> rc 2 with the reason said when the worker's kit cannot take this start: a needs:cluster item, a harness its fleet_harnesses does not list, a codex thread that lives on this machine, a repo it has no clone of.
 start_host_checks() {
@@ -4610,7 +4623,7 @@ cmd_start() {
     # lists (harness_prep refuses an opencode one it cannot run there).
     [ -z "$host" ] || hwhy=$(host_start_why "$host" "$item" "$harness") || { say "start: $hwhy"; return 2; }
     [ -z "$host" ] || start_host_checks "$host" "$harness" "$hjson" "$it" "$cwd" "$item" || return 2
-    base=$(stack_base "$it" "$project" "$item" "$host") || return $?
+    stack_base "$it" "$project" "$item" "$host" || return $?
     if [ "$harness" = claude ]; then
       # A pin is not the lane's pick, so like --model it logs no lane run.
       [ -n "$model" ] || { model=$(claude_pin "$it"); [ -z "$model" ] || verdict=''; }
