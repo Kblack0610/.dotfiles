@@ -53,7 +53,7 @@
 #   fleet-dispatch run-log H SID...   the lines of this machine's H opencode log that the run claiming those ids wrote (canary score keeps them beside its log)
 #   (run, kick, reap, start, fill, promote, pull-after and exits do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's, and take their queue-item events into this chain record (worker_records); page when a world's server died
-#   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
+#   fleet-dispatch restore [--server S] [--dry-run] [--here] [--defer]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold; --defer hands the walk to fleet-restore.service and returns at once
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
 # take it: `#worker/<name>` plus a `#tier/N` within its max_tier (tier meanings: policy.md), and
@@ -4919,40 +4919,86 @@ restore_world() {
 # first, so a death the minute timer has not seen yet counts, and a server already restarted by
 # hand is not missed. The wakes are paced (restore_pace): the rest wake from the minute record.
 cmd_restore() {
-  local server='' dry=0 here='' rc=0
+  local server='' dry=0 here='' defer='' rc=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --server) [ $# -ge 2 ] || { say "restore: --server needs a value"; return 2; }; server=$2; shift 2 ;;
       --dry-run) dry=1; shift ;;
       --here) here=1; shift ;;
+      --defer) defer=1; shift ;;
       *) say "restore: unknown argument: $1"; return 2 ;;
     esac
   done
+  if [ -n "$defer" ] && { [ -n "$server" ] || [ "$dry" = 1 ]; }; then
+    say "restore: --defer hands over the walk of every lost server and walks nothing, so it takes no --server or --dry-run"; return 2
+  fi
   record_here
-  # One walk at a time, so a hand restore and the minute's next batch never reopen one conversation twice.
-  exec 6>"$PANES/.restore.lock"
-  flock 6 || return 1
-  # 6>&-: the walk runs with the lock fd closed (bash keeps its saved copy close-on-exec), so nothing
-  # it starts, a tmux server, a claude or a notify, holds the lock once the walk ends.
-  restore_here "$dry" "$server" 6>&- || rc=1
-  exec 6>&-
+  if [ -n "$defer" ]; then
+    restore_defer || rc=1
+  else
+    # One walk at a time, so a hand restore and the minute's next batch never reopen one conversation twice.
+    exec 6>"$PANES/.restore.lock"
+    flock 6 || return 1
+    # 6>&-: the walk runs with the lock fd closed (bash keeps its saved copy close-on-exec), so nothing
+    # it starts, a tmux server, a claude or a notify, holds the lock once the walk ends.
+    restore_here "$dry" "$server" 6>&- || rc=1
+    exec 6>&-
+  fi
   local wargs=(); [ -z "$server" ] || wargs+=(--server "$server"); [ "$dry" = 0 ] || wargs+=(--dry-run)
+  [ -z "$defer" ] || wargs+=(--defer)
   if [ -z "$here" ] && fans_out; then on_workers restore "${wargs[@]}" || rc=1; fi
   return "$rc"
+}
+
+# restore_defer -- hand this machine's walk to fleet-restore.service and return at once. The owed
+# marker goes first, so a walk the unit's own start timeout cuts short is walked again by the minute
+# record (restore_tick), and the walk's restore_pace clears it once nothing is owed. session-snapshot
+# up runs it at boot: a walk inside up's unit reopened 12 of 23 conversations in its 600s start, was
+# killed and left dispatch held and agentctl paused (2026-11-19, ar-3601). While the walk runs, gate
+# reads closed (restore_walking), so no pass starts new work beside what it reopens.
+restore_defer() {
+  local f n=0 c records=0
+  for f in "$PANES"/*.lost.json; do
+    [ -r "$f" ] || continue
+    records=$((records + 1))
+    c=$(jq '[.panes[]? | select(.claude != "")] | length' "$f" 2>/dev/null) || c=0
+    n=$((n + c))
+  done
+  [ "$records" -gt 0 ] || { echo "restore: no lost server on record"; return 0; }
+  printf '%s\n' "$n" > "$RESTORE_OWED_FILE"
+  systemctl --user start --no-block fleet-restore.service ||
+    { echo "restore: could not start fleet-restore.service; $n conversation(s) still wait (fleet-dispatch restore)"; return 1; }
+  echo "restore: handed $n conversation(s) on $records lost record(s) to fleet-restore.service"
+}
+
+# restore_walking -> rc 0 while a restore walk (fleet-restore.service, a oneshot: activating until it
+# exits) runs on this machine, or a start of it is queued (restore_defer's --no-block start returns
+# before the unit leaves inactive). Read from systemd, so a walk that dies holds nothing.
+restore_walking() {
+  [ "$(systemctl --user show fleet-restore.service -p ActiveState --value 2>/dev/null)" = activating ] ||
+    [ -n "$(systemctl --user show fleet-restore.service -p Job --value 2>/dev/null)" ]
 }
 
 # restore_here <dry run 0|1> [<server>] -- walk this machine's lost records (that server's alone when
 # named), then pace what they still owe (restore_pace). The caller holds the restore lock.
 restore_here() {
-  local dry=$1 server=${2:-} f rc=0 found=0
-  RESTORE_OWED=()
+  local dry=$1 server=${2:-} f rc=0 found=0 left
+  RESTORE_OWED=() RESTORE_WALKED=()
   for f in "$PANES"/${server:-*}.lost.json; do
     [ -r "$f" ] || continue
-    found=1
+    found=1; RESTORE_WALKED+=("$f")
     restore_world "$f" "$dry" || rc=1
   done
   [ "$found" = 1 ] || echo "restore: no lost server on record"
   [ "$dry" = 1 ] || restore_pace "$server"
+  # A walk in fleet-restore.service (the boot hand-over or a batch) has nobody reading its output, so a
+  # failed reopen pages once. Not retried each minute: the same start would fail again.
+  if [ "$dry" = 0 ] && [ "$rc" = 1 ] && [ -n "${FLEET_RESTORE_PAGE:-}" ]; then
+    left=$(jq -s '[.[].panes[]? | select(.claude != "")] | length' "$PANES"/*.lost.json 2>/dev/null) || left='?'
+    agent-notify -p normal -t "restore: a reopen failed on $(hostname -s)" \
+      "${left:-?} conversation(s) are still on lost pane records. Reopen them: fleet-dispatch restore (journalctl --user -u fleet-restore says why)" ||
+      say "restore: could not page the failed reopen"
+  fi
   return "$rc"
 }
 
@@ -4979,6 +5025,9 @@ restore_pace() {
     fi
     printf '%s\n' "$owed" > "$RESTORE_OWED_FILE"
     echo "restore: $owed wait for a wake batch of at most $WAKE_BUDGET; the minute record wakes the next on CLEAR"
+  elif [ -z "${1:-}" ] && unwalked_lost; then
+    # A lost record this walk never read (restore_defer handed it over while the walk ran) is still owed.
+    printf '%s\n' 0 > "$RESTORE_OWED_FILE"
   elif [ -z "${1:-}" ]; then
     rm -f "$RESTORE_OWED_FILE"
     if [ "$(sed -n 's/^by: //p' <<<"$hold")" = "$RESTORE_BY" ]; then
@@ -4986,6 +5035,17 @@ restore_pace() {
     fi
   fi
   return 0
+}
+
+# unwalked_lost -> rc 0 when a lost record exists that this walk (RESTORE_WALKED) did not read.
+unwalked_lost() {
+  local f w
+  for f in "$PANES"/*.lost.json; do
+    [ -e "$f" ] || continue
+    for w in "${RESTORE_WALKED[@]}"; do [ "$w" != "$f" ] || continue 2; done
+    return 0
+  done
+  return 1
 }
 
 # restore_tick -- the minute record's half of a paced restore: while a walk left wakes owed and the
@@ -8964,6 +9024,9 @@ gate() {
   # A hold names who set it and why ("by <who>: <reason>"), which the Stopped line shows.
   hold=$(agent-hold check dispatch 2>/dev/null) ||
     { hold=$(sed -nE '1s/^held: [^ ]+ since [^ ]+ //p' <<<"$hold"); echo "held (agent-hold dispatch)${hold:+ $hold}"; return; }
+  # A restore walk is reopening sessions: like a hold, nothing else matters until it ends. session-snapshot
+  # up releases its dispatch hold once it hands the walk over (restore_defer), so this keeps its order.
+  ! restore_walking || { echo "a restore walk is reopening sessions (fleet-restore.service; systemctl --user stop fleet-restore.service ends it)"; return; }
   if [ "${TRAINEE_GATE:-0}" = 0 ]; then
     # The verdict's own words say which account is short and why (ACCT_WHY); keep them.
     acct_room; rc=$?
