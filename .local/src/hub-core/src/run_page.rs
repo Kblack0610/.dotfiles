@@ -703,19 +703,15 @@ fn changes(o: &Env, run: &Run) -> Changes {
 
 fn pick(reg: &Registry, r: &Run) -> PickRun {
     PickRun {
-        repo: r.repo.clone(),
-        id: r.id,
-        attempt: r.attempt,
-        branch: r.branch.clone(),
         sha: short(&r.sha).to_string(),
-        title: r.title.clone(),
-        state: r.state.clone(),
-        level: r.level,
-        started: r.started,
-        prs: r.prs.clone(),
-        url: r.url.clone(),
+        rank: reg
+            .test_workflows(&r.repo)
+            .iter()
+            .position(|w| *w == r.path)
+            .unwrap_or(0),
         artifacts: reg.test_artifacts(&r.repo),
         store: artifact_store::lister(reg, &r.repo),
+        ..PickRun::of(r)
     }
 }
 

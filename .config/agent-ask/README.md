@@ -141,6 +141,7 @@ judge_level_raised:       # true when judge_level is above what the judge rated
 judge_human_only:         # true when external is met or reversible is not: a human-stop rule, never a level; absent otherwise
 judge_human_only_evidence: # the quote behind it
 judge_settled_by:         # ask:<id> when the judge says an older ask asks the same
+judge_human_said:         # <n> lines: the hits of what the human already said the last verdict was judged with (human_fact)
 judged_at:
 judge_override:           # on a live answer: kept (the human named the judge's option), the other option they named, or none (silence)
 judge_override_note:      # that message
@@ -163,6 +164,14 @@ The judge never picks the call. It names the ask's type, then answers each crite
 Every decision also carries an `impact` level, `self`, `repo` or `fleet`, and the bundle takes its widest. `judge_derive` flags the ask `judge_human_only: true` beside its level when `external` is met or `reversible` is not, and an ask naming a name under "Judge authority" or "Fleet floor" in the policy (such as `CLAUDE.md`) is `fleet` at least; `judge_level_raised` marks a level above the judge's own rating. The level never decides the call: it is the second axis `judge-eval cells` scores by, beside the type.
 
 The input also carries the human's latest disagreements (`agent-ask precedents <before>`): asks they answered with another option than the recommendation, and live answers they overrode, all decided before this ask was posted and capped by `PRECEDENTS` in the conf. One that covers the same decision meets `against-precedent`, so a disagreement changes the next verdict with no rule written. They are computed from the ask files, and a replay reads them from `AGENT_ASK_PRECEDENTS_ROOT`.
+
+### Knowledge asks
+
+Once the judge has named the type at post, three kinds of knowledge ask are routed away from the human:
+
+- `credential_or_account`: when the question (not its context) names a service in the first table of home-config `docs/credentials.md` (`AGENT_ASK_CREDENTIALS_DOC`, under `HOME_CONFIG`; the Service cell's first word, whole-word; an unreadable doc is warned on stderr) or a specific rbw item name (one with a `-`, `.`, `/`, `_` or digit, asked only when `rbw unlocked`), `post` cancels the ask, prints the mint path or `rbw get <name>` on stderr and exits 2 (a plain question only: a gate, an approval, a blocker ask, an audit or an ask with its own `--resume` stays an ask). An account at a service we do not run still goes through.
+- `human_physical_action`: not a decision. `post` adds a row to the project's human sheet (`notes ptask <project> add "chore(<project>): <question> ..."`, on the ask's profile and board, in plain ASCII), sets a resource hold `human-<id>` (`agent-hold set --kind resource`), cancels the ask, and exits 2 like a refusal, naming the hold on stderr (stdout stays empty: it is an ask id for every other post). Work that needs the action waits on `agent-hold check human-<id>`, and the human releases it when done. A hold nobody releases shows in `agent-hold aged`. A gate, an approval, a blocker ask, an audit or an ask with its own `--resume` stays an ask, and so does one whose hold or sheet row cannot be filed or whose ask cannot be closed (the hold is released).
+- `human_fact`: a verdict that sends it to the human is judged once more with a `## What the human already said` section, the mem0 search hits (`mem0_search` in `.local/lib/mem0.sh`) and the `lessons pick --matched` hits of the project's lessons file for its question and context. With no hit there is no second call, and a second call that fails or that the guard ends leaves the first verdict. An ask judged that way (`judge_human_said`) is judged with the section on every later pass, in one call. The mem0 search makes one 5s try there. `human_fact` stays a hard stop (`JUDGE_HARD_STOPS`), so the second verdict is a shadow one: judge-eval scores it, and only the human can make the type live.
 
 ### Live types
 
