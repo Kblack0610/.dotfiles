@@ -1274,6 +1274,11 @@ pub(crate) const ORIGIN_PLAN: &str = "plan";
 /// The triage runner: its new epics, like a hand session's, must name a listed system.
 const TRIAGE: &str = "inbox-triage";
 
+/// Machine filers the daily intake cap never refuses: the nightly docs-cleanup passes, at most five
+/// rows a night that fire at 05:05, after the other filers have used the day's cap by 00:05, so under it
+/// no pass was ever filed (ar-5130). Their rows still count toward the day, as an urgent red's do.
+const CAP_EXEMPT_FILERS: [&str; 1] = ["docs-cleanup"];
+
 /// Who is writing a row, and so whether it goes on the sheet or to the outbox (`inbox-triage`
 /// checks it against the board and files it, joins it to a twin or drops it). The class is the
 /// environment's, never a flag's:
@@ -1423,9 +1428,14 @@ impl Writer {
 
     /// Whether the daily intake cap counts this writer's agent-lane row: a hand session, a plan's
     /// phases and a machine filer. Not a person at a terminal (the human's own words), and not
-    /// agent-queue's story row, which mirrors an item already started (`ingest::ORIGIN_STORY`).
+    /// agent-queue's story row, which mirrors an item already started (`ingest::ORIGIN_STORY`), and
+    /// not a [`CAP_EXEMPT_FILERS`] runner.
     fn capped(&self) -> bool {
-        !self.person && self.name.as_deref() != Some(crate::ingest::ORIGIN_STORY)
+        !self.person
+            && self
+                .name
+                .as_deref()
+                .is_none_or(|n| n != crate::ingest::ORIGIN_STORY && !CAP_EXEMPT_FILERS.contains(&n))
     }
 
     /// A hand session or inbox-triage: the writers whose new epic must name a listed system. A
@@ -6877,6 +6887,25 @@ mod inbox_tests {
         let person = |o| Writer::of(None, None, None, o, &argv(zsh), false, filers());
         assert!(!person(Some("anything")).inboxes() && !person(Some("anything")).self_checks());
         assert!(person(None).person);
+    }
+
+    #[test]
+    fn the_daily_cap_holds_every_writer_but_a_person_the_story_row_and_the_docs_cleanup_runner() {
+        let run = |name: &str| {
+            let filers = vec![name.to_string()];
+            Writer::of(None, None, Some(name.to_string()), None, &[], false, filers)
+        };
+        assert!(
+            !run("docs-cleanup").capped(),
+            "the nightly pass is never refused"
+        );
+        assert!(
+            !Writer::of(None, None, None, None, &[], false, Vec::new()).capped(),
+            "a person"
+        );
+        // NEGATIVE CONTROLS: another machine filer, and a hand session, stay under the cap.
+        assert!(run("fleet-bench").capped());
+        assert!(Writer::of(None, Some("c1".into()), None, None, &[], false, Vec::new()).capped());
     }
 
     #[test]
