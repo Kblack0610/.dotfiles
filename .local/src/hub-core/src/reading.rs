@@ -13,6 +13,14 @@ pub const NOT_READ: &str = "not read";
 /// The cell word for a source that has reported nothing yet: unknown, never up and never zero.
 pub const NO_DATA: &str = "no data";
 
+/// The word for a list with nothing in it, where the cell would otherwise be blank.
+pub const NONE: &str = "none";
+
+/// `no data from <source>`: a source that reported nothing, worded once for both surfaces.
+pub fn no_data_from(source: &str) -> String {
+    format!("{NO_DATA} from {source}")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", content = "detail", rename_all = "snake_case")]
 pub enum State {
@@ -140,12 +148,13 @@ impl JobState {
         }
     }
 
-    /// Failing is red; stale and never need a look; ok and off need nothing.
+    /// Failing is red; stale and never need a look; ok needs nothing; off, on purpose, is grey.
     pub const fn level(self) -> Level {
         match self {
             JobState::Failing => Level::Bad,
             JobState::Stale | JobState::Never => Level::Warn,
-            JobState::Ok | JobState::Off => Level::Ok,
+            JobState::Ok => Level::Ok,
+            JobState::Off => Level::Neutral,
         }
     }
 }

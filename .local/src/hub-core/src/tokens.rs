@@ -50,10 +50,13 @@ pub struct Langfuse {
     pub tool_errors: u64,
     pub tool_error_share: Option<f64>,
     pub tool_error_classes: Vec<Count>,
+    /// `tool_error_classes` as both surfaces word them (`classes_line`).
+    pub tool_error_line: String,
     pub gateway_calls: u64,
     pub gateway_errors: u64,
     pub gateway_error_share: Option<f64>,
     pub gateway_error_classes: Vec<Count>,
+    pub gateway_error_line: String,
     pub gateway_cost_usd: f64,
     pub gateway_tokens: u64,
     /// The three dearest upstream models; the rest is `gateway_other_models`.
@@ -84,6 +87,17 @@ pub struct LfModel {
 pub struct Count {
     pub name: String,
     pub n: u64,
+}
+
+/// An error list as one phrase: `ShellError 781, Timeout 2`, or `none` with no class.
+pub fn classes_line(cs: &[Count]) -> String {
+    if cs.is_empty() {
+        return crate::reading::NONE.into();
+    }
+    cs.iter()
+        .map(|c| format!("{} {}", c.name, c.n))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Models named in the gateway cut before the rest fold into a count.
@@ -144,10 +158,12 @@ pub fn langfuse(v: &serde_json::Value) -> Option<Langfuse> {
         tool_errors: n(&te["errors"]),
         tool_error_share: te["share"].as_f64(),
         tool_error_classes: counts(&te["by_class"]),
+        tool_error_line: classes_line(&counts(&te["by_class"])),
         gateway_calls: n(&gw["calls"]),
         gateway_errors: n(&gw["errors"]),
         gateway_error_share: gw["error_share"].as_f64(),
         gateway_error_classes: counts(&gw["by_error"]),
+        gateway_error_line: classes_line(&counts(&gw["by_error"])),
         gateway_cost_usd: gw["cost_usd"].as_f64().unwrap_or(0.0),
         gateway_tokens: n(&gw["tokens"]),
         gateway_models: models,
@@ -335,6 +351,19 @@ fn ratio(part: u64, whole: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_error_list_is_one_phrase_and_none_when_empty() {
+        let c = |name: &str, n| Count {
+            name: name.into(),
+            n,
+        };
+        assert_eq!(
+            classes_line(&[c("ShellError", 781), c("Timeout", 2)]),
+            "ShellError 781, Timeout 2"
+        );
+        assert_eq!(classes_line(&[]), crate::reading::NONE);
+    }
 
     const NOW: i64 = 1_800_000_000;
 

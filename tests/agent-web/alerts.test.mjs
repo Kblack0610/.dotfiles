@@ -33,7 +33,7 @@ const run = (src) => vm.runInContext(src, ctx);
 const alst = run("alst");
 
 const NOW = Math.floor(Date.now() / 1e3);
-const fix = (slug, outcome, o = {}) => ({ slug, red: `watch ${slug}`, outcome, queued: new Date(Date.now() - 3 * 3600e3).toISOString(), pr: null, pr_url: null, ...o });
+const fix = (slug, outcome, o = {}) => ({ slug, red: `watch ${slug}`, outcome, level: { "came back": "bad", queued: "neutral", fixed: "ok", cancelled: "ok" }[outcome] || "ok", queued: new Date(Date.now() - 3 * 3600e3).toISOString(), pr: null, pr_url: null, ...o });
 const fixes = {
   open: [fix("ar-3", "came back", { slug: "red-x-1124", row: "ar-3", pr: "Kblack0610/.dotfiles#1170 988", pr_url: "https://github.com/Kblack0610/.dotfiles/pull/1170", links: [
     { what: "row", text: "ar-3", href: "#projects/all?q=id:=ar-3" }, { what: "item", text: "red-x-1124", href: "#queue/red-x-1124" },
@@ -42,11 +42,12 @@ const fixes = {
   settled: [fix("ar-1", "fixed"), fix("ar-4", "cancelled")],
   summary: "2 open: 1 came back, 1 queued | 1 fixed, 1 cancelled in 7d, fix p50 34m",
 };
-const alert = (what, o = {}) => ({ sev: "high", what, project: "", source: "sentinel", since: NOW - 3600, owner: "-", state: "no owner", about: "", place: "", action: "", evidence: "", ...o });
+// sev_level and state_level are hub-core's (`Alert::settle`): urgent and high are bad, a missing owner is bad, fixing and queued are warn.
+const alert = (what, o = {}) => ({ sev_level: ["urgent", "high"].includes(o.sev || "high") ? "bad" : "neutral", state_level: { error: "bad", "no owner": "bad", unfixed: "bad", fixing: "warn", queued: "warn" }[o.state || "no owner"] || "ok", sev: "high", what, project: "", source: "sentinel", since: NOW - 3600, owner: "-", state: "no owner", about: "", place: "", action: "", evidence: "", ...o });
 const col = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const table = { q: "", state: "", sort: "", dir: "", total: 2, shown: 2, states: [{ name: "all", n: 2 }, { name: "trip", n: 1 }, { name: "error", n: 1 }, { name: "no owner", n: 1 }],
   columns: ["sev", "what", "project", "system", "source", "since", "owner", "state"].map(col), facets: [] };
-const watch = (name, state) => ({ name, state, severity: "normal", since: NOW - 60, lastrun: NOW - 30, lasttrip: null, place: "GitHub", what: "", action: "", evidence: "" });
+const watch = (name, state) => ({ name, state, level: { TRIP: "bad", ERROR: "bad", OK: "ok" }[state] || "neutral", severity: "normal", since: NOW - 60, lastrun: NOW - 30, lasttrip: null, place: "GitHub", what: "", action: "", evidence: "" });
 const firing = [
   alert("playground-nightly", { project: "unity-core-playground", owner: "ar-9 fixing", state: "fixing", slug: "ar-9", owner_href: "#queue/ar-9", about: "the nightly on main", place: "GitHub, unity", action: "read the run", evidence: "PlayMode 2 failed" }),
   alert("dream", { state: "error", sev: "normal" }),

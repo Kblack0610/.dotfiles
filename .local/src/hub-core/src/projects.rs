@@ -308,6 +308,29 @@ pub fn map_path() -> PathBuf {
     )
 }
 
+/// The projects a task may be queued for, through the registry: a `paths` value agent-queue
+/// takes as `--project` (`queue::is_slug`), less the work projects a machine on profile
+/// `machine` does not list.
+pub fn queueable(reg: &project_map::Registry, machine: &str) -> Vec<String> {
+    let mut names = reg.path_projects();
+    names.retain(|p| crate::queue::is_slug(p) && reg.project_visible(p, machine));
+    names
+}
+
+/// `queueable` for this machine, from the registry at `map_path()`; empty when it cannot be read,
+/// with the reason on stderr (the server's journal).
+pub fn queueable_here(runner: &dyn Runner) -> Vec<String> {
+    // The machine's profile does not change while a server runs, so notes is asked once.
+    static MACHINE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    match project_map::Registry::from_path(&map_path()) {
+        Some(reg) => queueable(&reg, MACHINE.get_or_init(|| machine_profile(runner))),
+        None => {
+            eprintln!("queueable projects: cannot read {}", map_path().display());
+            Vec::new()
+        }
+    }
+}
+
 /// One project's card.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Card {
@@ -1245,6 +1268,23 @@ pub fn to_json(p: &Projects) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn queueable_projects_are_the_unique_map_values() {
+        let map = r#"{"paths":{"/a":"dotfiles","/b":"notes-cockpit","/c":"dotfiles","/d":"-x"},"trackers":{}}"#;
+        let reg = project_map::Registry::parse(map).unwrap();
+        assert_eq!(queueable(&reg, "personal"), ["dotfiles", "notes-cockpit"]);
+    }
+
+    #[test]
+    fn a_work_repo_is_queueable_only_on_its_work_machine() {
+        let map = r#"{"clients":{"acme":{"profile":"acmework"}},
+            "paths":{"/a":"dotfiles","/w":"acme-platform"},
+            "trackers":{"acme-platform":{"client":"acme"}}}"#;
+        let reg = project_map::Registry::parse(map).unwrap();
+        assert_eq!(queueable(&reg, "personal"), ["dotfiles"]);
+        assert_eq!(queueable(&reg, "acmework"), ["acme-platform", "dotfiles"]);
+    }
+
     use super::*;
     use crate::tasks::{Project, Row};
     use serde_json::json;

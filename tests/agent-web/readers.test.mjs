@@ -35,9 +35,6 @@ const SITES = [
   { file: "main.rs", fn: "run_cmd", n: 1, by: "keeps: runs an action's command, never a read" },
   { file: "main.rs", fn: "ask_preview", n: 1, by: "keeps: serves the bytes of the file hub_core::outbound names" },
   { file: "main.rs", fn: "answer", n: 1, by: "keeps: `agent-ask answer` is a write" },
-  { file: "queue.rs", fn: "snapshot_key", n: 1, by: "P5: queue reads the dispatch snapshot through hub_core" },
-  { file: "queue.rs", fn: "projects", n: 1, by: "P5: project-map.json through project_map::Registry" },
-  { file: "queue.rs", fn: "project_names", n: 1, by: "P5: project-map.json through project_map::Registry" },
   { file: "remote.rs", fn: "run", n: 1, by: "keeps: runs a command on a worker host" },
   { file: "stack.rs", fn: "picture", n: 1, by: "keeps: serves the svg a hub_core flow row names" },
 ];

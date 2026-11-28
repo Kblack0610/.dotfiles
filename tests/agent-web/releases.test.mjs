@@ -88,7 +88,7 @@ const binks = {
   ],
 };
 const data = (o = {}) => ({
-  at: NOW() - 120, stale_after: 3600, errors: [], table,
+  at: NOW() - 120, reading: { state: "live" }, errors: [], table,
   gaps: "1 channel not read: steam GetAppBetas failed (1)", coverage: "prev 2/2, deployed 1/2", rows: [binks],
   blanks: ["none declared", "not recorded", "manual", "not read", "none merged", "no check"], ...o,
 });
@@ -131,10 +131,11 @@ test("the head counts the apps, names what it could not read under it, and folds
 });
 
 test("a snapshot older than the collector's cadence is amber, and a full read draws no gap line", () => {
-  show(data({ at: NOW() - 7200, gaps: "" }));
+  const old = { at: NOW() - 7200, reading: { state: "stale", detail: NOW() - 7200 } };
+  show(data({ ...old, gaps: "" }));
   assert.match(box.innerHTML, /<h2 class="sec warn">Releases /, "a stale snapshot hues the head");
   assert.doesNotMatch(box.innerHTML, /not read:/);
-  assert.match(run("releasesTiles")(data({ at: NOW() - 7200 })), /--c:var\(--b-stalled\)/);
+  assert.match(run("releasesTiles")(data(old)), /--c:var\(--b-stalled\)/);
   show(data({ gaps: "" }));
   assert.match(box.innerHTML, /<h2 class="sec">Releases /, "fresh and fully read: a plain head");
 });

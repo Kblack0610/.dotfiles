@@ -63,6 +63,8 @@ pub struct Schedule {
     pub state: JobState,
     /// The state's colour, so a surface need not know the words.
     pub state_level: Level,
+    /// The streak's colour: red while the last runs failed (`streak < 0`), else plain.
+    pub streak_level: Level,
     /// Why the state is what it is, when its runs alone do not say: `agentctl liveness`'s fault,
     /// or how long it has been quiet.
     pub state_why: String,
@@ -119,6 +121,14 @@ pub struct Schedule {
 }
 
 impl Schedule {
+    fn streak_hue(streak: i32) -> Level {
+        if streak < 0 {
+            Level::Bad
+        } else {
+            Level::Ok
+        }
+    }
+
     /// The streak as the column shows it, empty with none.
     pub fn streak_text(&self) -> String {
         match self.streak {
@@ -137,6 +147,7 @@ impl Schedule {
             self.ok = r.ok;
         }
         (self.streak, self.red_since) = streak(&runs);
+        self.streak_level = Self::streak_hue(self.streak);
         self.ok_at = runs.iter().find(|r| r.ok == Some(true)).and_then(|r| r.at);
         self.fail_at = runs.iter().find(|r| r.ok == Some(false)).and_then(|r| r.at);
         self.took = runs.first().and_then(|r| r.took);
@@ -848,6 +859,7 @@ fn timer_rows(
                     row.result = prop(sk, "Result").to_string();
                     row.ok = Some(row.result == "success");
                     row.streak = if row.ok == Some(true) { 1 } else { -1 };
+                    row.streak_level = Schedule::streak_hue(row.streak);
                     row.red_since = row.last.filter(|_| row.streak < 0);
                     (row.ok_at, row.fail_at) = if row.streak > 0 {
                         (row.last, None)

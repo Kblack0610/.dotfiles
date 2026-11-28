@@ -259,11 +259,7 @@ fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line
         .iter()
         .filter(|x| ok || x.state != "OK")
         .map(|x| {
-            let style = match x.state.as_str() {
-                "TRIP" | "ERROR" => p.bad(),
-                "OK" => p.good(),
-                _ => p.dim(),
-            };
+            let style = p.hue(x.level);
             vec![
                 x.name.clone().into(),
                 cell(x.state.clone(), style),
@@ -301,16 +297,7 @@ fn watch_lines(a: &Alerts, ok: bool, p: Palette, now: i64, w: usize) -> Vec<Line
 }
 
 fn row(r: &Alert, p: Palette, now: i64) -> Vec<Cell> {
-    let sev = if matches!(r.sev.as_str(), "urgent" | "high") {
-        p.bad()
-    } else {
-        p.dim()
-    };
-    let state = match r.state.as_str() {
-        "error" | "no owner" | "unfixed" => p.bad(),
-        "fixing" | "queued" => p.warn(),
-        _ => Style::default(),
-    };
+    let (sev, state) = (p.hue(r.sev_level), p.hue(r.state_level));
     vec![
         cell(r.sev.clone(), sev),
         match r.pages.as_slice() {
@@ -476,11 +463,7 @@ pub fn fixes(a: &Alerts, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     };
     let mut out = vec![clip_line(head(summary, Style::default()), w)];
     for f in r.open.iter().take(FOLD_ROWS) {
-        let style = match f.outcome.as_str() {
-            "came back" | "still red" | "no fix" => p.bad(),
-            "needs merge" => p.warn(),
-            _ => Style::default(),
-        };
+        let style = p.hue(f.level);
         // The number only: a URL or `owner/repo#N` would push the age off a narrow line.
         let pr = f.pr.as_deref().map_or(String::new(), |n| {
             let n = n.trim_end_matches('/');

@@ -116,6 +116,8 @@ pub struct Watch {
     pub name: String,
     /// TRIP, OK, ERROR, or `new` before its first run.
     pub state: String,
+    /// The hue of `state`, judged here for both surfaces: tripped or failing red, ok green, new grey.
+    pub level: crate::vocab::Level,
     pub severity: String,
     /// Its `project:`, a canonical project name; empty for a fleet-wide watch.
     pub project: String,
@@ -139,6 +141,16 @@ pub struct Watch {
 pub const REASON_CHARS: usize = 140;
 
 impl Watch {
+    /// The hue of a state word: `TRIP` and `ERROR` red, `OK` green, anything else (`new`) grey.
+    pub fn level_of(state: &str) -> crate::vocab::Level {
+        use crate::vocab::Level;
+        match state {
+            "TRIP" | "ERROR" => Level::Bad,
+            "OK" => Level::Ok,
+            _ => Level::Neutral,
+        }
+    }
+
     /// Why it is red, in one line: the first line of its last probe output after the runner's own
     /// status header (`TRIP exit 1 (want 0)`), cut to `REASON_CHARS`. Empty when the probe said
     /// nothing past the header, so a surface can say "no reason recorded".
@@ -673,8 +685,10 @@ pub fn watches(dir: &Path, state: &Path) -> Result<Vec<Watch>, String> {
                 .unwrap_or_default();
             let st = read(&name, "state");
             let out = read(&name, "out");
+            let state = if st.is_empty() { "new".into() } else { st };
             Some(Watch {
-                state: if st.is_empty() { "new".into() } else { st },
+                level: Watch::level_of(&state),
+                state,
                 severity,
                 project: field(&yaml, "project"),
                 system: field(&yaml, "system"),

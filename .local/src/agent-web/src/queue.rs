@@ -367,21 +367,12 @@ const CANDIDATES_SECS: u64 = 3600;
 static CANDIDATES: ReadCache<Candidates, CANDIDATES_SECS, Option<(SystemTime, u64)>> =
     ReadCache::new("queue-candidates");
 
-/// The snapshot file's mtime and inode. fleet-dispatch replaces the file by a rename on every
-/// write, so the inode is new each time; a promote drops its row and keeps the pass's mtime
-/// (`candidates_drop`, `touch -r`), which the mtime alone would miss.
-fn snapshot_key(path: &std::path::Path) -> Option<(SystemTime, u64)> {
-    use std::os::unix::fs::MetadataExt;
-    let m = std::fs::metadata(path).ok()?;
-    Some((m.modified().ok()?, m.ino()))
-}
-
 /// fleet-dispatch's snapshot through hub-core, parsed once per write (it runs to megabytes) and
 /// shared by the counts and the rows. A file that cannot be read is a 400 with hub-core's words;
 /// a parse task that died is a 500.
 async fn read_candidates() -> ApiResult<Arc<Candidates>> {
     let path = hub_core::boards::candidates_file();
-    let at = snapshot_key(&path);
+    let at = hub_queue::snapshot_key(&path);
     let read = async move {
         tokio::task::spawn_blocking(move || hub_queue::candidates(&path))
             .await
@@ -494,33 +485,8 @@ pub async fn bump(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult
 /// The projects a task may be queued for: the names in project-map.json, which is also what
 /// agent-queue checks `--project` against, less the work projects this machine does not list.
 pub async fn projects() -> Json<Vec<String>> {
-    // The machine's profile does not change while the server runs, so notes is asked once.
-    static MACHINE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    let names = tokio::task::spawn_blocking(|| {
-        let text = std::fs::read_to_string(hub_core::projects::map_path()).unwrap_or_default();
-        project_names(
-            &text,
-            MACHINE.get_or_init(|| hub_core::projects::machine_profile(&System)),
-        )
-    });
+    let names = tokio::task::spawn_blocking(|| hub_core::projects::queueable_here(&System));
     Json(names.await.unwrap_or_default())
-}
-
-fn project_names(map: &str, machine: &str) -> Vec<String> {
-    let v: serde_json::Value = serde_json::from_str(map).unwrap_or_default();
-    let reg = project_map::Registry::parse(map);
-    let mut names: Vec<String> = v
-        .get("paths")
-        .and_then(serde_json::Value::as_object)
-        .into_iter()
-        .flat_map(|m| m.values())
-        .filter_map(|p| p.as_str().map(String::from))
-        .filter(|p| hub_queue::is_slug(p))
-        .filter(|p| reg.as_ref().is_none_or(|r| r.project_visible(p, machine)))
-        .collect();
-    names.sort();
-    names.dedup();
-    names
 }
 
 #[cfg(test)]
@@ -936,30 +902,6 @@ mod tests {
     }
 
     #[test]
-    fn a_promote_that_keeps_the_mtime_is_a_new_snapshot() {
-        let dir = std::env::temp_dir().join(format!("aw-cands-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let f = dir.join("candidates.jsonl");
-        std::fs::write(&f, "a\n").unwrap();
-        let before = snapshot_key(&f).unwrap();
-        let t = dir.join("candidates.jsonl.1");
-        std::fs::write(&t, "").unwrap();
-        std::fs::File::options()
-            .write(true)
-            .open(&t)
-            .unwrap()
-            .set_modified(before.0)
-            .unwrap();
-        std::fs::rename(&t, &f).unwrap();
-        let after = snapshot_key(&f).unwrap();
-        assert_eq!(after.0, before.0, "touch -r kept the pass's mtime");
-        assert_ne!(after, before, "the rename is still a new key");
-        assert_eq!(snapshot_key(&dir.join("none")), None);
-        std::fs::remove_file(&f).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
-    }
-
-    #[test]
     fn the_counts_read_carries_the_heading_and_no_row() {
         let c = hub_queue::parse_candidates(
             r##"{"key":"k-2","prio":0,"blocked":["judge: skip, vague"],"auto":true}"##,
@@ -1026,27 +968,5 @@ mod tests {
         assert_eq!(v["table"]["pager"]["page"], 2);
         assert_eq!(v["table"]["links"].as_array().unwrap().len(), 20);
         assert!(v.get("more").is_none());
-    }
-
-    #[test]
-    fn projects_are_the_unique_map_values() {
-        let map = r#"{"paths":{"/a":"dotfiles","/b":"notes-cockpit","/c":"dotfiles","/d":"-x"},"trackers":{}}"#;
-        assert_eq!(
-            project_names(map, "personal"),
-            ["dotfiles", "notes-cockpit"]
-        );
-        assert!(project_names("not json", "personal").is_empty());
-    }
-
-    #[test]
-    fn a_work_repo_is_queueable_only_on_its_work_machine() {
-        let map = r#"{"clients":{"acme":{"profile":"acmework"}},
-            "paths":{"/a":"dotfiles","/w":"acme-platform"},
-            "trackers":{"acme-platform":{"client":"acme"}}}"#;
-        assert_eq!(project_names(map, "personal"), ["dotfiles"]);
-        assert_eq!(
-            project_names(map, "acmework"),
-            ["acme-platform", "dotfiles"]
-        );
     }
 }

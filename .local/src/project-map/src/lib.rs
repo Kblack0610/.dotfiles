@@ -262,6 +262,21 @@ impl Registry {
         self.index.get(&name.to_lowercase()).map(String::as_str) == Some(name)
     }
 
+    /// The project keys the `paths` section names, sorted and unique.
+    pub fn path_projects(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .raw
+            .get("paths")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|m| m.values())
+            .filter_map(|p| p.as_str().map(String::from))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// The tracker entry for `name`, when it is an object (`_comment*` keys are strings).
     pub fn tracker(&self, name: &str) -> Option<&Map<String, Value>> {
         self.raw.get("trackers")?.get(name)?.as_object()

@@ -2,7 +2,7 @@
 //! agent-web's Costs tab draws): where the tokens go (`u`, `U` the window) and what Langfuse sees
 //! (`l`): what the fleet costs, not who is working.
 
-use hub_core::tokens::{Count, Langfuse, Share, Split, Tokens};
+use hub_core::tokens::{Langfuse, Share, Split, Tokens};
 use ratatui::text::{Line, Span};
 
 use crate::fit::{clip_line, Cell, Table};
@@ -193,14 +193,7 @@ pub fn langfuse(
         return out;
     };
     out.extend(langfuse_tools(f, p, w));
-    let classes = |cs: &[Count]| match cs {
-        [] => "none".to_string(),
-        cs => cs
-            .iter()
-            .map(|c| format!("{} {}", c.name, c.n))
-            .collect::<Vec<_>>()
-            .join(", "),
-    };
+    let classes = hub_core::tokens::classes_line;
     let partial = if f.truncated {
         " (classes partial)"
     } else {
@@ -349,6 +342,7 @@ fn token_table(tools: &[Share], part: &[String], p: Palette, w: usize) -> Vec<Li
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hub_core::tokens::Count;
     use hub_core::tokens::{LangfuseView, LfModel, LfTool};
 
     const NOW: i64 = crate::fleettab::tests::NOW;
@@ -421,6 +415,7 @@ mod tests {
                 name: "ShellError".into(),
                 n: 781,
             }],
+            tool_error_line: "ShellError 781".into(),
             gateway_calls: 194,
             gateway_errors: 26,
             gateway_error_share: Some(0.134),
@@ -428,6 +423,7 @@ mod tests {
                 name: "invalid_key".into(),
                 n: 16,
             }],
+            gateway_error_line: "invalid_key 16".into(),
             gateway_cost_usd: 3.59,
             gateway_tokens: 2_271_863,
             gateway_models: vec![LfModel {

@@ -232,8 +232,7 @@ const Q_COLS = {
 // The state cell of a stuck row: the word hub-core gives it (`QueueRow::state_word`: stalled, no
 // session, PR red), amber, with the session's why on hover.
 function qState(i) {
-  const word = i.state_word || (i.state === "review" ? "on a PR" : i.state);
-  return `<td class="warn"${i.state_why ? ` title="${esc(i.state_why)}"` : ""}>${esc(word)}</td>`;
+  return `<td class="warn"${i.state_why ? ` title="${esc(i.state_why)}"` : ""}>${esc(i.state_word)}</td>`;
 }
 
 // The PR cell: hub-core's label as a link; a done item with no recorded merge says so on hover.

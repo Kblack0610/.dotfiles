@@ -1875,6 +1875,16 @@ pub fn candidates(path: &std::path::Path) -> Result<Candidates, String> {
     Ok(c)
 }
 
+/// The snapshot file's mtime and inode, what a kept read of it is keyed by. fleet-dispatch
+/// replaces the file by a rename on every write, so the inode is new each time; a promote drops
+/// its row and keeps the pass's mtime (`candidates_drop`, `touch -r`), which the mtime alone
+/// would miss.
+pub fn snapshot_key(path: &std::path::Path) -> Option<(std::time::SystemTime, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.ino()))
+}
+
 /// `HH:MM`, with the day in front once it is not today's.
 fn as_of(t: chrono::DateTime<chrono::Local>, now: chrono::DateTime<chrono::Local>) -> String {
     let f = if t.date_naive() == now.date_naive() {
@@ -2395,6 +2405,30 @@ mod tests {
         r##"{"profile":"personal","project":"trader","stage":"alpha","lane":"human","key":"backtest report","text":"- [ ] backtest report","why":"#high, alpha, 9d old","auto":false,"verdict":"unjudged","held":true,"area":"unity"}"##,
         "\n",
     );
+
+    #[test]
+    fn a_promote_that_keeps_the_mtime_is_a_new_snapshot() {
+        let dir = std::env::temp_dir().join(format!("hc-cands-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("candidates.jsonl");
+        std::fs::write(&f, "a\n").unwrap();
+        let before = snapshot_key(&f).unwrap();
+        let t = dir.join("candidates.jsonl.1");
+        std::fs::write(&t, "").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&t)
+            .unwrap()
+            .set_modified(before.0)
+            .unwrap();
+        std::fs::rename(&t, &f).unwrap();
+        let after = snapshot_key(&f).unwrap();
+        assert_eq!(after.0, before.0, "touch -r kept the pass's mtime");
+        assert_ne!(after, before, "the rename is still a new key");
+        assert_eq!(snapshot_key(&dir.join("none")), None);
+        std::fs::remove_file(&f).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+    }
 
     #[test]
     fn candidates_type_the_snapshot_lines_in_rank_order() {

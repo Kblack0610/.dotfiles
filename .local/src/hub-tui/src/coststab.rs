@@ -660,10 +660,7 @@ fn allowance(v: &pace_conf::View, b: &Burn, p: Palette, w: usize) -> Vec<Line<'s
         ]),
         w,
     ));
-    let wrote = a.as_of.map_or(
-        format!("{} from claude-acct", hub_core::reading::NO_DATA),
-        |t| clock(t, b.at),
-    );
+    let wrote = a.as_of.map_or(b.no_data.clone(), |t| clock(t, b.at));
     let lag = if a.lagging {
         format!("claude-acct's figures are for the allowance before this one (wrote them {wrote}); they catch up on its next run")
     } else if a.as_of.is_some() {
@@ -770,10 +767,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     let dim = |s: &str| Span::styled(s.to_string(), p.dim());
     if b.accounts.is_empty() {
         return vec![clip_line(
-            Line::from(vec![
-                dim("BURN  "),
-                Span::raw(format!("{} from claude-acct", hub_core::reading::NO_DATA)),
-            ]),
+            Line::from(vec![dim("BURN  "), Span::raw(b.no_data.clone())]),
             w,
         )];
     }
@@ -813,12 +807,10 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
     ]);
     // A source with no figures has a line of its own, so its words do not widen the columns.
     let note = |a: &&Account| {
-        let (text, style) = match a.state {
-            "unreadable" => ("usage unreadable", p.bad()),
-            "stale" => (burn::STALE_NOTE, p.bad()),
-            "idle" => (burn::IDLE_NOTE, p.dim()),
-            _ => return None,
-        };
+        if a.note.is_empty() {
+            return None;
+        }
+        let (text, style) = (a.note, p.hue(a.note_level));
         Some(clip_line(
             Line::from(vec![
                 Span::styled(a.name.clone(), p.head()),
@@ -860,11 +852,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
                 room(a),
                 cell(
                     paced(rate(Some(a.burn))),
-                    if !a.unpaced && a.is_over() {
-                        p.warn()
-                    } else {
-                        Style::new()
-                    },
+                    if a.is_over { p.warn() } else { Style::new() },
                 ),
                 paced(rate(a.sustain)).into(),
                 paced(a.on_pace(a.burn_at, b.at, &time)).into(),
@@ -2683,7 +2671,15 @@ mod tests {
 
     #[test]
     fn no_claude_acct_data_says_so_and_still_shows_the_spend() {
-        let s = screen(&on("limits"), 80);
+        let mut c = costs();
+        c.burn = burn::build(&[], Default::default(), 1_000_000);
+        let s = on("limits")
+            .lines(&c, Palette::default(), 1_000_000, 80)
+            .0
+            .iter()
+            .map(crate::fit::plain)
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(s.contains("\nBURN  no data from claude-acct"), "{s}");
         assert!(screen(&on("spend"), 80).contains("window:"));
     }

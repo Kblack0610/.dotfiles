@@ -2068,7 +2068,7 @@ mod tests {
     /// The caches read on their first open, and why that is fine. Times are each tab's first open
     /// after a start, `agent-web-shot --time --every-tab`, load avg 117, 2026-11-18. Over about 1 s
     /// cold belongs in `warm`. Revisit when a tab's first open passes 1.5 s.
-    const ON_OPEN: [(&str, &str); 11] = [
+    const ON_OPEN: [(&str, &str); 13] = [
         (
             "reports",
             "Reports, a `notes report list` of local files; the nav badge reads it on page load",
@@ -2084,6 +2084,14 @@ mod tests {
         (
             "queue-candidates",
             "Queue's Candidates fold, read when it opens",
+        ),
+        (
+            "releases-checks",
+            "Releases' CHECKS cell, two VictoriaMetrics calls, kept 30 s; the page re-reads every minute",
+        ),
+        (
+            "project-checks",
+            "a project page's checks line, one app's groups; the same two calls, kept 30 s",
         ),
         ("session-capacity", "Sessions' header, read with the table"),
         ("session-page", "one per session, keyed by the one opened"),

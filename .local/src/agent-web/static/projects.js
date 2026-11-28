@@ -262,11 +262,10 @@ function pSysTable(systems) {
   return `<div class="panel scroll"><table class="tbl">${P_SYS_HEAD}${systems.map(row).join("")}</table></div>`;
 }
 
-// Stage: the next stage's requirements not met, failing first, then a human's, then the rest. The
+// Stage: the next stage's requirements not met, in hub-core's order (failing first). The
 // head counts the met ones and a failing one hues it; the header's next stage line names the stage.
-const P_RESULT = { FAIL: 0, HUMAN: 1 };
 function pStage(pg) {
-  const rows = [...pg.next_rows].sort((a, b) => (P_RESULT[a.result] ?? 2) - (P_RESULT[b.result] ?? 2));
+  const rows = pg.next_rows;
   const g = pg.gate;
   return secHead("p-stage", "Next stage", g ? `${g.met} of ${g.total}` : null, g && g.fail ? "warn" : null) + (rows.length
     ? `<div class="card">${rows.map((r) => `<div${r.result === "FAIL" ? ` class="qlate"` : ""}><b>${esc(r.result)}</b> ${esc(r.requirement)} <span class="muted">(${esc(r.stage)})</span></div>`).join("")}</div>`

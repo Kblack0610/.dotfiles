@@ -7,7 +7,6 @@ use hub_core::layout::{self, Inner, Tab};
 use hub_core::stack::{Agent, Flow, Hook, Rule, Skill, Stack};
 use hub_core::table::{Row, Val};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
@@ -412,11 +411,7 @@ fn text(s: &str) -> Cell {
 }
 
 fn flow_row(r: &Flow, p: Palette) -> Vec<Cell> {
-    let state = match r.state.as_str() {
-        hub_core::stack::OK => Style::default(),
-        hub_core::stack::BROKEN => p.bad(),
-        _ => p.warn(),
-    };
+    let state = p.hue(r.level);
     let short = |v: Val| match v {
         Val::Text(t) => t,
         _ => "-".into(),
@@ -491,11 +486,7 @@ fn hook_row(r: &Hook, p: Palette) -> Vec<Cell> {
 }
 
 fn rule_row(r: &Rule, p: Palette) -> Vec<Cell> {
-    let state = match r.state.as_str() {
-        hub_core::stack::OK => Style::default(),
-        hub_core::stack::DEAD => p.bad(),
-        _ => p.warn(),
-    };
+    let state = p.hue(r.level);
     vec![
         r.rule.clone().into(),
         cell(r.kind.clone(), p.dim()),

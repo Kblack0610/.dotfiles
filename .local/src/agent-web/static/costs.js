@@ -258,9 +258,9 @@ function burnPace(b) {
   return `at this burn: ${burn}${idle}`;
 }
 
-// A back-on-pace cell: on pace, the time, or after the reset (Account::on_pace); nothing for a
+// A back-on-pace cell: Account::back's word (`on pace`, `after reset`) or its time; nothing for a
 // dollar budget, which has no pace line.
-const burnCell = (a, t, at) => (a.unpaced ? "-" : !(a.used > a.gone) || (t != null && t <= at) ? "on pace" : t == null ? "after reset" : when(t));
+const burnCell = (b) => (b.word ?? (b.at == null ? "-" : when(b.at)));
 
 // The Burn table's columns, the TUI's header in its order; true is a number column, and the third
 // entry is the column's place in a phone's row.
@@ -268,13 +268,9 @@ const BURN_COLS = [["source", false, ' data-role="lead"'], ["kind"], ["live", tr
   ["at burn"], ["if idle"], ["runs out"], ["resets"], ["5h", true], ["5h resets"], ["$24h", true]];
 // A key is a dollar budget: the columns that always say nothing for one are left out.
 
-function burnRow(a, at, note, cols) {
-  // a row with no figures: its name, then one cell across the rest
-  const span = (cls, text) => `<tr><td>${esc(a.name)}</td><td colspan="${cols.length - 1}" class="${cls}">${esc(text)}</td></tr>`;
-  if (a.state === "unreadable") return span("bad", "usage unreadable");
-  if (a.state === "stale") return span("bad", note);
-  // burn::IDLE_NOTE
-  if (a.state === "idle") return span("muted", "no usage read yet");
+function burnRow(a, cols) {
+  // a row with no figures: its name, then its note across the rest
+  if (a.note) return `<tr><td>${esc(a.name)}</td><td colspan="${cols.length - 1}" class="${levelClass(a.note_level)}">${esc(a.note)}</td></tr>`;
   const pc = (v) => (v == null ? "-" : Math.floor(v) + "%");
   const rate = (v) => (v == null || a.unpaced ? "-" : v.toFixed(2));
   const cells = {
@@ -283,8 +279,8 @@ function burnRow(a, at, note, cols) {
     bar: `<td>${meter(a.used / 100, null, a.unpaced || a.gone == null ? null : a.gone / 100)}</td>`,
     used: `<td class="n">${esc(a.used_text)}</td>`, gone: `<td class="n">${pc(a.gone)}</td>`, reserve: `<td class="n">${pc(a.reserve)}</td>`,
     room: `<td class="${a.room ? (a.room.ok ? "ok" : "bad") : "muted"}">${a.room ? esc(a.room.text) : "-"}</td>`,
-    "burn/h": `<td class="n${!a.unpaced && a.sustain != null && a.burn > a.sustain ? " warn" : ""}">${rate(a.burn)}</td>`, "keeps/h": `<td class="n">${rate(a.sustain)}</td>`,
-    "at burn": `<td>${burnCell(a, a.burn_at, at)}</td>`, "if idle": `<td>${burnCell(a, a.idle_at, at)}</td>`, "runs out": `<td>${when(a.run_out)}</td>`, resets: `<td>${when(a.resets)}</td>`,
+    "burn/h": `<td class="n${a.is_over ? " warn" : ""}">${rate(a.burn)}</td>`, "keeps/h": `<td class="n">${rate(a.sustain)}</td>`,
+    "at burn": `<td>${burnCell(a.burn_back)}</td>`, "if idle": `<td>${burnCell(a.idle_back)}</td>`, "runs out": `<td>${when(a.run_out)}</td>`, resets: `<td>${when(a.resets)}</td>`,
     "5h": `<td class="n">${pc(a.five_hour)}</td>`, "5h resets": `<td>${when(a.five_hour_resets)}</td>`, "$24h": `<td class="n">${usd(a.cost_24h)}</td>`,
   };
   return `<tr>${cols.map(([t]) => cells[t]).join("")}</tr>`;
@@ -302,7 +298,7 @@ function burnTotal(f, cols) {
 }
 
 const burnTable = (b, cols, rows) => `<table class="tbl"><tr>${cols.map(([t, n, phone]) => `<th${n ? ' class="n"' : ""}${phone || ""}>${t}</th>`).join("")}</tr>` +
-  rows.map((a) => burnRow(a, b.at, b.stale, cols)).join("") + burnTotal(b.total, cols) + `</table>`;
+  rows.map((a) => burnRow(a, cols)).join("") + burnTotal(b.total, cols) + `</table>`;
 
 // The keys inside a pool are Consumers rows, so Burn only points there.
 const burnKeys = (b) => (b.keys ? `<div class="panel"><span class="muted">KEYS</span> <span class="${b.keys.level !== "ok" ? "warn" : "muted"}">${esc(b.keys.head)}</span> <a href="#costs/consumers">rows in Consumers</a></div>` : "");
@@ -332,7 +328,8 @@ function costsConsumers(d) {
 
 function costsBurn(d) {
   const b = d.burn;
-  if (!b || !b.accounts.length) return secHead("burn", "Burn") + `<div class="panel muted">${NO_DATA} from claude-acct</div>`;
+  if (!b) return "";
+  if (!b.accounts.length) return secHead("burn", "Burn") + `<div class="panel muted">${esc(b.no_data)}</div>`;
   const cls = b.level === "bad" ? "bad" : b.level === "warn" ? "warn" : "ok";
   const held = b.drip.held ? ` <a class="warn" href="#sessions" title="${esc(b.drip.held)}">dispatch held -> Sessions</a>` : "";
   const key = isPhone() ? "burn-phone" : "burn", open = isPhone() ? !!cost.open[key] : secOpen(cost.open, key);
@@ -379,7 +376,7 @@ function costsAllowance(d) {
   const a = p.allowance;
   if (!a) return secHead("allowance", "Allowance") + paceErr(p.error || "no pace config");
   const lag = a.lagging ? `<span class="warn">claude-acct's figures are for the allowance before this one (wrote them ${when(a.as_of)}); they catch up on its next run</span>`
-    : a.as_of ? esc(`claude-acct wrote the figures ${when(a.as_of)}; a change shows there on its next run`) : esc(`${NO_DATA} from claude-acct`);
+    : a.as_of ? esc(`claude-acct wrote the figures ${when(a.as_of)}; a change shows there on its next run`) : esc(d.burn?.no_data || "");
   const over = a.level;
   const lines = `<div class="panel"><div><span class="muted">ALLOWANCE</span> ${esc(a.in_force)} (${esc(a.source)}), default ${esc(a.default)}</div>` +
     `<div><span class="muted">LETS THROUGH</span> <span class="burn ${over}">${paceRate(a.burn)}/h now</span> against ${paceRate(a.sustain)}/h sustainable and ${paceRate(a.allowed)}/h allowed` +
@@ -461,7 +458,6 @@ function tokensSection(d) {
 
 // A duration in ms as the tool tables read it: 99ms, 17.5s.
 const lfMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
-const lfClasses = (cs) => cs.length ? cs.map((c) => `${esc(c.name)} ${c.n.toLocaleString()}`).join(", ") : "none";
 
 // What Langfuse sees: the figures only it has (tool latency, tool errors by class, gateway errors
 // and cost), the newest snapshot's `.langfuse` through hub-core's `tokens`. It starts open (rule 4),
@@ -485,8 +481,8 @@ function langfuseSection(d) {
   const trunc = f.truncated ? `<span class="warn"> (classes partial: more errors than were paged)</span>` : "";
   return lfFold(t.stale, (t.stale ? `<div class="cline warn">stale: newest snapshot ${esc(t.date)}</div>` : "") +
     `<div class="panel scroll">${shares}<table class="tbl"><tr><th data-role="lead">slowest tools, by total time</th><th class="n" data-role="glance" data-named>calls</th><th class="n">p50</th><th class="n" data-role="glance" data-named>p95</th><th class="n" data-role="glance" data-named>total</th></tr>${rows}</table>` +
-    `<div class="muted">tool errors: ${f.tool_errors.toLocaleString()} of ${f.tool_executions.toLocaleString()} executions (${lfClasses(f.tool_error_classes)})${trunc}</div>` +
-    `<div class="muted">gateway: ${f.gateway_calls.toLocaleString()} calls, ${f.gateway_errors.toLocaleString()} errors (${lfClasses(f.gateway_error_classes)}), ${kfmt(f.gateway_tokens)} tokens; dearest: ${models || "none"}</div>` +
+    `<div class="muted">tool errors: ${f.tool_errors.toLocaleString()} of ${f.tool_executions.toLocaleString()} executions (${esc(f.tool_error_line)})${trunc}</div>` +
+    `<div class="muted">gateway: ${f.gateway_calls.toLocaleString()} calls, ${f.gateway_errors.toLocaleString()} errors (${esc(f.gateway_error_line)}), ${kfmt(f.gateway_tokens)} tokens; dearest: ${models || "none"}</div>` +
     `<div class="muted more">snapshot ${esc(t.date.slice(5))}, counted by agent-usage langfuse, nightly; the gateway is not Claude sessions, whose cost is <a href="#costs/sessions">the spend table</a> on Spend</div></div>`);
 }
 

@@ -61,7 +61,7 @@ const listTable = (kept, total = kept.length, o = {}) => ({
 });
 const list = (cards = [card()], o = {}) => ({ cards, unlinked: [], errors: [], table: listTable(cards), ...o });
 const rows = [
-  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", label: "NEXT UP (1)", when: "", text: "fix(ui): fix the menu, so back returns", title: "fix the menu", summary: "so back returns", type: "fix", area: "ui", points: 3, epic: "ui to standard", raw: "- [ ] fix(ui): fix the menu, so back returns", sheet: "a.md", tags: [] },
+  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", actions: ["start", "done", "promote", "demote", "move", "edit", "prio", "tag", "drop"], label: "NEXT UP (1)", when: "", text: "fix(ui): fix the menu, so back returns", title: "fix the menu", summary: "so back returns", type: "fix", area: "ui", points: 3, epic: "ui to standard", raw: "- [ ] fix(ui): fix the menu, so back returns", sheet: "a.md", tags: [] },
   { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", section: "backlog", label: "BACKLOG (1)", when: "queued  ~11-12", text: "water the beds", title: "water the beds", summary: "", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
 ];
 // The Summary hub_core::table sends beside the rows, for these rows.
@@ -188,7 +188,8 @@ const page = {
   ],
   systems_says: "2 systems, 1 open epics (2 rows with no epic)", next_says: "beta  4 of 12 met, 1 failing, 1 human, 6 not checkable yet",
   gate: { stage: "beta", met: 4, total: 12, fail: 1, human: 1 },
-  next_rows: [{ stage: "beta", result: "TODO", requirement: "a playtest" }, { stage: "beta", result: "HUMAN", requirement: "sign off" }, { stage: "beta", result: "FAIL", requirement: "a soak test" }],
+  // hub-core sorts them (`Requirement::rank`): failing first, then a human's.
+  next_rows: [{ stage: "beta", result: "FAIL", requirement: "a soak test" }, { stage: "beta", result: "HUMAN", requirement: "sign off" }, { stage: "beta", result: "TODO", requirement: "a playtest" }],
   shipped_says: "none yet", shipped: [], errors: [],
   release_tab: { versions: [], apps: [], legacy_versions: [], legacy_apps: [], line_text: "no app releases under this project, so no line", legacy_says: "0 versions, 0 apps", elsewhere: [], errors: [] },
   timeline: { says: "7d: 1 commit (1 red on CI), 1 PR", older: 3, notes: ["PRs: the origin is not GitHub"], lines: [
@@ -795,6 +796,7 @@ const depts = () => ({
   },
   // Product::open_needs: each department's needs that are not ok.
   dept_needs: { marketing: 1, legal: 1 },
+  dept_total: 2,
   // Product::need_groups over the depts above: red first.
   need_groups: [
     { kind: "dept:legal", says: "Legal: 1", items: ["privacy policy: no privacyUrl in game.json"] },
