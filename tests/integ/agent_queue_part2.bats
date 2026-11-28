@@ -2922,6 +2922,10 @@ already"
   legacy second "after: base" --project game "Phase 2 of the plan $SANDBOX/p.md: b"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
   assert_output "after base none"
+  # The add under way has no file yet: the same rule holds it.
+  run "$AQ" add --project game --slug third --running --after base "Phase 3 of the plan $SANDBOX/p.md: c"
+  assert_failure
+  assert_output --partial "waits on after base"
   # NEGATIVE CONTROL: the same PR number in the project's own repo stacks.
   "$AQ" set base open_pr=Org/game#7
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"[\\(.hold // \"\")] \\(.stacked_on)\"'"

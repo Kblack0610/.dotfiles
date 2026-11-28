@@ -844,7 +844,9 @@ stack_pr() {
 # stack_same_checkout <PR ref> <project> -- rc 1 when the PR lives in a repo whose checkout is not the
 # project's own: the dependent's worktree is cut in its project's checkout, which holds no commit of
 # that PR, so dispatch's start failed on it every pass and the kick runner read red (ar-5124: hc-956
-# after hc-955's PR in .dotfiles). Unresolved on either side counts as the same: the old behaviour.
+# after hc-955's PR in .dotfiles). The project is the item's, or the add under way's (AQ_ADD_PROJECT); a
+# board-row gate (cmd_gate after/<row>) knows none, and the item it promotes is held by this check. Unresolved
+# on either side counts as the same: the old behaviour.
 stack_same_checkout() {
   local repo proj pdir odir
   [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] && [ -n "${2-}" ] || return 0
@@ -892,7 +894,7 @@ hold_for() {
       ok) ;;
       "") stack_pr "$s"
         [ -z "$STK" ] || stack_dependent "$dep" || STK=""
-        [ -z "$STK" ] || [ -z "$dep" ] || stack_same_checkout "$STK" "$(fm_get "$dep" project)" || STK=""
+        [ -z "$STK" ] || stack_same_checkout "$STK" "$([ -z "$dep" ] && echo "${AQ_ADD_PROJECT-}" || fm_get "$dep" project)" || STK=""
         if [ -n "$STK" ]; then HOLD_STACK="$HOLD_STACK${HOLD_STACK:+ }$s=$STK"; else live="$live${live:+ }$s"; fi ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
@@ -2514,7 +2516,7 @@ cmd_add() {
   # (QUEUE.md "Admission"). A --running record is already started, so it files no gate: an --after it
   # names must already have closed ok, or the add is refused (ar-3260). Dispatch's pull of a board row
   # (promote) judged that row's gates clear the moment before, so none is read twice.
-  local GATES='' AFTER_ITEMS='' AQ_ADD_STACKS="$(add_stacks "$text" "$tags")" AQ_ADD_REPEAT="$repeat"
+  local GATES='' AFTER_ITEMS='' AQ_ADD_STACKS="$(add_stacks "$text" "$tags")" AQ_ADD_REPEAT="$repeat" AQ_ADD_PROJECT="$project"
   if [ -n "$running" ] && [ -n "$after" ]; then
     check_after "$after" "$slug"
     start_gate "$slug" "$after" "" "start --running" "add it without --running, and it starts once that clears"
