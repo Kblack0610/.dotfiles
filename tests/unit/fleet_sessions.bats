@@ -3835,6 +3835,46 @@ SH
   assert_output --partial 'not on the default branch, no PR'
 }
 
+@test "branch_runs and main_health read a Forgejo-canonical checkout's run ledger under its Forgejo repo, not origin (ar-2727)" {
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t) green red
+  git init -q --bare "$SANDBOX/gh-mirror.git"; git init -q --bare "$SANDBOX/fj.git"
+  git clone -q "$SANDBOX/gh-mirror.git" "$SANDBOX/wt" 2>/dev/null
+  "${g[@]}" remote add forgejo "$SANDBOX/fj.git"
+  mkdir -p "$SANDBOX/wt/.forgejo/workflows"; touch "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
+  "${g[@]}" add .forgejo; "${g[@]}" commit -q -m init; green="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" commit -q --allow-empty -m 'feat: x (#7)'; red="$("${g[@]}" rev-parse HEAD)"
+  "${g[@]}" push -q forgejo HEAD:master 2>/dev/null; "${g[@]}" push -q origin HEAD:master 2>/dev/null
+  "${g[@]}" fetch -q forgejo; "${g[@]}" fetch -q origin
+  "${g[@]}" remote set-head forgejo master; "${g[@]}" remote set-head origin master
+  "${g[@]}" remote set-url forgejo "https://fj.example/o/r.git"
+  gh_script 'exit 1'
+  export SO_FORGEJO_HOSTS="fj.example"
+  CACHE="$SANDBOX/pass"; MAIN_CACHE="$SANDBOX/main"; mkdir -p "$CACHE"
+  # the ledger syncs the Forgejo repo only: the GitHub mirror is not in it (exit 3)
+  ledger master "[$(r Tests success "$green" 1),$(r Tests failure "$red" 2)]"
+  cp "$LEDGER_DIR/master.json" "$SANDBOX/fj-runs.json"; rm "$LEDGER_DIR/master.json"
+  cat > "$SCHEDULES_SYNC" <<SS
+#!/usr/bin/env bash
+echo "\$*" >> "$LEDGER_DIR/calls"
+[ "\$1 \$2" = "runs forgejo:o/r" ] && { cat "$SANDBOX/fj-runs.json"; exit 0; }
+exit 3
+SS
+  run main_health "$SANDBOX/wt"
+  assert_output "RED"$'\t'"Tests @${red:0:8} (#7)"$'\t'"${red:0:8}"
+  grep -qx 'runs forgejo:o/r' "$LEDGER_DIR/calls"
+  # gate_ci and activity_line read the same rows through branch_runs
+  run branch_runs "$SANDBOX/wt" master
+  assert_success
+  [ "$(jq 'length' <<<"$output")" = 2 ]
+  # NEGATIVE CONTROL: without the mirror marker the checkout lands on origin, whose ledger has no runs
+  rm "$SANDBOX/wt/.forgejo/workflows/mirror-to-github.yaml"
+  rm -rf "$CACHE" "$MAIN_CACHE"; mkdir -p "$CACHE"; : > "$LEDGER_DIR/calls"
+  run main_health "$SANDBOX/wt"
+  assert_output OK
+  grep -q '^runs ' "$LEDGER_DIR/calls"
+  [ -z "$(grep 'forgejo:' "$LEDGER_DIR/calls")" ]
+}
+
 @test "end to end: behind and conflicts measure the branch against the remote tip" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
