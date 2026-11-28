@@ -509,12 +509,23 @@ const pipelines = {
 // Tests: hub_core::junit's suites of the picked run of one repo's test workflow, and the quarantine.
 const testRun = (id, o = {}) => ({ repo: "studio/game-core-playground", id, attempt: 1, branch: "main", sha: "abc1234", title: TEXT[4], state: "red", level: "bad", started: ago(90), prs: [], url: "https://github.com/studio/game-core-playground/actions/runs/1", ...o });
 const suite = (i) => ({ tier: pick(["EditMode", "PlayMode"], i), suite: `Game.Core.${pick(["Lobby", "HostMigration", "Inventory", "Yard"], i)}Tests`, tests: 40 + i, passed: 38 + i - (i % 2), failed: i % 2, quarantined: 0, skipped: 1, time: 60 + i * 12.5, state: i % 2 ? "failed" : "passed", level: i % 2 ? "bad" : "ok" });
+const testLane = (workflow, runs, rows, o = {}) => ({
+  workflow, run: runs[0], pinned: false, runs, says: "166 tests in 4 suites: 2 failed, 4 skipped, 160 passed",
+  totals: { suites: 4, tests: 166, passed: 160, failed: 2, skipped: 4, failed_suites: 2, time: 315 },
+  rows, fold: null, note: null, errors: [],
+  table: table(rows.length, ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"], ["all", "failed", "quarantined", "skipped", "passed"], {}), ...o,
+});
+const histOf = (i) => (i % 2 ? ["passed", "failed", "passed", "failed", "failed"] : ["passed", "passed", "passed", "passed", "passed"]);
 const tests = {
   at: NOW, stale_after: 1800, repos: ["studio/game-core-playground", "Kblack0610/.dotfiles"], repo: "studio/game-core-playground",
-  runs: [testRun(43001), testRun(43000, { state: "green", level: "ok", branch: "feat/yard" })], run: testRun(43001),
-  summary: "main abc1234: 166 tests in 4 suites: 2 failed, 4 skipped, 160 passed", totals: { suites: 4, tests: 166, passed: 160, failed: 2, skipped: 4, failed_suites: 2, time: 315 },
-  rows: rows(4, suite), more: 0, fold: null, note: null, errors: [],
-  table: table(4, ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"], ["all", "failed", "quarantined", "skipped", "passed"], { tier: ["EditMode", "PlayMode"] }),
+  totals: { suites: 5, tests: 200, passed: 193, failed: 2, skipped: 5, failed_suites: 2, time: 380 },
+  lanes: [
+    testLane("test.yml", [testRun(43001, { event: "schedule" }), testRun(43000, { state: "green", level: "ok", branch: "feat/yard" })], rows(4, (i) => ({ ...suite(i), history: histOf(i), flake: i % 2 ? 40 : 0 }))),
+    testLane("playmode.yml", [testRun(43002, { state: "green", level: "ok", event: "schedule" })], rows(1, suite), { totals: { suites: 1, tests: 34, passed: 33, failed: 0, skipped: 1, failed_suites: 0, time: 65 }, says: "34 tests in 1 suite: 0 failed, 1 skipped, 33 passed" }),
+    { workflow: "soak.yml", run: null, pinned: false, runs: [], says: "", totals: { suites: 0, tests: 0, passed: 0, failed: 0, skipped: 0, failed_suites: 0, time: 0 }, rows: [], fold: null, note: "soak.yml: no finished run in the ledger (a cancelled or skipped run is not listed)", errors: [], table: table(0, ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"], ["all"], {}) },
+  ],
+  errors: [],
+  table: table(5, ["state", "tier", "suite", "tests", "failed", "quarantined", "skipped", "time"], ["all", "failed", "quarantined", "skipped", "passed"], { tier: ["EditMode", "PlayMode"] }),
 };
 
 // /api/home/cards: Needs you, then hub_core::cards::grid (Main red is the widgets' only; cards.rs PAGE_SKIPS), one card per tab, a link as its href.
