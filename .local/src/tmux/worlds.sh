@@ -16,7 +16,7 @@
 
 # is_linked_checkout, for world_is_linked.
 # shellcheck source=../../lib/origin-repo.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../lib/origin-repo.sh" || return 1
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../lib/origin-repo.sh" || { return 1 2>/dev/null || exit 1; }   # sourced: return; run as tmux-world: exit
 
 MANIFEST_DIR="${TMUX_SERVERS_DIR:-$HOME/.config/tmux-servers}"
 

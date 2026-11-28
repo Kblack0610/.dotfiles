@@ -7657,8 +7657,8 @@ item_repo() {
   local dir url
   dir=$(repo_dir "$1"); [ -n "$dir" ] || return 0
   url=$(git -C "$dir" remote get-url origin 2>/dev/null) || url=$dir
-  url=$(url_repo "$url"); url=${url##*/}
-  printf '%s' "${url##*:}"
+  url=$(url_repo "$url"); url=${url##*/}   # owner/repo -> repo
+  printf '%s' "${url##*:}"                 # an scp-form origin with no owner: host:repo
 }
 
 # pool_pass <item json> <held_by output> -- an urgent item held by starved pools alone goes past them,

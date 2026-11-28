@@ -114,7 +114,9 @@ forge_repo_name() {
     url=$(git -C "$1" remote get-url --push "$rn" 2>/dev/null) || continue
     case "$(url_host "$url")" in github.com|ssh.github.com|github.com-*) url_repo "$url" | sed 's#.*/##'; return 0 ;; esac
   done
-  basename "$(main_checkout "$1")"
+  local main
+  main=$(main_checkout "$1") || return 1
+  basename "$main"
 }
 
 # forge_failover_file <checkout> -> the path of the repo's failover state file. Its one writer is
