@@ -2083,26 +2083,26 @@ stacked_pair() {
   assert_output 0
 }
 
-# ar-2940: hc-956 (home-config) stacked on a .dotfiles PR was cut in home-config, where the head is no commit.
-@test "start --item of a phase stacked on another repo's open PR cuts its worktree in that PR's repo (ar-2940)" {
+# ar-2940: validate-ask-du3ev0 (agent-runtime) stacked on home-config#1666 was cut in its project's repo, where the
+# head is no commit, and failed every pass; since ar-5124 a phase on such a PR holds instead.
+@test "start --item of a validate item stacked on another repo's open PR cuts its worktree in that PR's repo (ar-2940)" {
   stacked_pair
   project tools alpha "$SANDBOX/repos/tools"
   # Real checkouts: stack_base tells repos apart by their git common dir, and moves nothing it cannot read.
   mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/tools"
   git init -q "$SANDBOX/repos/game"; git init -q "$SANDBOX/repos/tools"
   agent-queue set base open_pr=Org/tools#7
+  legacy validate-base "after: base\ntags: validate" --project game "check(validate): base, Org/tools#7"
   stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "tools-agent-1"'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item second
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item validate-base
   assert_success
   assert_called "new --base 0123456789abcdef0123456789abcdef01234567 --server lab --detach -c $SANDBOX/repos/tools"
   assert_output --partial "in $SANDBOX/repos/tools, that PR's repo"
-  # NEGATIVE CONTROL: stacked on a PR of its own repo, a phase is cut in its project's checkout, not in tools.
-  agent-queue set base open_pr=Org/game#7
-  legacy third "after: base" --project game "Phase 3 of the plan $SANDBOX/p.md: third phase"
+  # NEGATIVE CONTROL: a phase on the same PR is not stacked (ar-5124): it waits, and no worktree is cut.
   : > "$NOTES_FIXTURE/calls.log"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item third
-  assert_success
-  assert_called "new --base 0123456789abcdef0123456789abcdef01234567 --server lab --detach -c $SANDBOX/repos/game"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item second
+  assert_failure
+  assert_output --partial "waits on after base"
   run grep -c -e "repos/tools" "$NOTES_FIXTURE/calls.log"
   assert_output 0
 }

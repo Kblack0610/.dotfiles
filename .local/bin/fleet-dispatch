@@ -4323,12 +4323,11 @@ worker_store_pull() {
 # stack_base <item json> <project> <slug> [host] -- sets the caller's (cmd_start's) `base` to the head commit of the
 # open PR the item is stacked on (its `after:` item is live with an open PR, agent-queue stack_pr), the base its
 # worktree is cut from, so the phase builds on its dependency's code while that PR waits for its checks; and its
-# `cwd` to that PR's checkout when it is another repo: the head is a commit of the PR's repo, and a validate item
-# lands the PR from its worktree. Leaves both for an item that is not stacked. rc 1, and
+# `cwd` to that PR's checkout when it is another repo, normally only a validate item's (agent-queue holds a phase on
+# such a PR, ar-5124): the head is a commit of the PR's repo, and a validate item lands the PR from its worktree. Leaves both for an item that is not stacked. rc 1, and
 # the item stays queued, when the head cannot be read or it is stacked on several PRs (one worktree has one
-# base). agent-land merges it only after the dependency closed ok. Why: hc-956 (home-config) stacked on
-# .dotfiles#3835 and validate-ask-du3ev0 (agent-runtime) on home-config#1666 were cut in their project's repo,
-# where wt found no such commit, and failed every pass (2026-11-27, ar-2940).
+# base). agent-land merges it only after the dependency closed ok. Why: validate-ask-du3ev0 (agent-runtime), stacked on
+# home-config#1666, was cut in its project's repo, where wt found no such commit, and failed every pass (2026-11-27, ar-2940).
 stack_base() {
   local on sha ref dir pk ck host=${4:-}
   on=$(jq -r '.stacked_on // empty' <<<"$1")
