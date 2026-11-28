@@ -212,15 +212,8 @@ EOF
   # The Forgejo hosts agent-land may send the token to: none, so a GitHub origin stays on gh.
   export SO_FORGEJO_HOSTS=''
 
-  # schedules-sync: logs its call, exits ss.rc (0 by default) with ss.err on stderr
-  cat >"$SANDBOX/bin/schedules-sync" <<'EOF'
-#!/usr/bin/env bash
-printf 'schedules-sync %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
-cat "$NOTES_FIXTURE/ss.err" >&2 2>/dev/null
-exit "$(cat "$NOTES_FIXTURE/ss.rc" 2>/dev/null || echo 0)"
-EOF
-  chmod +x "$SANDBOX/bin/schedules-sync"
-  export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
+  # schedules-sync: the shared stub; it logs its call, exits ss.rc (0 by default) with ss.err on stderr
+  ss_stub
 
   # shape-grow: logs its call, keeps its stdin (the body) in shape.body, prints shape.out and exits
   # shape.rc (0, nothing grew, by default)
