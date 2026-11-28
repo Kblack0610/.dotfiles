@@ -189,6 +189,8 @@ load 'fleet_dispatch/fleet_dispatch_run_trainee'
   # Words with one slash and no dot, or no letter, are no path (ar-5747), and a :line suffix names its file.
   pub 'scripts/setup and/or 0/5 of 11-20/21 per /86400, see /wind-down and ar-60/#3320'; assert_success
   pub 'scripts/setup:12 and scripts/setup:3-9. and scripts/setup:12:5'; assert_success
+  # A #tag in brackets or backticks is no path either: ar-6346's brief said "at: gate (#at/2026-11-22/1800 on ...)".
+  pub 'scripts/setup once its gate (#at/2026-11-22/1800 on ar-3264) and `#after/ar-1` clear'; assert_success
   pub 'crate/src/main.rs:40:5'; assert_failure
   assert_output 'it names crate/src/main.rs, which is no markdown file, nor a shell or bats file outside a cargo or npm tree'
   pub 'dispatch/log.md'; assert_failure; assert_output "it names dispatch/log.md, which $r does not track"
