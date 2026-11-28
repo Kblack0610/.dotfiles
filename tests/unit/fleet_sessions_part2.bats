@@ -3095,7 +3095,8 @@ GH
   until [ -n "$tl" ] && grep -q tail "/proc/$tl/cmdline" 2>/dev/null; do
     kill -0 "$root" || fail 'the stand-in exited before tail started'
     [ $((++spins)) -lt 20000 ] || fail 'tail never started'
-    tl="$(pgrep -P "$(pgrep -P "$root" -n bash || echo 0)" -x tail || :)"   # none yet is exit 1, not a failure
+    # its own session only: before the inner bash forked, `pgrep -P 0` found a CI job pod's PID 1, `tail -f /dev/null`
+    tl="$(pgrep -s "$root" -x tail || :)"   # none yet is exit 1, not a failure
   done
   run self_wait "$root"
   assert_output 'wait'

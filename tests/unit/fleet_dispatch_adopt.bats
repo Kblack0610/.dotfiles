@@ -109,3 +109,54 @@ prs_stub() {
   assert_output --partial 'usage: fleet-dispatch adopt-prs [--dry-run]'
   assert [ ! -e "$FLEET_DISPATCH_DIR/adopt-prs" ]
 }
+
+@test "adopt-prs: a full queue stops the adoptions, so no PR is filed as a plain board row the next probe adopts again" {
+  project game beta "$SANDBOX/repos/game"
+  : > "$SANDBOX/prs.jsonl"
+  stranded o/game#10 SUCCESS MERGEABLE
+  stranded o/game#11 SUCCESS MERGEABLE
+  stranded o/game#12 FAILURE MERGEABLE
+  prs_stub
+  export AGENT_QUEUE_CAP=1
+  run cmd_adopt_prs
+  assert_success
+  assert_output 'adopted o/game#10 as pr-o-game-10 (land)'
+  grep -q 'adopt-prs: the queue is at its cap, so o/game#11 and the PRs after it wait for the next probe' "$FLEET_DISPATCH_DIR/log.md"
+  for s in pr-o-game-11 pr-o-game-12; do [ -z "$(agent-queue show "$s" --json 2>/dev/null)" ] || fail "$s was queued past the cap"; done
+  run grep -rl 'land or close stranded PR o/game#11' "$NOTES_FIXTURE"
+  assert_failure
+  assert_equal "$(grep -c 'gh pr view' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+@test "adopt-prs: an add the cap holds after the room was read stops the pass; a board that refuses one PR stops only that PR" {
+  project game beta "$SANDBOX/repos/game"
+  : > "$SANDBOX/prs.jsonl"
+  stranded o/game#13 SUCCESS MERGEABLE
+  stranded o/game#14 SUCCESS MERGEABLE
+  stranded o/game#15 SUCCESS MERGEABLE
+  prs_stub
+  # o/game#13's board refuses its row (exit 6, no cap); the queue then has room for one, read as more.
+  agent-queue() {
+    if [ "$1" = add ] && [[ " $* " == *" pr-o-game-13 "* ]]; then echo "agent-queue: game's board refused pr-o-game-13 (the reason is above): nothing was filed or kept" >&2; return 6; fi
+    command agent-queue "$@"
+  }
+  queue_headroom() { echo 1; }
+  export AGENT_QUEUE_CAP=1
+  run cmd_adopt_prs
+  assert_success
+  assert_output --partial 'could not queue pr-o-game-13'
+  assert_output --partial 'adopted o/game#14 as pr-o-game-14 (land)'
+  grep -q 'adopt-prs: the queue cap held pr-o-game-15 (o/game#15)' "$FLEET_DISPATCH_DIR/log.md"
+  for s in pr-o-game-13 pr-o-game-15; do [ -z "$(command agent-queue show "$s" --json 2>/dev/null)" ] || fail "$s was queued"; done
+}
+
+@test "adopt-prs: --dry-run stops where the queue's room ends, as the real pass does" {
+  project game beta "$SANDBOX/repos/game"
+  : > "$SANDBOX/prs.jsonl"
+  stranded o/game#16 SUCCESS MERGEABLE
+  stranded o/game#17 FAILURE MERGEABLE
+  prs_stub
+  AGENT_QUEUE_CAP=1 run cmd_adopt_prs --dry-run
+  assert_success
+  assert_output "$(printf '%s\n' 'would adopt o/game#16 as pr-o-game-16 (land)' 'would stop at o/game#17: the queue is at its cap')"
+}

@@ -6351,7 +6351,7 @@ adopt_task() {
 # both briefs read and land through gh. A PR whose item (pr-<owner>-<repo>-<N>) exists in any state has had
 # its owner: it stays on the watch for a red session, never adopted twice.
 cmd_adopt_prs() {
-  local dry='' prs ref url checks mergeable title repo project slug owner why head it out rc as=()
+  local dry='' room prs ref url checks mergeable title repo project slug owner why head it out rc as=()
   case "$*" in
   '') ;;
   --dry-run) dry=1 ;;
@@ -6359,6 +6359,7 @@ cmd_adopt_prs() {
   esac
   # Before the read, so a read that fails waits for the next probe too, never every pass.
   [ -n "$dry" ] || { mkdir -p "$DIR" && touch "$DIR/adopt-prs"; }
+  [ -z "$dry" ] || room=$(queue_headroom)
   prs=$(fleet-bench prs --json 2>/dev/null | jq -r '.prs[] | select(.class == "stranded" and .owner == null)
       | [.ref, .url // "", .checks // "", .mergeable // "", (.title // "" | gsub("[\r\n\u001f]+"; " "))] | join("\u001f")') ||
     { say "adopt-prs: fleet-bench prs could not be read, so no PR was adopted"; return 1; }
@@ -6380,13 +6381,22 @@ cmd_adopt_prs() {
     # Owner and repo in the slug, so two repos' PR #N never share one.
     slug=$(tr 'A-Z' 'a-z' <<<"pr-${repo%%/*}-${repo#*/}-${ref##*#}" | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g')
     [ -z "$(item_state "$slug")" ] || continue
-    if [ -n "$dry" ]; then echo "would adopt $ref as $slug (${owner/fix/fix-ci}$why)"; continue; fi
+    if [ -n "$dry" ]; then
+      [ "$room" -gt 0 ] || { echo "would stop at $ref: the queue is at its cap"; break; }
+      room=$((room - 1)); echo "would adopt $ref as $slug (${owner/fix/fix-ci}$why)"; continue
+    fi
+    # Room first: an add the cap holds is filed as a plain board row (add_cap_hold), which carries no pr:,
+    # so it would never own the PR and the next probe would adopt it again. An add that takes the last
+    # place between this read and adopt's own add still can; agent-queue has no add that holds without a row.
+    [ "$(queue_headroom)" -gt 0 ] || { logline "adopt-prs: the queue is at its cap, so $ref and the PRs after it wait for the next probe"; break; }
     head=$(gh pr view "${ref##*#}" -R "$repo" --json headRefOid -q .headRefOid 2>/dev/null) && [ -n "$head" ] ||
       { logline "adopt-prs: PR $ref is stranded, but gh did not read its head; the next probe tries again"; continue; }
     rc=0
     out=$(adopt_task "$ref" "$title" | AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add \
       --project "$project" --slug "$slug" --tags adopt --from auto:adopt 2>&1) || rc=$?
-    if [ "$rc" -eq "$AQ_EX_HELD" ]; then logline "adopt-prs: the queue cap held $slug ($ref); the next probe tries again"; break; fi
+    # admit's own line, since its exits are not the cap's alone: 5 is also a similar-rows shortlist, 6 any
+    # board refusal. Only a full queue stops the pass; any other refusal is this PR's.
+    if [ "$rc" -ne 0 ] && grep -q 'held by admission' <<<"$out"; then logline "adopt-prs: the queue cap held $slug ($ref); the next probe tries again"; break; fi
     [ "$rc" -eq 0 ] || { say "adopt-prs: could not queue $slug for $ref: ${out##*$'\n'}"; continue; }
     it=$(agent-queue show "$slug" --json 2>/dev/null) || it='{}'
     # A tier-3 lander runs on claude, as own_parked_pr's does: agent-land asks it for /code-review high.
