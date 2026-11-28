@@ -1916,7 +1916,7 @@ live_merges() {
   stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) cat '$SANDBOX/slots.json' ;; esac"
   BENCH_NOW=$T0 run "$SUBJECT" throughput
   assert_success
-  assert_line 'pool unity: 0 waiting, 0 running, finished jobs waited p50 0m, p90 40m (24h)'
+  assert_line 'pool unity: now 0 waiting, 0 running; finished jobs waited p50 0m, p90 40m (24h)'
   assert_line 'wait unity-gate: finished jobs waited p50 0m, p90 10m (24h)'
   assert_line 'wait unity-full: finished jobs waited p50 7m, p90 1.7h (24h)'
   refute_line --partial 'wait unity:'
@@ -1928,6 +1928,41 @@ live_merges() {
   assert_line 'pool and hosts: prometheus unreadable'
   assert_line 'wait unity-gate: finished jobs waited p50 0m, p90 10m (24h)'
   assert_line 'wait unity: finished jobs waited p50 0m, p90 40m (24h)'
+}
+
+@test "throughput: the hosted pool, with no slot row, prints its live waiting count beside its 24h wait on one line (ar-5963)" {
+  live_merges
+  jq -n '{status: "success", data: {result: ([["cc:pool_slots", "unity", "20"], ["cc:pool_waiting", "github-hosted", "5"],
+    ["cc:pool_oldest_wait_seconds", "github-hosted", "720"], ["cc:pool_done_24h", "github-hosted", "40"], ["cc:pool_done_24h", "unity", "9"]]
+    | map({metric: {__name__: .[0], pool: .[1]}, value: [1, .[2]]}))}}' > "$SANDBOX/snap.json"
+  jq -n '{status: "success", data: {result: [["github-hosted", "0.5", "2"], ["github-hosted", "0.9", "147"], ["unity", "0.5", "0"],
+    ["unity", "0.9", "2400"], ["unity-gate", "0.5", "0"], ["unity-gate", "0.9", "600"]]
+    | map({metric: {pool: .[0], quantile: .[1]}, value: [1, .[2]]})}}' > "$SANDBOX/queue.json"
+  stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) cat '$SANDBOX/snap.json' ;; esac"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  # live waiting first, labelled now; the quantile over finished jobs after it, labelled 24h. No running
+  # count: cc:pool_busy has no hosted row, and a 0 there would be a second contradiction.
+  assert_line 'pool github-hosted: now 5 waiting, oldest 12m; finished jobs waited p50 0m, p90 2m (24h)'
+  assert_line 'pool unity: now 0 waiting, 0 running; finished jobs waited p50 0m, p90 40m (24h)'
+  assert_line 'wait unity-gate: finished jobs waited p50 0m, p90 10m (24h)'
+  refute_line --partial 'wait github-hosted'
+  # with --to the snapshot is of that moment, never labelled now
+  BENCH_NOW=$T0 run "$SUBJECT" throughput --from $((T0 - 3600)) --to "$T0"
+  assert_success
+  assert_line --regexp '^pool github-hosted: at [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} 5 waiting, oldest 12m; finished jobs waited p50 0m, p90 2m \(24h\)$'
+  # idle, the hosted pool keeps its line from the jobs it ran in 24h, and reads 0 waiting rather than vanishing
+  jq '.data.result |= map(select(.metric.__name__ | test("waiting|oldest") | not))' "$SANDBOX/snap.json" > "$SANDBOX/idle.json"
+  stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) cat '$SANDBOX/idle.json' ;; esac"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  assert_line 'pool github-hosted: now 0 waiting; finished jobs waited p50 0m, p90 2m (24h)'
+  # Prometheus snapshot unreadable: still exit 0, and the exporter wait prints on its own line
+  stub_prom "case \"\$*\" in *query=github_job_queue_seconds*) cat '$SANDBOX/queue.json' ;; *) exit 7 ;; esac"
+  BENCH_NOW=$T0 run "$SUBJECT" throughput
+  assert_success
+  assert_line 'pool and hosts: prometheus unreadable'
+  assert_line 'wait github-hosted: finished jobs waited p50 0m, p90 2m (24h)'
 }
 
 @test "findings: a repo that cannot be fetched is blind, its old refs are not read as no merges" {
@@ -1963,7 +1998,7 @@ live_merges() {
   assert_success
   assert_line --partial 'local runs: 37/h, 58% not passed'
   assert_line 'merges/h: unity-core-playground 1.5'
-  assert_line 'pool unity: 29 waiting, 7 running, oldest 5.4h'
+  assert_line 'pool unity: now 29 waiting, 7 running, oldest 5.4h'
   assert_line --partial 'razer-laptop 1.4x'
 }
 
@@ -5034,7 +5069,7 @@ alert_setup() {
   route '^check\(watch\): alertmanager-fleet tripped' agent fix-red 'fallback' -
   watch alertmanager-fleet TRIP -25200 high
   # the probe's `page:` line (its trip's level, watch-companion-loop) is not an alert row
-  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
+  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\nsystems: ConvergenceDrift=deploy HomelabCronJobFailed=deploy,ci TraderRunFailed=Bad!\npage: urgent\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
     > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
 }
 
@@ -5054,6 +5089,30 @@ alert_setup() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial '4 queued as red fixes'
+}
+
+@test "triage: each alert's red loads its rule's system skills, else the watch's system" {
+  alert_setup
+  export BENCH_SKILLS_DIR="$SANDBOX/skills"
+  mkdir -p "$BENCH_SKILLS_DIR"/{fix-red,k8s-ops,ci-failures,sentinel}
+  printf -- '---\nname: fix-red\nmetadata:\n  system: [any]\n---\n' > "$BENCH_SKILLS_DIR/fix-red/SKILL.md"
+  printf -- '---\nname: k8s-ops\nmetadata:\n  system: [deploy]\n---\n' > "$BENCH_SKILLS_DIR/k8s-ops/SKILL.md"
+  printf -- '---\nname: ci-failures\nmetadata:\n  system: [ci]\n---\n' > "$BENCH_SKILLS_DIR/ci-failures/SKILL.md"
+  printf -- '---\nname: sentinel\nmetadata:\n  system: [telemetry]\n---\n' > "$BENCH_SKILLS_DIR/sentinel/SKILL.md"
+  printf 'system: telemetry\n' >> "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, .*; fix with fix-red: fix this alert; system deploy: load fix-red and k8s-ops #high'
+  # a label naming two ids loads both systems' skills
+  assert_line --regexp '^check\(alert\): HomelabCronJobFailed nas/bark-archive firing, .*; system ci deploy: load fix-red and ci-failures, k8s-ops #high'
+  # an id that is not lowercase is dropped, so that alert falls back to the watch's own system
+  assert_line --regexp '^check\(alert\): TraderRunFailed trader-web/walkforward firing, .*; system telemetry: load fix-red and sentinel #high'
+  # negative control: no systems line and no watch system names none
+  sed -i '/^systems: /d' "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"; sed -i '/^system:/d' "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, '
+  refute_line --regexp '^check\(alert\): .*system'
 }
 
 @test "triage: an alert row files at the trip's level, not the watch's fixed severity" {
