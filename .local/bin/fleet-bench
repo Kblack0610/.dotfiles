@@ -5760,7 +5760,8 @@ triage_human() {
 #   given to a merge to deploy and age out of the probe's window);
 # - merged and closed after <verdict>, the epoch a runner red's runner recorded the verdict triage reads
 #   (runner_verdict_at): that verdict predates the fix and says nothing of it, so the fix holds until the
-#   runner's next run, at most TRIAGE_PROVES_MAX after it closed. 2026-11-28 (ar-1945): #1443 merged at
+#   runner's next run, at most TRIAGE_PROVES_MAX after it closed (its finished, which agent-land stamps
+#   seconds after the merge). 2026-11-28 (ar-1945): #1443 merged at
 #   10:41Z, triage re-filed lab-sync's 10:20Z STALLED at 11:18Z, and its After-deploy run read WORKED at 11:20Z;
 # - merged and before its proves_at, the time its fixer said the probe can first read it (a CronJob
 #   alert clears only on its next run), at most TRIAGE_PROVES_MAX after it closed (ar-4215);
