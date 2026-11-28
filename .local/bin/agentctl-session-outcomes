@@ -855,7 +855,7 @@ cmd_worst() {
                + why
                + " | \(.cost_usd | usd)"
                + " | \(.activity.test_runs // "-") | \(.activity.ci_polls // "-") | "
-               + (.activity as $a | if (.edits // 0) > 0 and ($a.tokens // 0) > 0 and $a.tokens_after_last_edit != null
+               + (.activity as $a | if ($a.edit_calls // 0) > 0 and ($a.tokens // 0) > 0 and $a.tokens_after_last_edit != null
                   then "\($a.tokens_after_last_edit * 100 / $a.tokens | round)%" else "-" end) + " |"))
         | join("\n")
       end'
@@ -983,7 +983,7 @@ cmd_card() {
           "  Activity  " + (if .activity == null then "no transcript" else
             "\($a.tool_calls) tool calls, \($a.test_runs) test runs, \($a.ci_polls) CI polls"
             + (if $a.compactions then ", \($a.compactions.auto + $a.compactions.manual) compactions (\($a.compactions.auto) auto)" else "" end)
-            + (if (.edits // 0) > 0 and ($a.tokens // 0) > 0 and $a.tokens_after_last_edit != null then ", \($a.tokens_after_last_edit * 100 / $a.tokens | round)% of tokens after the last edit" else "" end) end),
+            + (if ($a.edit_calls // 0) > 0 and ($a.tokens // 0) > 0 and $a.tokens_after_last_edit != null then ", \($a.tokens_after_last_edit * 100 / $a.tokens | round)% of tokens after the last edit" else "" end) end),
           "  Uses      " + (if .uses == null then "-" else
             ([ (.uses.skills | if length > 0 then "skills: " + ranked(tostring) else empty end),
                (.uses.subagents | if length > 0 then "agents: " + ranked(tostring) else empty end),
