@@ -118,7 +118,7 @@ gitBranch), `--since YYYY-MM-DD`, `--role user|assistant`, `--regex`, `-i`,
 
 ## Find, resume or compact a session: the session registry
 
-Every session that did real work registers itself, so it can be found and reopened later; `sessions` is the read side.
+Every interactive session registers itself, and a headless call that did work, so it can be found and reopened later; `sessions` is the read side.
 
 - **Registry:** `~/.agent/sessions/{project}/sessions.jsonl`, one JSON line per session: `{session_id, project, transcript, resume, first_prompt, edits, head_commit, updated}`, plus `agentctl` (the runner name) on a runner's row and the cost fields when telemetry answered. Upserted by `session_id`; dead-transcript lines self-prune. It is the agent axis, never `~/.notes/captures`.
 - **Captured** by `~/.claude/hooks/stop-post.d/80-session-register.sh` at its first Stop for every interactive session, read-only or not, and for a headless `claude -p` call only when it made an edit call, left a dirty git tree, or is an agentctl runner (`AGENTCTL_NAME` set), because a runner still spends. `edits` counts the edit tool calls.
