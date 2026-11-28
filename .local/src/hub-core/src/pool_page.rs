@@ -1,17 +1,17 @@
 //! One runner pool's page on both surfaces (`#infra/pools/<pool>`): its Pools row as labelled
-//! parts, the machines with a slot in it (each with its governor verdict), the CI jobs
+//! parts, the machines with a slot in it, the CI jobs
 //! waiting for it, and its running and waiting over the last `DAYS` days. hub-core reads it;
 //! agent-web and the TUI only draw it, as they draw a machine's page (`machine_page`).
 //!
 //! | part    | series                                                                          |
 //! |---------|---------------------------------------------------------------------------------|
-//! | history | `cc:pool_{busy,waiting}{pool}`: its own jobs running and the jobs waiting; the local gates (`gates`, once `unity-local`) count `cc:host_local_gate` and read `ci_governor_backlog_units{kind="local"}`, as `machines::pools` counts them |
+//! | history | `cc:pool_{busy,waiting}{pool}`: its own jobs running and the jobs waiting; the local gates (`gates`, once `unity-local`) count `cc:host_local_gate` and have no waiting series, as `machines::pools` counts them |
 
 use crate::display::fmt::counted;
 use serde::Serialize;
 
 use crate::ci::Queued;
-use crate::display::fmt::age;
+use crate::display::fmt::{age, dur_secs};
 use crate::host_history::{self, Hours, BUCKET, DAYS, STEP};
 use crate::infra::Infra;
 use crate::links::Link;
@@ -133,7 +133,7 @@ pub fn build(infra: &Infra, p: &Pool, history: Result<PoolHistory, String>, now:
     }
 }
 
-/// Its row as labelled parts: Slots, Waiting, Last 24h, Grafana.
+/// Its row as labelled parts: Slots, Waiting, Last 24h, Usual run, Grafana.
 fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
     let n = |v: f64| format!("{v:.0}");
     let mut out = vec![];
@@ -163,12 +163,23 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
         None => crate::reading::NO_DATA.into(),
     };
     out.push(Part::new("Waiting", wait).warn(stuck > 0));
+    for (d, w) in [(p.done_1h, "Last 1h"), (p.done_5h, "Last 5h")] {
+        if let Some(d) = d {
+            out.push(Part::new(w, format!("{} done", n(d))));
+        }
+    }
     if p.done.is_some() || p.pass.is_some() {
         let mut t = p.done.map_or("? done".into(), |d| format!("{} done", n(d)));
         if let Some(r) = p.pass {
             t = format!("{t}, {:.0}% passed", r * 100.0);
         }
         out.push(Part::new("Last 24h", t).warn(p.pass.is_some_and(|r| r < PASS_WARN)));
+    }
+    if let Some(u) = p.usual {
+        out.push(Part::new(
+            "Usual run",
+            format!("{}, the median of its last 24h", dur_secs(u)),
+        ));
     }
     if let Some(g) = infra.grafana.as_deref() {
         out.push(
@@ -179,47 +190,43 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
 }
 
 /// The running and waiting queries for `pool`: its `cc:pool_*` series, or the local gates
-/// counted from the gate series and the governor's local backlog.
-fn queries(pool: &str) -> Result<[(&'static str, String); 2], String> {
+/// counted from the gate series, with no waiting query: no series counts a waiting gate.
+fn queries(pool: &str) -> Result<(String, Option<String>), String> {
     if pool == LOCAL_POOL {
-        return Ok([
-            ("running", "count(cc:host_local_gate) or vector(0)".into()),
-            (
-                "waiting",
-                r#"sum(ci_governor_backlog_units{kind="local"}) or vector(0)"#.into(),
-            ),
-        ]);
+        return Ok(("count(cc:host_local_gate) or vector(0)".into(), None));
     }
     if !host_history::valid_host(pool) {
         return Err(format!("{pool:?} is not a pool name"));
     }
     let q = |rule: &str| format!(r#"max(cc:pool_{rule}{{pool="{pool}"}})"#);
-    Ok([("running", q("busy")), ("waiting", q("waiting"))])
+    Ok((q("busy"), Some(q("waiting"))))
 }
 
 /// Ask Prometheus for a pool's last `DAYS` days. A series that fails is an error line; the rest
 /// still read.
 pub fn history(pool: &str, now: u64) -> Result<PoolHistory, String> {
-    let qs = queries(pool)?;
+    let (running_q, waiting_q) = queries(pool)?;
     let base = prom::base()?;
     let from = now.saturating_sub(DAYS * 86_400);
     // The two are independent, so they are asked at once: the page waits for the slowest.
-    let read = std::thread::scope(|sc| {
-        qs.map(|(name, q)| (name, sc.spawn(|| host_history::range(&base, q, from, now))))
-            .map(|(name, h)| {
-                (
-                    name,
-                    h.join().unwrap_or_else(|_| Err("the read panicked".into())),
-                )
-            })
+    let (running, waiting) = std::thread::scope(|sc| {
+        let ask = |q: String| sc.spawn(|| host_history::range(&base, q, from, now));
+        let join = |h: std::thread::ScopedJoinHandle<'_, Result<Vec<Series>, String>>| {
+            h.join().unwrap_or_else(|_| Err("the read panicked".into()))
+        };
+        let w = waiting_q.map(ask);
+        let r = join(ask(running_q));
+        (r, w.map(join))
     });
     let mut errors = vec![];
-    let [running, waiting] = read.map(|(name, r)| {
+    let mut part = |name: &str, r: Result<Vec<Series>, String>| {
         r.unwrap_or_else(|e| {
             errors.push(format!("{name}: {e}"));
             vec![]
         })
-    });
+    };
+    let running = part("running", running);
+    let waiting = waiting.map_or_else(Vec::new, |w| part("waiting", w));
     let mut h = fold(pool, &running, &waiting, from, now);
     h.errors = errors;
     Ok(h)
@@ -299,7 +306,7 @@ mod tests {
     fn the_page_reads_its_row_machines_and_waiting_jobs() {
         let p = page(&infra(), "unity");
         assert_eq!(p.head, "unity, 1 running, 2 waiting");
-        assert_eq!(part(&p, "Slots").unwrap().text, "1 running, on 2 machines");
+        assert_eq!(part(&p, "Slots").unwrap().text, "1 running, on 1 machine");
         let w = part(&p, "Waiting").unwrap();
         assert_eq!(
             w.text,
@@ -307,7 +314,7 @@ mod tests {
         );
         assert!(w.warn);
         let hosts: Vec<&str> = p.machines.iter().map(|m| m.host.as_str()).collect();
-        assert_eq!(hosts, ["workstation", "aws-burst-1"]);
+        assert_eq!(hosts, ["workstation"]);
         let jobs: Vec<&str> = p.waiting.iter().map(|q| q.job.as_str()).collect();
         assert_eq!(jobs, ["Tests"]);
         assert_eq!(
@@ -320,6 +327,17 @@ mod tests {
             Some(Link::Url("https://grafana.example/d/kb-ci-runners".into()))
         );
         assert_eq!(p.errors, ["history: prometheus down"]);
+    }
+
+    #[test]
+    fn the_page_says_how_long_a_job_of_the_pool_usually_runs() {
+        let p = page(&infra(), "unity");
+        assert_eq!(
+            part(&p, "Usual run").unwrap().text,
+            "7m, the median of its last 24h"
+        );
+        // A pool the exporter has no median for says nothing, never 0s.
+        assert!(part(&page(&infra(), "macos"), "Usual run").is_none());
     }
 
     #[test]
@@ -355,10 +373,15 @@ mod tests {
     #[test]
     fn a_bad_pool_name_is_never_queried() {
         assert!(queries("unity\"} or vector(1)").is_err());
-        let [(_, running), _] = queries("unity").unwrap();
+        let (running, waiting) = queries("unity").unwrap();
         assert_eq!(running, r#"max(cc:pool_busy{pool="unity"})"#);
-        let [(_, running), _] = queries(LOCAL_POOL).unwrap();
+        assert_eq!(
+            waiting.as_deref(),
+            Some(r#"max(cc:pool_waiting{pool="unity"})"#)
+        );
+        let (running, waiting) = queries(LOCAL_POOL).unwrap();
         assert_eq!(running, "count(cc:host_local_gate) or vector(0)");
+        assert_eq!(waiting, None, "no series counts a waiting gate");
     }
 
     fn range(points: &[(u64, f64)]) -> Series {

@@ -4,8 +4,8 @@
 # dates a box ticked by hand. With no CLI the save still writes, unswept.
 #
 # Loads the real plugin config in a headless nvim (render-markdown stubbed), like
-# notes_save_sweep.bats. Needs nvim and the crate built (`cargo build` in notes-cli); skips
-# otherwise, so the CI fast tier skips it by design.
+# notes_save_sweep.bats. Needs nvim (the test image pins it, tests/Dockerfile NVIM_VERSION) and the
+# crate built (`cargo build` in notes-cli); skips otherwise.
 
 setup() {
   load '../vendor/bats-support/load'

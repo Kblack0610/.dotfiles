@@ -6,7 +6,7 @@
 // `when` its queue state and forecast or its close day and PRs, the hub's words for both; each
 // profile's Focus is a count linking to the Daily tab. A closed row has no actions. A row opens under itself
 // with its actions: add, start, done, drop, move (to a project or a version), a release sooner
-// or later, edit and tags go through `notes ptask --exact` with the row's raw line (POST
+// or later, edit, priority and tags go through `notes ptask --exact` with the row's raw line (POST
 // /api/board), so a row changed elsewhere since this page read it fails the write, and the page
 // says so and re-reads. Nothing watches the notes vault, so the tab reads when shown, after each
 // write, on resync, and on Refresh.
@@ -20,7 +20,7 @@ const bScope = () => (bOnBoard() ? "all" : pst.open);
 const bst = tblTab({
   tab: "projects", scroller: "projects",
   id: "board", el: "b-tbl", on: "b-root", refresh: () => refreshBoard(), table: (t) => t.feed?.table,
-  shown: () => bOnBoard() || (st.tab === "projects" && !!pst.open), hint: "search, or lane:agent priority:high size:s -tag:ai",
+  shown: () => bOnBoard() || (st.tab === "projects" && !!pst.open), hint: "search, or area:ui type:fix lane:agent priority:high -tag:ai",
   state: {
     feed: null, busy: false, msg: "",
     draft: { key: "", lane: "human", priority: "normal", to: "", game: "", text: "" },
@@ -118,6 +118,11 @@ function bRow(r, i) {
         `<select data-movedest="${i}"><option value="">this project</option>${bOpt(names, "")}</select>` +
         `<input data-forminput="${i}" placeholder="version vX.Y.Z (optional with a project)">` +
         `<button class="btn sm primary" data-formgo="${i}">Move</button>` + cancel;
+    } else if (kind === "priority") {
+      // A row has one priority; picking another replaces its tag.
+      acts = `<div class="opts">` +
+        `<select data-formprio="${i}">${bOpt(B_PRIORITIES, r.priority)}</select>` +
+        `<button class="btn sm primary" data-formgo="${i}">Set priority</button>` + cancel;
     } else if (kind === "tag") {
       // A row has one size, so adding size/m replaces its old one; a release is Move's.
       acts = `<div class="opts">` +
@@ -139,6 +144,7 @@ function bRow(r, i) {
         `<button class="btn sm" data-demote="${i}" title="one release later">Later</button>` +
         `<button class="btn sm" data-move="${i}">Move...</button>` +
         `<button class="btn sm" data-edit="${i}">Edit...</button>` +
+        `<button class="btn sm" data-prio="${i}">Priority...</button>` +
         `<button class="btn sm" data-tag="${i}">Tags...</button>` : "") +
       `<button class="btn sm" data-drop="${i}">Drop...</button></div>`;
   }
@@ -146,32 +152,56 @@ function bRow(r, i) {
     `<div class="q">${esc(r.text)}</div>${acts}</div>`;
 }
 
-// What a row is leads, then the epic it serves, then what to do about it. Version, size, tier,
-// since and the whole line are the opened row's (bRow), so the table fits the screen.
-const B_COLS = { section: ["section"], title: ["title"], epic: ["epic"], priority: ["priority"], state: ["state"], when: ["when"], project: ["project"], lane: ["lane"], id: ["id"] };
+// What a row is leads (its type and area, each its own filterable column), then the epic it
+// serves, then what to do about it. Version, size, tier, since and the whole line are the opened
+// row's (bRow), so the table fits the screen. Cells run in hub-core's COLUMNS order, as tblHead draws.
+const B_COLS = { section: ["section"], type: ["type"], area: ["area"], title: ["title"], epic: ["epic"], priority: ["priority"], state: ["state"], when: ["when"], project: ["project"], lane: ["lane"], id: ["id"], pts: ["pts", "n"] };
 const B_SPAN = Object.keys(B_COLS).length;
+// The epics chip lists epics only (hub-core `Row::in_default` keeps them out of every other chip but an `id:=` link's),
+// each with what hangs under it: the epic, its rows (a count that opens them), priority, project, id.
+const E_COLS = { title: ["epic"], rows: ["rows", "n"], priority: ["priority"], project: ["project"], id: ["id"] };
+const E_ORDER = Object.keys(E_COLS);
+const bEpics = () => bst.feed?.table?.state === "epics";
+// The table with its columns in the epics chip's order: hub-core lists `rows` last, so the head
+// and the cells below it (bEpicLine) would otherwise disagree.
+const bEpicTable = (t) => ({ ...t, columns: E_ORDER.map((k) => t.columns.find((c) => c.key === k)) });
+// A column the feed lacks (a hub older than this page) would shift the head over the cells: say so instead.
+const bEpicGap = (t) => E_ORDER.find((k) => !t.columns.some((c) => c.key === k));
 const bDash = (v) => esc(v == null || v === "" ? "-" : v);
 // The row's epic as a link to that row, its parent's id when that row is not on the board,
 // or "" when it is under none.
 const bEpic = (r, i) => r.epic || r.parent ? tblLink(tblLinks(bst.feed.table, i).epic, r.epic || r.parent) : "";
 
-// One line of the table, and the opened record under it. The title cell holds the row's area,
-// its title and what the title leaves out (hub_core::text::title); the epic cell opens
-// the epic. The opened row has the whole line.
+// One line of the table, and the opened record under it. The title cell holds the row's title
+// and what the title leaves out (hub_core::text::title); the epic cell opens the epic. The
+// opened row has the whole line.
 function bLine(r, i) {
   const open = bSel(r) === bst.sel;
-  const area = r.area ? `<span class="qtag">${esc(r.area)}</span> ` : "";
   const sum = r.summary ? `<div class="bsum muted">${esc(r.summary)}</div>` : "";
-  // An epic is the deliverable itself; any other row under none says so, for triage.
-  const epic = bEpic(r, i) || (r.section === "epics" ? "" : `<span class="muted">no epic</span>`);
+  // A task under no epic says so, for triage.
+  const epic = bEpic(r, i) || `<span class="muted">no epic</span>`;
   const line = `<tr class="jr${open ? " sel" : ""}" data-row="${i}">` +
-    `<td><b>${esc(r.label || "")}</b></td>` +
-    `<td class="btitle"><div class="bt">${area}${esc(r.title)}</div>${sum}</td>` +
+    `<td><b>${esc(r.label || "")}</b></td><td>${bDash(r.type)}</td><td>${bDash(r.area)}</td>` +
+    `<td class="btitle"><div class="bt">${esc(r.title)}</div>${sum}</td>` +
     `<td class="bepic">${epic}</td>` +
     `<td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td>` +
     `<td>${r.state === "doing" ? "<b>doing</b>" : esc(r.state)}</td><td class="bwhen">${bDash(r.when)}</td>` +
-    `<td>${bDash(r.project)}</td><td>${esc(r.lane)}</td><td><code>${bDash(r.id)}</code></td></tr>`;
+    `<td>${bDash(r.project)}</td><td>${esc(r.lane)}</td><td><code>${bDash(r.id)}</code></td><td class="n">${bDash(r.points)}</td></tr>`;
   return open ? line + `<tr class="bopen"><td colspan="${B_SPAN}">${bRow(r, i)}</td></tr>` : line;
+}
+
+// An epic's line on the epics chip: its title, then its rows as `12 open / 4 done`, linked to
+// them (hub-core `Kind::Children`), then priority, project and id. The opened record is bLine's.
+function bEpicLine(r, i) {
+  const open = bSel(r) === bst.sel;
+  const sum = r.summary ? `<div class="bsum muted">${esc(r.summary)}</div>` : "";
+  const c = r.children;
+  const rows = c ? tblLink(tblLinks(bst.feed.table, i).rows, `${c.open} open / ${c.done} done`) : "-";
+  const line = `<tr class="jr${open ? " sel" : ""}" data-row="${i}">` +
+    `<td class="btitle"><div class="bt">${esc(r.title)}</div>${sum}</td><td class="n">${rows}</td>` +
+    `<td><span class="qprio ${esc(r.priority)}">${esc(r.priority)}</span></td>` +
+    `<td>${bDash(r.project)}</td><td><code>${bDash(r.id)}</code></td></tr>`;
+  return open ? line + `<tr class="bopen"><td colspan="${E_ORDER.length}">${bRow(r, i)}</td></tr>` : line;
 }
 
 function bBody() {
@@ -187,7 +217,9 @@ function bBody() {
     (bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "") +
     (bst.feed.errors || []).map((e) => `<div class="panel down">no forecast or queue state: ${esc(e)}</div>`).join("") +
     (rows.length
-      ? `<div class="panel scroll"><table class="tbl">${tblHead(t, B_COLS)}${rows.map(bLine).join("")}</table></div>`
+      ? bEpics() && bEpicGap(t)
+        ? `<div class="panel down">The board feed has no ${esc(bEpicGap(t))} column: restart agent-web to match this page.</div>`
+        : `<div class="panel scroll"><table class="tbl">${bEpics() ? tblHead(bEpicTable(t), E_COLS) + rows.map(bEpicLine).join("") : tblHead(t, B_COLS) + rows.map(bLine).join("")}</table></div>`
       : `<div class="card muted">${t.total ? "No row matches." : "No rows."}</div>`);
 }
 
@@ -254,7 +286,7 @@ $("b-root").addEventListener("click", (e) => {
   if (t.id === "b-add") { bAdd(); return; }
   if (t.id === "b-refresh") { bst.msg = ""; refreshBoard(); return; }
   const d = t.dataset;
-  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
+  const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.prio || d.tag || d.formgo || d.formcancel];
   if (!r) {
     if (t.closest("a")) return;
     const line = t.closest("tr[data-row]");
@@ -272,18 +304,25 @@ $("b-root").addEventListener("click", (e) => {
     bWrite(Object.assign({ verb }, rowTarget(r)), d.promote ? "One release sooner." : "One release later.");
     return;
   }
-  const opened = d.done || d.drop || d.move || d.edit || d.tag;
+  const opened = d.done || d.drop || d.move || d.edit || d.prio || d.tag;
   if (opened) {
-    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : d.tag ? "tag" : "edit" };
+    bst.form = { k, kind: d.done ? "done" : d.drop ? "drop" : d.move ? "move" : d.prio ? "priority" : d.tag ? "tag" : "edit" };
     bst.render();
-    const i = $("b-root").querySelector(`[data-forminput="${opened}"]`);
+    const i = $("b-root").querySelector(`[data-forminput="${opened}"], [data-formprio="${opened}"]`);
     if (i) i.focus();
     return;
   }
   if (d.formcancel) { bst.form = null; bst.render(); return; }
   if (d.formgo && bst.form) {
     const i = d.formgo, q = (a) => $("b-root").querySelector(`[data-${a}="${i}"]`);
-    const v = q("forminput").value.trim(), kind = bst.form.kind;
+    const kind = bst.form.kind;
+    if (kind === "priority") {
+      const priority = q("formprio").value;
+      bst.form = null;
+      bWrite(Object.assign({ verb: "priority", priority }, rowTarget(r)), `Priority ${priority}.`);
+      return;
+    }
+    const v = q("forminput").value.trim();
     let body, ok;
     if (kind === "done" || kind === "drop") {
       const how = q("formkind").value;

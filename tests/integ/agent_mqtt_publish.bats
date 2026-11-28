@@ -22,7 +22,7 @@ setup() {
 #!/usr/bin/env bash
 t="" m=""
 while [ $# -gt 0 ]; do
-  case "$1" in -t) t="$2"; shift 2 ;; -m) m="$2"; shift 2 ;; *) shift ;; esac
+  case "$1" in -h) printf '%s\n' "$2" >> "$NOTES_FIXTURE/mqtt.hosts"; shift 2 ;; -t) t="$2"; shift 2 ;; -m) m="$2"; shift 2 ;; *) shift ;; esac
 done
 [ -n "${MQTT_STUB_FAIL:-}" ] && exit 1
 # MQTT_STUB_MISSES=N: the first N calls fail, then the broker answers.
@@ -33,6 +33,18 @@ fi
 printf '%s\t%s\n' "$t" "$m" >> "$NOTES_FIXTURE/mqtt.log"
 EOF
   chmod +x "$SANDBOX/bin/mosquitto_pub"
+  # The resolver: `getent ahosts <name>` answers 192.0.2.7 and counts each lookup in getent.calls;
+  # GETENT_STUB_MISSES=N fails the first N.
+  cat > "$SANDBOX/bin/getent" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = ahosts ] || exit 2
+n=$(cat "$NOTES_FIXTURE/getent.calls" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/getent.calls"
+[ "$n" -lt "${GETENT_STUB_MISSES:-0}" ] && exit 2
+printf '192.0.2.7       STREAM %s\n192.0.2.7       DGRAM  \n' "$2"
+[ -n "${GETENT_STUB_SECOND:-}" ] && printf '%s STREAM\n' "$GETENT_STUB_SECOND"
+exit 0
+EOF
+  chmod +x "$SANDBOX/bin/getent"
 
   # This host holds the fleet lease unless a test says otherwise (FLEET_LEASE_RC).
   printf '#!/usr/bin/env bash\n[ "$1" = held ] && exit "${FLEET_LEASE_RC:-0}"\n' > "$SANDBOX/bin/fleet-lease"
@@ -384,6 +396,35 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   [ -n "$(payload agents/testhost/runner/alpha)" ]
 }
 
+@test "broker lookup: one per run, and every call goes to that address, not the name (ar-2310)" {
+  run "$PUB" --full --quiet
+  assert_success
+  [ "$(cat "$NOTES_FIXTURE/getent.calls")" = 1 ]
+  [ "$(sort -u "$NOTES_FIXTURE/mqtt.hosts")" = 192.0.2.7 ]
+  [ "$(wc -l < "$NOTES_FIXTURE/mqtt.hosts")" -gt 1 ]
+}
+
+@test "broker lookup: a name with two addresses stays the name, so libmosquitto tries each" {
+  GETENT_STUB_SECOND=2001:db8::7 run "$PUB" --quiet
+  assert_success
+  [ "$(sort -u "$NOTES_FIXTURE/mqtt.hosts")" = stub ]
+}
+
+@test "broker lookup: a missed lookup is retried and the run still succeeds" {
+  GETENT_STUB_MISSES=1 run "$PUB" --quiet
+  assert_success
+  [ -n "$(payload agents/testhost/runner/alpha)" ]
+  [ "$(cat "$NOTES_FIXTURE/getent.calls")" = 2 ]
+}
+
+@test "broker lookup: a name that never resolves fails the run with nothing sent" {
+  GETENT_STUB_MISSES=99 AGENT_MQTT_RETRIES=2 run "$PUB"
+  assert_failure
+  assert_output --partial "cannot resolve broker stub"
+  [ ! -s "$PUBLOG" ]
+  [ "$(cat "$NOTES_FIXTURE/getent.calls")" = 3 ]
+}
+
 @test "dry-run prints the snapshot and never calls the broker" {
   run "$PUB" --dry-run
   assert_success
@@ -429,6 +470,44 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/skill_drift)")" '["normal",2]'
 }
 
+
+# mqtt2prom drops text, so the Command Center cannot read `system` as a label: each id also rides
+# as a system_<id> boolean, and Prometheus takes the system from that key's name (ar-6154).
+@test "a watch carries its manifest's system ids and bookkeeping flag; a manifest with neither carries none" {
+  seed_watch both TRIP
+  printf 'system: [tests, ci-runners]\nbookkeeping: true\n' >> "$WATCH_DIR/both.yaml"
+  seed_watch one OK
+  printf 'system: deploy\n' >> "$WATCH_DIR/one.yaml"
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c '[.system, .bookkeeping]' <<< "$(payload agents/testhost/watch/both)")" '["ci-runners,tests",true]'
+  assert_equal "$(jq -c '[.system_tests, .system_ci_runners, .system_deploy]' <<< "$(payload agents/testhost/watch/both)")" '[true,true,null]'
+  assert_equal "$(jq -c '[.system, .bookkeeping, .system_deploy]' <<< "$(payload agents/testhost/watch/one)")" '["deploy",false,true]'
+  # skill-drift (seeded in setup) names no system and no bookkeeping
+  assert_equal "$(jq -c '[.system, .bookkeeping, ([keys[] | select(startswith("system_"))] | length)]' <<< "$(payload agents/testhost/watch/skill_drift)")" '["",false,0]'
+}
+
+@test "when the manifest reader fails, watches publish no labels rather than empty ones" {
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/sm-broken"; chmod +x "$SANDBOX/bin/sm-broken"
+  SENTINEL_MANIFEST="$SANDBOX/bin/sm-broken" run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c '[has("system"), has("bookkeeping"), .tripped]' <<< "$(payload agents/testhost/watch/skill_drift)")" '[false,false,true]'
+}
+
+# A probe's `page:` level (alertmanager-fleet: warning-only alerts page normal) is the trip's level,
+# so the rollup reads it, not the manifest's fixed fallback, while the watch is TRIP.
+@test "a tripped watch carries its trip's level over the manifest severity; a stale level file is ignored" {
+  seed_watch paged-one TRIP
+  printf 'severity: high\n' >> "$WATCH_DIR/paged-one.yaml"
+  printf 'normal' > "$WATCH_STATE_DIR/paged-one.level"
+  seed_watch ok-one OK
+  printf 'severity: high\n' >> "$WATCH_DIR/ok-one.yaml"
+  printf 'low' > "$WATCH_STATE_DIR/ok-one.level"
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/paged_one)")" '["normal",2]'
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/ok_one)")" '["high",3]'
+}
 
 # A quarantine (watch-companion-loop quarantine) demotes a red to a warning in the rollup:
 # true only while UNTIL is ahead and the watch is still red, so a lapsed or OK one never hides.
@@ -614,13 +693,41 @@ seed_bar() {
   [ -z "$(payload agents/testhost/summary/bar)" ]
 }
 
-# A locked agent-queue store must not hold the publish lock: hub bar is bounded.
-@test "bar: a hub that hangs is cut off at its timeout and the run still publishes the rest" {
-  printf '#!/usr/bin/env bash\n[ "$1" = bar ] && exec sleep 30\nexit 1\n' > "$SANDBOX/bin/hub"
-  AGENT_MQTT_BAR_TIMEOUT=1 run "$PUB" --quiet
+# A locked agent-queue store must not hold the publish lock or the --full run past the unit's 60s: every
+# slow reader is bounded by READER_TIMEOUT (ar-1486). The outer timeout is under the 30s hang, so a reader
+# left unbounded fails the test rather than passing late.
+@test "a slow reader that hangs is cut off at its timeout and the run still publishes the rest (ar-1486)" {
+  # A child holds the pipe, as hub's agent-queue call would, so the bound must reach past the direct child.
+  printf '#!/usr/bin/env bash\nsleep 30 & wait\n' > "$SANDBOX/bin/hub"
+  printf '#!/usr/bin/env bash\n[ "$1" = stats ] && { sleep 30 & wait; }\nexit 0\n' > "$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/hub" "$SANDBOX/bin/fleet-dispatch"
+  AGENT_MQTT_READER_TIMEOUT=1 run timeout 15 "$PUB" --full --quiet
   assert_success
-  [ -z "$(payload agents/testhost/summary/bar)" ]
+  for t in dispatch overview bar cards; do
+    assert_equal "$(payload "agents/testhost/summary/$t")" ''
+  done
   [ -n "$(payload agents/testhost/runner/alpha)" ]
+  [ -n "$(payload agents/testhost/summary/feed)" ]
+}
+
+@test "a reader cut off keeps its last send while younger than expire_after, and drops it once older (ar-1486)" {
+  overview_stub 'echo "{\"state\": \"ok\", \"rows\": [1]}"'
+  "$PUB" --full --quiet
+  sent="$HOME/.local/state/agent-mqtt/sent/agents%testhost%summary%overview"
+  [ -f "$sent" ]
+  overview_stub 'sleep 30 & wait'
+  touch -d "2 minutes ago" "$sent"
+  : > "$PUBLOG"
+  AGENT_MQTT_READER_TIMEOUT=1 run timeout 15 "$PUB" --full --quiet
+  assert_success
+  assert_equal "$(jq -r .state <<< "$(payload agents/testhost/summary/overview)")" ok
+  touch -d "20 minutes ago" "$sent"
+  : > "$PUBLOG"
+  AGENT_MQTT_READER_TIMEOUT=1 run timeout 15 "$PUB" --full --quiet
+  assert_success
+  # Dropped: the deletion sends an empty retained payload and forgets the cache file.
+  grep -q $'^agents/testhost/summary/overview\t$' "$PUBLOG"
+  [ ! -f "$sent" ]
 }
 
 @test "bar: a run inside the TTL repeats the sent document, an older one reads hub again" {

@@ -52,9 +52,10 @@
     },
     // The notification panel: shown only while desk's notify part is swaync (docs/desk.md),
     // because swaync-client would D-Bus start swaync, which stops dunst. Click opens the
-    // panel, right click toggles do-not-disturb.
+    // panel, right click toggles do-not-disturb. The text is the waiting pages by group,
+    // " 3 agents, 2 health" (its leading space keeps a lone bell flush), from desk notify bell.
     "custom/notify": {
-        "format": "{icon}",
+        "format": "{icon}{}",
         "format-icons": {
             "notification": "󰂞",
             "none": "󰂚",
@@ -67,11 +68,10 @@
         },
         "return-type": "json",
         "exec-if": "[ \"$($HOME/.local/bin/desk get notify)\" = swaync ]",
-        "exec": "swaync-client -swb",
+        "exec": "$HOME/.local/bin/desk notify bell",
         "on-click": "$HOME/.local/bin/desk notify history",
         "on-click-right": "$HOME/.local/bin/desk notify dnd",
-        "escape": true,
-        "tooltip": false
+        "escape": true
     },
     // Labelled like the CPU pill, so CPU and RAM read at a glance.
     "memory": {
@@ -302,7 +302,7 @@
         "tooltip": true
     },
     // Projects: how many have work in flight and the running sprint (`S:v0.5.4 10/15`, +N past one); the hover leads with
-    // the running sprints, then each project's release window and sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
+    // the running sprints, then each project in flight with its running work by epic system (projects.sh, from `hub projects --json`). Click opens the hub
     // board on Projects.
     "custom/projects": {
         "format": "{}",
@@ -315,7 +315,7 @@
         "tooltip": true
     },
     // Machine mode: the mode's initial, in every mode. Placed by config.desktop only (right of
-    // custom/storage); the laptop has no pool runners, so it has no chip.
+    // custom/storage), so the laptop has no chip.
     "custom/machine-mode": {
         "format": "{}",
         "return-type": "json",

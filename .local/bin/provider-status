@@ -4,7 +4,8 @@
 # An upstream outage reaches the fleet as its own fault (API Error passes, red CI, offline
 # runners), so the sentinel `provider-status` watch reads each Statuspage feed to name it.
 # Only incidents on components we use count: GitHub's feed is mostly Copilot, Cloudflare's
-# is mostly regional, and Claude's carries connector incidents under "Claude Code". A page
+# is mostly regional, and Claude's carries connector incidents under "Claude Code". A major
+# Cloudflare incident counts unless every component it names is one the fleet does not touch. A page
 # that cannot be read is not evidence that all is well, so it never exits 0. The watch keeps
 # what it prints as the trip's evidence, so a red names its incident.
 #
@@ -17,12 +18,17 @@ set -uo pipefail
 PROVIDERS=(
   'GitHub|www.githubstatus.com|any(.components[]?.name; IN("Git Operations","API Requests","Pull Requests","Actions","Webhooks"))'
   'Claude|status.claude.com|any(.components[]?.name; startswith("Claude API"))'
-  'Cloudflare|www.cloudflarestatus.com|(.impact | IN("major","critical")) or any(.components[]?.name; test("Tunnel|DNS"))'
+  'Cloudflare|www.cloudflarestatus.com|any(.components[]?.name; (. // "") | test("Tunnel|DNS")) or ((.impact | IN("major","critical")) and ((.components // []) == [] or any(.components[].name; IN($cf_unused[]) | not)))'
   'Mistral|status.mistral.ai|any(.components[]?.name; IN("Completion API","Embedding API"))'
   'Cerebras|status.cerebras.ai|any(.components[]?.name; . != "Developer Console")'
   'SambaNova|status.sambanova.ai|any(.components[]?.name; . == "SambaCloud API Gateway")'
 )
 # Groq, OpenRouter, Hugging Face and Together have no Statuspage JSON feed (read 2026-11-19): no row.
+# Cloudflare components the fleet does not touch, so a major incident naming only these is not
+# ours (Magic Transit tripped the watch 2026-11-24, ar-4698; Dashboard login emails 2026-11-28).
+# The fleet's calls go by API token (component "API"), so a Dashboard-only incident is the web
+# UI alone; one that also names API still counts. Names are components.json leaves.
+CF_UNUSED=('Magic Transit' 'Spectrum' 'Cloud Network Interconnect (CNI)' 'China Network' 'Dashboard')
 
 case "${1:-}" in
   "") ;;
@@ -30,12 +36,13 @@ case "${1:-}" in
   *) echo "provider-status: unknown argument: $1" >&2; exit 64 ;;
 esac
 
+cf_unused="$(printf '%s\n' "${CF_UNUSED[@]}" | jq -R . | jq -sc .)"
 rc=0
 for p in "${PROVIDERS[@]}"; do
   IFS='|' read -r name host relevant <<<"$p"
   if ! body="$(curl -sf -m 10 --retry 1 --retry-all-errors --retry-delay 5 \
         "https://$host/api/v2/incidents/unresolved.json")" \
-     || ! hits="$(jq -r --arg n "$name" ".incidents[] | select($relevant)
+     || ! hits="$(jq -r --arg n "$name" --argjson cf_unused "$cf_unused" ".incidents[] | select($relevant)
           | \"\(\$n): \(.name) (\(.impact))\"" <<<"$body" 2>/dev/null)"; then
     echo "UNREACHABLE $name: $host"
     [ "$rc" = 0 ] && rc=2

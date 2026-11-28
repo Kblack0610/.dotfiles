@@ -16,6 +16,9 @@ gate	h=$(gh pr view 1993 --json body -q .body)
 gate	bash -c 'gh run view 1 --log-failed'
 gate	scripts/test/suite.sh --classes Foo
 gate	scripts/test/run.sh Foo && gh pr checks 3
+gate	bash scripts/preview-gate.sh --no-e2e
+gate	bash -c 'source scripts/preview-gate.sh; preview_gate_run; echo "GATE_RC=$?"' > /tmp/gate.log 2>&1
+gate	source scripts/preview-gate.sh && preview_gate_run --expected abc1234
 test	scripts/test/run.sh --filter Foo
 test	tests/vendor/bats-core/bin/bats tests/unit/x.bats
 test	timeout 300 tests/vendor/bats-core/bin/bats -f 'x | y' tests/unit/x.bats
@@ -41,6 +44,7 @@ test	tests/docker.sh test-ui-inner
 build	scripts/unity-method.sh Foo.Bar
 jobs	/tmp/run-wait-1106.sh
 jobs	sed -n 1p scripts/test/gate-and-land.sh
+jobs	grep -n preview_gate_run scripts/deploy.sh
 jobs	sed -n 1,40p tests/unit/x.bats
 jobs	ls tests/vendor/bats-core
 jobs	grep -n "BATS\|bats" tests/Makefile

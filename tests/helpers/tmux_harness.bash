@@ -87,9 +87,12 @@ tmux_kill_named() {
 # tmux_start <command...> -- boot an isolated server running the command in window 0
 tmux_start() {
   [ -n "$TM_SOCKET" ] || tmux_shim
-  _tm new-session -d -x "$TM_WIDTH" -y "$TM_HEIGHT" "$@" </dev/null
+  # The pane id comes from new-session itself: a later `list-panes` with no -t reads the newest
+  # session, which is the command's own when it makes one first (notes-mobile's notes-hub), and
+  # then the test steers that session instead (ar-5592).
+  TM_TARGET="$(_tm new-session -d -P -F '#{pane_id}' -x "$TM_WIDTH" -y "$TM_HEIGHT" "$@" </dev/null)"
+  [ -n "$TM_TARGET" ] || { echo "tmux_start: new-session gave no pane id" >&2; return 1; }
   _tm set-option -g status off 2>/dev/null || true
-  TM_TARGET="$(_tm list-panes -F '#{pane_id}' | head -1)"
 }
 
 # The shim, called by absolute path. Not `tmux` via PATH: a test that forgot tmux_shim would

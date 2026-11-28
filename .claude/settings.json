@@ -83,6 +83,7 @@
       "Edit(/etc/sudoers.d/**)",
       "Edit(**/.env)",
       "Edit(**/.env.*)",
+      "Edit(~/.agent/sessions/**/*-wind-down.md)",
       "Read(//**/.env)",
       "Read(//**/.env.*)",
       "Read(//**/id_rsa)",
@@ -170,6 +171,15 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/context-budget-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/stop-post.d/85-sync-plans.sh"
           }
         ]
       },

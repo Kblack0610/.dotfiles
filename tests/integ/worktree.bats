@@ -193,7 +193,7 @@ push_lands() {
   TMUX_TMPDIR="$(mktemp -d /tmp/wtx.XXXXXX)"
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
   for s in default lab; do
-    python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/$s"
+    unix_sock "$TMUX_TMPDIR/tmux-$(id -u)/$s"
   done
   printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.default"
   : > "$NOTES_FIXTURE/tmux.sessions.lab"
@@ -408,7 +408,7 @@ declare_game_in_hub() {
   export TMUX_TMPDIR
   TMUX_TMPDIR="$(mktemp -d /tmp/wtx.XXXXXX)"
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)"
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/lab"
+  unix_sock "$TMUX_TMPDIR/tmux-$(id -u)/lab"
   printf 'repo-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run "$WT" new -c "$MAIN"
   rm -rf "$TMUX_TMPDIR"

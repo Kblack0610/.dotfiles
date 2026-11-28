@@ -31,7 +31,8 @@ from a file, and outside manual mode kernel files under /proc and /sys. Not cove
 import json
 import os
 import re
-import sys
+
+import hooklib
 
 # ast, shlex and the sibling modules load past main's prefilter: this hook runs on every Bash call.
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -65,15 +66,6 @@ MANUAL_MSG = (
     "changing anything; output under /tmp or ~/.cache passes. The human switches mode (Shift+Tab) to "
     "allow edits."
 )
-
-
-def _load(name, file):
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location(name, os.path.join(HERE, file))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 def source(words):
@@ -364,7 +356,7 @@ def guarded(target):
     a settings.json permission deny. Any other file has none to skip."""
     global WORKFLOW, DENIED
     if WORKFLOW is None:
-        WORKFLOW = _load("hosted_runner_guard", "hosted-runner-guard.py").WORKFLOW
+        WORKFLOW = hooklib.load("hosted-runner-guard").WORKFLOW
     if DENIED is None:
         DENIED = denied_paths()
     return budget(target) or bool(WORKFLOW.search(target)) or any(d.match(target) for d in DENIED)
@@ -376,8 +368,8 @@ def reason(cmd, cwd, manual):
     import shlex
     import warnings
 
-    FORGE = FORGE or _load("forge_guard", "forge-guard.py")
-    poll = _load("block_poll", "block-poll.py")
+    FORGE = FORGE or hooklib.load("forge-guard")
+    poll = hooklib.load("block-poll")
     for code, d in codes(cmd, cwd, FORGE, poll):
         r = verdict(code, d, manual, FORGE.resolve)
         if r:
@@ -396,16 +388,5 @@ def decide(data):
     return reason(cmd, data.get("cwd") or os.getcwd(), data.get("permission_mode") == "default")
 
 
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

@@ -31,7 +31,7 @@ const ctx = vm.createContext({
 });
 for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "charts.js", "app.js", "watch.js", "table.js", "actions.js", "shepherd.js", "sessions.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
-const agent = (target, o) => ({ target, session: target + "-id", status: "idle", summary: "", project: "dotfiles", ...o });
+const agent = (target, o) => ({ target, session: target + "-id", status: "idle", summary: { text: "" }, project: "dotfiles", ...o });
 const state = (target, bucket, o) => ({ target, session_id: target + "-id", bucket, topic: `task of ${target}`, idle_min: 5, ...o });
 
 // st, wst and shst are top-level consts of the page's scripts: the vm sees them, ctx does not.
@@ -40,13 +40,13 @@ run(`var __api = api`);
 
 const row = (key, o) => ({ key, bucket: "WORKING", project: "dotfiles", task: `task of ${key}`, item: "", target: key, session_id: key + "-id", pr: null, pr_state: "", ci: "", phases_done: null, phases_total: null, idle_min: 3, ended: "", finished: null, cost_usd: null, account: "a", harness: "claude", source: "live", unlinked: false, ...o });
 const ROWS = [
-  row("hub/b:1", { bucket: "NEEDS", pr: "12", pr_state: "open", ci: "PASS", phases_done: 2, phases_total: 4, cost_usd: 1.2 }),
-  row("lab/x:1", { bucket: "STALLED", idle_min: 1980 }),
+  row("hub/b:1", { bucket: "NEEDS", pr: "12", pr_state: "open", ci: "PASS", phases_done: 2, phases_total: 4, cost_usd: 1.2, runs_on: "local", agent: { target: "hub/b:1", session: "hub/b:1-id", attached: false, parked: true } }),
+  row("lab/x:1", { bucket: "STALLED", idle_min: 1980, runs_on: "razer-laptop" }),
   row("ucp-394", { bucket: "DONE", target: "", session_id: "s9", item: "ucp-394", pr: "1915", pr_state: "merged", ended: "ended", idle_min: null, source: "queue", harness: "codex", close: "now" }),
 ];
-const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: [], values: [{ q: "project:dotfiles", value: "dotfiles", n: 3, on: false }] }],
+const TABLE = { q: "", state: "", shown: 3, total: 3, facets: [{ key: "project", clear: "", on: [], values: [{ q: "project:dotfiles", value: "dotfiles", n: 3, pct: 50, on: false }] }],
   states: [{ name: "live", n: 2 }, { name: "running", n: 0 }, { name: "needs you", n: 1, tone: "bad" }, { name: "stalled", n: 1, tone: "warn" }, { name: "ended today", n: 1, tone: "ok", means: "ended today" }, { name: "all", n: 3 }],
-  columns: ["bucket", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
+  columns: ["bucket", "project", "task", "by", "pr", "phases", "idle", "ctx", "cost", "acct", "harness", "close", "item", "source", "session", "machine"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "asc" })) };
 const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 3 per pass), 6 other", warn: false, start: null, confirm: "" },
   { text: "dispatch on, next 13:01", warn: false, start: null, confirm: "" },
   { text: "shepherd timer stopped", warn: true, start: "shepherd", confirm: "Start the shepherd timer?" }], live: 38, unlinked: 21, errors: ["fleet-dispatch headroom: exit 1"] };
@@ -58,8 +58,9 @@ function setup() {
     table: { rows: ROWS, errors: [], table: TABLE },
     cap: CAP,
     agents: [agent("hub/a:1"), agent("hub/b:1", { parked: true }), agent("hub/shep:1"), agent("hub/c:1")],
-    watch: { state: { sessions: [state("hub/a:1", "WORKING", { pr: "12", ci: "PASS", eta: "14:05" }), state("hub/b:1", "NEEDS"), state("lab/x:1", "STALLED")] }, transitions: [] },
-    shep: { target: "hub/shep:1", status: "idle", stats: { pass_running: true, pass_age_s: 240, pass_status: "running" }, ledger: { due: [{}, {}] }, rundowns: [] },
+    watch: { state: { sessions: [state("hub/a:1", "WORKING", { pr: "12", ci: "PASS", eta: "14:05" }), state("hub/b:1", "NEEDS"), state("lab/x:1", "STALLED")] }, transitions: [],
+      lanes: { t0: 0, until: 86400000, lanes: [{ target: "a:1", gone: false, segs: [{ a: 0, b: 86400000, key: "WORKING", span: "00:00-00:00" }] }, { target: "old:2", gone: true, segs: [] }] } },
+    shep: { target: "hub/shep:1", status: "idle", pass: { flags: [], why: "", now: "pass 0123abcd running, 4m:", attach: "tmux attach -t sh", last: "no verdict on record", totals: "last 24h: 1 passes, 0 nudges, 0 escalations, 0 skips; 2 due, 0 skipped, 0 paged" }, ledger: { due: [{}, {}] }, rundowns: [] },
   });
 }
 
@@ -90,12 +91,14 @@ test("the table is the server's rows in its order, with the overview tiles and t
   assert.doesNotMatch(html, /data-ts="live"|sessions-chips|class="seg fseg"/, "the tiles are the chips, so the small chip row is gone, and live is the opening view, not a tile");
   assert.match(html, /<button class="tile" data-ts="all"/, "the ended rows are one tile away, under all");
   assert.ok(html.indexOf("stiles") < html.indexOf("tqbar"), "the overview row sits on the search bar");
-  assert.match(html, /<input type="checkbox" data-tq data-fv="dotfiles" value="project:dotfiles"> <span>dotfiles<\/span> <span class="n">3<\/span>/);
+  assert.match(html, /<input type="checkbox" data-tq data-fv="dotfiles" value="project:dotfiles"> <span>dotfiles<\/span> <span class="n">3 \(50%\)<\/span>/);
   assert.match(html, /#12 open <b class="ci pass">PASS<\/b>/);
   assert.match(html, /<td class="n">2\/4<\/td><td class="n">3m<\/td><td class="n">-<\/td><td class="n">\$1\.20<\/td>/);
   assert.match(html, /title="sort by harness">harness<\/button>/, "the harness is a column");
   assert.match(html, /title="sort by close">close<\/button>/, "the close verdict is a column");
-  assert.match(html, /<td>a<\/td><td>codex<\/td><td>now<\/td><\/tr>/, "each row names its harness after its account, then its close verdict");
+  assert.match(html, /<td>a<\/td><td>codex<\/td><td>now<\/td><td class="muted">-<\/td><\/tr>/, "each row names its harness after its account, then its close verdict, and a queue row no machine");
+  assert.match(html, /title="sort by machine">machine<\/button>/, "the machine is a column (ar-3321)");
+  assert.match(html, /<td class="muted">razer-laptop<\/td><\/tr>/, "a worker's session names its machine");
   assert.doesNotMatch(html, /data-tsort="(item|source)"/, "item and source are search keys, not columns");
 });
 
@@ -134,9 +137,8 @@ test("a fleet worker's session opens on its screen, with no conversation to read
   assert.equal(run("st.view"), "screen");
   assert.equal(run(`$("v-transcript").disabled`), true, "its transcript is on that machine");
   assert.equal(run(`$("compose").hidden`), false, "it has a pane to type into");
-  run(`st.agents = [{ target: "razer-laptop@lab/x:1", session: "w-id", host: "razer-laptop" }, { target: "lab/x:1", session: "l-id" }]`);
-  assert.match(run(`sideRow(__d)`, row("razer-laptop@lab/x:1")), /dotfiles @razer-laptop/, "the machine is the agent's host, from the server");
-  assert.doesNotMatch(run(`sideRow(__d)`, row("lab/x:1")), /@/, "a local row names no machine");
+  assert.match(run(`sideRow(__d)`, row("razer-laptop@lab/x:1", { agent: { target: "razer-laptop@lab/x:1", session: "w-id", host: "razer-laptop" } })), /dotfiles @razer-laptop/, "the machine is the agent's host, joined by the server");
+  assert.doesNotMatch(run(`sideRow(__d)`, row("lab/x:1", { agent: { target: "lab/x:1", session: "l-id" } })), /@/, "a local row names no machine");
   run(`load = __load`);
 });
 
@@ -212,7 +214,7 @@ test("a page draws hub-core's parts: links, amber, errors, the open outcome card
   assert.doesNotMatch(html, /data-transcript/, "the conversation is the default view, so Details has no Load row");
   assert.doesNotMatch(html, /page-state/, "a session out of the state document has no state fold");
   assert.equal(run("st.sel.name"), "ucp-394");
-  assert.equal(run("st.sel.summary"), "the <task>");
+  assert.equal(run("st.sel.summary.text"), "the <task>");
   ctx.PAGE_STUB = { ...PAGE, session_id: "hub/a:1-id", target: "hub/a:1", outcome: "" };
   run(`st.sel = { target: "hub/a:1", session: "hub/a:1-id", actions: [] }`);
   await run(`loadPage()`);
@@ -283,7 +285,6 @@ test("the bucket order and colours come from the published vocabulary, not a lis
   assert.equal(run(`bucketColor("WORKING")`), "var(--b-chat)", "no vocabulary yet: nothing is named here");
   run(`setBuckets(__d)`, VOCAB);
   assert.equal(run(`bucketColor("WORKING")`), "var(--b-working)");
-  assert.deepEqual([...run(`["PARKED", "NEEDS", "X"].map(bucketRank)`)], [6, 0, 7]);
   setup();
   run(`BUCKETS = []; setBuckets(sst.data.buckets)`);
   assert.equal(run(`BUCKETS.length`), 0, "a table body with no buckets leaves the order alone");
@@ -317,6 +318,21 @@ test("under the table the last day starts shut with its lane count; the shepherd
   run(`wst.open.lanes = false`);
 });
 
+test("the swimlanes are drawn as the server sent them: its window, its lanes, its ended count", () => {
+  setup();
+  run("sst.render()");
+  const html = boxes["ov-sessions"].innerHTML;
+  assert.match(html, /<span class="n">1<\/span>/, "the shut fold counts the kept lanes: the ended one is hidden");
+  run(`wst.open.lanes = true; sst.render()`);
+  const open = boxes["ov-sessions"].innerHTML;
+  assert.match(open, /ended sessions \(1\)/);
+  assert.match(open, /<title>WORKING 00:00-00:00<\/title>/, "a segment's title is the server's");
+  assert.doesNotMatch(open, /old:2/);
+  run(`wst.ended = true; sst.render()`);
+  assert.match(boxes["ov-sessions"].innerHTML, /old:2/);
+  run(`wst.ended = false; wst.open.lanes = false`);
+});
+
 test("the Shepherd inner tab draws its chat, pass and due lines only while it shows", () => {
   setup();
   box("ov-shepherd").innerHTML = "";
@@ -327,6 +343,12 @@ test("the Shepherd inner tab draws its chat, pass and due lines only while it sh
   assert.match(html, /data-chat>Chat: open hub\/shep:1/);
   assert.match(html, /Skipped on purpose, in Actions/);
   assert.doesNotMatch(html, /<details class="ovsec"/, "the tab is the section, not a fold");
+  assert.match(html, /<div class="rd-body">pass 0123abcd running, 4m: <code>tmux attach -t sh<\/code><\/div>/, "the pass card is the words hub-core sent");
+  assert.match(html, /<div class="rd-body muted">last 24h: 1 passes/);
+  run(`shst.data = Object.assign({}, shst.data, { pass: null, pass_error: "exit 1" }); renderShepherd()`);
+  assert.match(boxes["ov-shepherd"].innerHTML, /fleet-shepherd stats gave nothing: exit 1\./, "a failed read is named, never a page of zeros");
+  run(`shst.data = Object.assign({}, shst.data, { pass: { flags: ["stuck", "2 unhandled, 3 checks in a row"], why: "no pass for 3h", now: "no pass on record", attach: "", last: "no verdict on record", totals: "t" }, pass_error: null }); renderShepherd()`);
+  assert.match(boxes["ov-shepherd"].innerHTML, /<div class="pills"><span class="pill ask">stuck<\/span><span class="pill ask">2 unhandled, 3 checks in a row<\/span><\/div><div class="rd-body">no pass for 3h<\/div>/);
 });
 
 test("each inner tab reads only its own feed while shown", async () => {
@@ -392,7 +414,7 @@ test("Log's ranked sessions list the week worst first, and an open row shows its
   assert.equal(html.match(/joblog/g).length, 1, "only the open row shows a card");
 });
 
-test("an open session's facts are its fleet-state card, open until folded to one line, and the page shows them itself", () => {
+test("an open session's facts are one line linking to the page, which shows the card itself", () => {
   setup();
   run("st.sel = st.agents[0]");
   ctx.renderFacts();
@@ -400,7 +422,8 @@ test("an open session's facts are its fleet-state card, open until folded to one
   run(`st.view = "transcript"`);
   ctx.renderFacts();
   assert.equal(boxes.facts.hidden, false);
-  assert.match(boxes.facts.innerHTML, /<details data-k="facts" open><summary>.*WORKING.*PR #12/);
+  assert.match(boxes.facts.innerHTML, /WORKING.*PR #12.*<button class="btn sm" data-page>Session page<\/button>/);
+  assert.doesNotMatch(boxes.facts.innerHTML, /wcard/, "the card is the page's: the facts line links to it");
   run("st.sel = st.agents[3]");
   ctx.renderFacts();
   assert.equal(boxes.facts.hidden, true);
@@ -433,7 +456,8 @@ test("Log's Rundowns draw the page the server sent under its pager, every card s
 test("a session opened here that wrote since carries the accent dot; the one in view and one never opened have none", () => {
   setup();
   const rowOf = (key) => boxes["ov-sessions"].innerHTML.split('<tr class="click"').find((r) => r.includes(`data-key="${key}"`));
-  const b = `st.agents.find((a) => a.target === "hub/b:1")`;
+  // The row's own agent is what the server joined to it; the open session is the sidebar's.
+  const b = `sst.data.rows.find((r) => r.key === "hub/b:1").agent`, sel = `st.agents.find((a) => a.target === "hub/b:1")`;
   run("sst.render()");
   assert.doesNotMatch(boxes["ov-sessions"].innerHTML, /newdot/, "nothing opened here, no dots");
   run(`markSeen("hub/b:1-id"); ${b}.wrote = Date.now() / 1000 - 60; sst.render()`);
@@ -446,12 +470,12 @@ test("a session opened here that wrote since carries the accent dot; the one in 
   // Back from a hidden tab the stream's writes were dropped: the agents read's mtime carries it.
   run(`wroteAt["hub/b:1-id"] = 0; seen["hub/b:1-id"] = Date.now() - 100000; ${b}.wrote = Date.now() / 1000 - 50; sst.render()`);
   assert.match(rowOf("hub/b:1"), /newdot/);
-  run(`st.sel = ${b}`);
+  run(`st.sel = ${sel}`);
   assert.equal(run(`hasNew(st.sel)`), false, "the session in view never has one");
   run(`noteWrite("hub/b:1-id"); st.sel = null; sst.render()`);
   assert.doesNotMatch(rowOf("hub/b:1"), /newdot/, "seen while in view, so no dot after leaving");
   // Left open behind another tab it is not in view: its writes are new.
-  run(`st.sel = ${b}; st.tab = "home"; seen["hub/b:1-id"] -= 5; noteWrite("hub/b:1-id")`);
+  run(`st.sel = ${sel}; st.tab = "home"; seen["hub/b:1-id"] -= 5; noteWrite("hub/b:1-id")`);
   assert.equal(run(`hasNew(st.sel)`), true, "open behind Home, its output is unseen");
   // Another browser tab's mark is kept, not overwritten.
   store.set("agent-web:seen", JSON.stringify({ ...JSON.parse(store.get("agent-web:seen")), other: Date.now() }));

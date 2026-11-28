@@ -265,13 +265,14 @@ mod tests {
         }
     }
 
-    fn stats(closed_weight_28d: u32) -> Stats {
+    fn stats(closed_weight_28d: u32, filed_weight_28d: u32) -> Stats {
         Stats {
             profile: "personal".into(),
             name: "db".into(),
             stage: "alpha".into(),
             progress: Progress {
                 closed_weight_28d,
+                filed_weight_28d,
                 ..Progress::default()
             },
             epics: vec![EpicRollup {
@@ -284,8 +285,8 @@ mod tests {
         }
     }
 
-    // A row's forecast sums the weight ranked ahead of it in sheet order, at the 28-day rate: 28
-    // weight closed in 28 days is one a day, so the third unit of work lands on day three.
+    // A row's forecast sums the weight ranked ahead of it in sheet order, at the net 28-day rate:
+    // 28 weight closed in 28 days is one a day, so the third unit of work lands on day three.
     #[test]
     fn the_forecast_walks_the_sheet_order_at_the_close_rate() {
         let mut feed = Feed {
@@ -315,13 +316,23 @@ mod tests {
             ],
             "now first, then next by rank, then backlog; the epic adds nothing"
         );
-        // Negative control: no closes in 28 days is no forecast, never a guess.
+        // Filings net out of the rate, as the version ETA nets them: 42 closed less 14 filed is
+        // the same one a day.
+        projects::forecast(&mut feed, &[stats(42, 14)], day("2026-11-09"));
+        assert_eq!(feed.rows[0].forecast.as_deref(), Some("2026-11-15"));
+        // 28 closed less 14 filed is one every two days: db-5, sixth unit of work, on day 12.
+        projects::forecast(&mut feed, &[stats(28, 14)], day("2026-11-09"));
+        assert_eq!(feed.rows[0].forecast.as_deref(), Some("2026-11-21"));
+        // Negative control: no closes in 28 days, or filing as fast as closing, is no forecast,
+        // never a guess.
         forecast_of(&mut feed, 0);
+        assert!(feed.rows.iter().all(|r| r.forecast.is_none()));
+        projects::forecast(&mut feed, &[stats(28, 28)], day("2026-11-09"));
         assert!(feed.rows.iter().all(|r| r.forecast.is_none()));
     }
 
     fn forecast_of(feed: &mut Feed, closed: u32) {
-        projects::forecast(feed, &[stats(closed)], day("2026-11-09"));
+        projects::forecast(feed, &[stats(closed, 0)], day("2026-11-09"));
     }
 
     #[test]
@@ -354,7 +365,7 @@ mod tests {
             ..Feed::default()
         };
         forecast_of(&mut feed, 28);
-        let got: Vec<(usize, String)> = hints(&feed, &[stats(28)])
+        let got: Vec<(usize, String)> = hints(&feed, &[stats(28, 0)])
             .into_iter()
             .map(|h| (h.line, h.text))
             .collect();

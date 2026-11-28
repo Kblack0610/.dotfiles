@@ -175,10 +175,11 @@ details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8
 @media (min-width: 1200px) { .kgrid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 /* Packed (cards.js packCards): plain grid rows are as tall as their tallest card and leave a gap
    under a short one, so the rows are 1px and each card spans its own height plus the column gap;
-   dense flow puts the next card in the shortest column, and a card never stretches to its span.
-   The last card's span carries a gap, so the margin under the grid is less by one. */
+   dense flow puts the next card in the shortest column.
+   The last card's span carries a gap, so the margin under the grid is less by one. A card never
+   stretches, packed or not, so packCards reads the same height before .packed as after it. */
 .kgrid.packed { grid-auto-rows: 1px; grid-auto-flow: row dense; row-gap: 0; margin-bottom: 2px; }
-.kgrid.packed > .kcard { align-self: start; }
+.kgrid > .kcard { align-self: start; }
 .kcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; min-width: 0; display: flex; flex-direction: column; gap: 0; }
 .kt { display: flex; justify-content: space-between; font-size: var(--fs-xs); font-weight: 650; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); text-decoration: none; }
 .kt:hover { color: var(--ink); }
@@ -234,8 +235,7 @@ details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8
 /* Sessions (static/watch.js, shepherd.js, sessions.js): the overview row, the open session's folded
    facts and its page, the overview's folded sections. */
 #facts { padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); max-height: 45vh; overflow-y: auto; }
-#facts summary { cursor: pointer; font-size: 13px; overflow-wrap: anywhere; }
-#facts .wcard { margin-top: 6px; }
+#facts .facts-line { font-size: 13px; overflow-wrap: anywhere; }
 .pghead { margin-bottom: 10px; overflow-wrap: anywhere; }
 .pgrow { display: grid; grid-template-columns: 7.5em minmax(0, 1fr); gap: 8px; padding: 3px 0; font-size: 13px; }
 .pgk { color: var(--muted); }
@@ -476,6 +476,19 @@ span.warn { color: var(--b-stalled); }
 .sched { container-type: inline-size; }
 .sdet { position: sticky; left: 10px; max-width: calc(100cqw - 20px); overflow-wrap: anywhere; }
 .flowpic { display: block; max-width: 100%; height: auto; margin-top: 8px; border-radius: 6px; }
+/* Reports (reports.js), on the open-in-place rows above: the title cell takes what the other three
+   leave, so a long title cuts instead of widening the page; an unread title is bold, and a phone
+   drops the From column. */
+table.rrep { table-layout: fixed; }
+table.rrep tr > :nth-child(2) { width: 9em; } table.rrep tr > :nth-child(3) { width: 7.5em; } table.rrep tr > :nth-child(4) { width: 8em; }
+/* When fits the longest ui.js when() output, MM-DD HH:MM, which a locale's short weekday plus a clock does not pass. */
+table.rrep td .c1 { max-width: none; }
+/* A long From (a queue slug) ends in ... inside its column, its whole text on hover. */
+table.rrep td.rfrom { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.rrep tr.unread td:first-child .c1:first-child { font-weight: 600; }
+table.rrep tr.wdet > td { overflow-wrap: anywhere; }
+/* Daily: the day's refs as one count line, a link to that day on Reports. */
+.dref { display: block; margin: 8px 0; text-decoration: none; color: var(--ink); }
 /* Releases: a long changelog scrolls inside the opened row. */
 .rel-cl { max-height: 320px; overflow: auto; margin-top: 4px; }
 /* Run page: its sections, and the Jobs stage graph (a column per depth of needs:, scrolls sideways). */
@@ -711,3 +724,9 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .appd30 { display: inline; }
 }
 .appchk { margin-bottom: 10px; }
+
+/* Tests: a class's recent results, oldest first, one small block each. */
+.hstrip { display: inline-flex; gap: 1px; vertical-align: middle; }
+.hstrip i { display: block; width: 5px; height: 12px; background: var(--b-parked); }
+.hstrip i.passed { background: var(--b-done); } .hstrip i.failed { background: var(--b-needs); }
+.hstrip i.quarantined { background: var(--b-stalled); }

@@ -18,23 +18,23 @@
 // The read is the tab's own (refreshProjects): with something open it reads every card.
 const pst = tblTab({
   tab: "projects", id: "projects", el: "p-cards", refresh: () => refreshProjects(),
-  shown: () => st.tab === "projects" && !pst.open && pTab() === "list", wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:low",
+  shown: () => st.tab === "projects" && !pst.open && pTab() === "list", wait: "Reading notes projects...", hint: "search, or stage:alpha profile:personal -prio:focus",
   state: { open: null, inner: "overview", dept: "", sprint: "", unlinked: true, page: {}, folds: {}, viewed: "" },
   head: (t) => secHead("cards", "Projects", tblCount(t.data.table)) + pFocus(t.data.focus) + (t.data.errors || []).map((e) => `<div class="panel down">${esc(e)}</div>`).join(""),
   body: () => pList(),
 });
 
-// The Focus strip (hub_core::projects::focus_json): who is on focus and until when, Clear (back to
-// high, where an ended focus reads), and a project and length to focus (a project already on
+// The Focus strip (hub_core::projects::focus_json): who is on focus and until when, Clear (off
+// focus, where an ended focus reads), and a project and length to focus (a project already on
 // focus gets a new end; "default length" sends no hours, so notes' default applies). A focus always ends:
-// notes writes its `Focus until:` and past it the project ranks as high. pfocus keeps the picks
+// notes writes its `Focus until:` and past it the project runs no sprints. pfocus keeps the picks
 // across a redraw; pfmsg is the last write's refusal.
 pst.pfocus = { key: "", hours: "" }; pst.pfmsg = "";
 function pFocus(f) {
   if (!f) return "";
   const k = (o) => o.profile + "/" + o.name, pick = pst.pfocus;
   return `<div class="card pfocus"><div class="cline">${esc(f.says)}</div>` +
-    (f.on.length ? `<div class="cline">${f.on.map((o) => `<button class="btn" data-pfclear="${esc(k(o))}" title="back to high">Clear ${esc(o.name)}</button>`).join(" ")}</div>` : "") +
+    (f.on.length ? `<div class="cline">${f.on.map((o) => `<button class="btn" data-pfclear="${esc(k(o))}" title="off focus">Clear ${esc(o.name)}</button>`).join(" ")}</div>` : "") +
     (f.all.length ? `<div class="cline"><select data-pfpick="key" title="project">${f.all.map((o) => `<option value="${esc(k(o))}"${k(o) === pick.key ? " selected" : ""}>${esc(o.name)}</option>`).join("")}</select> ` +
       `<select data-pfpick="hours" title="how long the focus lasts"><option value="">default length</option>${f.hours.map((h) => `<option value="${h}"${String(h) === pick.hours ? " selected" : ""}>${h} hours</option>`).join("")}</select> ` +
       `<button class="btn" data-pfset>Focus</button></div>` : "") +
@@ -171,13 +171,13 @@ const pTop = (c, chips) => cardHead(c.name, chips.filter(Boolean)) +
   `<div class="pprog">${c.window_share == null ? "" : `${meter(c.window_share / 100)}<span class="ppct">${esc(c.window_cell)}</span>`}</div>` +
   `<div class="psum">${esc(c.summary)}</div>`;
 
-const P_COLS = { project: ["project"], state: ["state"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], pts: ["pts", "n"], pts7d: ["pts7d", "n"], window: ["window", "n"], due: ["due", "n"], pace: ["pace/wk", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], shipped: ["shipped", "n"], oldest: ["oldest", "n"] };
+const P_COLS = { project: ["project"], state: ["state"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], net7d: ["net7d", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], pts: ["pts", "n"], pts7d: ["pts7d", "n"], window: ["window", "n"], due: ["due", "n"], pace: ["pace/wk", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], shipped: ["shipped", "n"], oldest: ["oldest", "n"] };
 const pDash = (v) => esc(v == null || v === "" ? "-" : v);
 
 // One line of the list, its name a link; a click or Enter on it opens the project.
 const pLine = (c, i, t) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><td>${tblLink(tblLinks(t, i).project, c.name)}</td><td>${statePill(c.state, c.state_level)}</td><td>${esc(c.profile)}</td>` +
   `<td>${pDash(c.stage)}</td><td>${pDash(c.version)}</td><td>${pDash(c.prio)}</td>` +
-  `<td class="n">${c.progress.open}</td><td class="n">${c.doing}</td><td class="n${c.hot ? " warn" : ""}">${c.hot}</td>` +
+  `<td class="n">${c.progress.open}</td><td class="n${c.growing ? " warn" : ""}">${esc(c.net7d_cell)}</td><td class="n">${c.doing}</td><td class="n${c.hot ? " warn" : ""}">${c.hot}</td>` +
   `<td class="n">${c.progress.done}</td><td class="n">${c.progress.closed_7d}</td>` +
   `<td class="n">${c.progress.done_weight}</td><td class="n">${c.progress.closed_weight_7d}</td>` +
   `<td class="n">${esc(c.window_cell)}</td><td class="n">${esc(c.due_cell)}</td>` +
@@ -249,7 +249,7 @@ function pOverview(c, pg) {
   if (pg) html += secHead("p-systems", "Systems", pg.systems.length) + pSysTable(pg.systems);
   return html;
 }
-const P_SYS_HEAD = ["system", "done", "features", "standard", "open rows", "behind", "criteria", "current wave"];
+const P_SYS_HEAD = `<tr><th data-role="lead">system</th><th class="n" data-role="glance" data-named>done</th><th class="n">features</th><th class="n">standard</th><th class="n">open rows</th><th class="n" data-role="glance" data-named>behind</th><th class="n">criteria</th><th data-role="glance">current wave</th></tr>`;
 // One row per system: its percent, features done of counted, open standard epics, open rows,
 // epics behind, criteria met and its current wave.
 function pSysTable(systems) {
@@ -259,7 +259,7 @@ function pSysTable(systems) {
     `<td class="n">${s.standing || "-"}</td><td class="n">${s.open_rows || "-"}</td><td class="n${s.behind ? " warn" : ""}">${s.behind || "-"}</td>` +
     `<td class="n">${s.criteria_total == null ? "-" : `${s.criteria_met} of ${s.criteria_total}`}</td>` +
     `<td class="wrap">${s.wave ? esc(s.wave.title) + (s.wave.percent == null ? "" : ` ${s.wave.percent}%`) + (s.wave.more ? ` <span class="muted">+${s.wave.more}</span>` : "") : "-"}</td></tr>`;
-  return `<div class="panel scroll"><table class="tbl"><tr>${P_SYS_HEAD.map((h, i) => `<th${i && i < 7 ? ` class="n"` : ""}>${h}</th>`).join("")}</tr>${systems.map(row).join("")}</table></div>`;
+  return `<div class="panel scroll"><table class="tbl">${P_SYS_HEAD}${systems.map(row).join("")}</table></div>`;
 }
 
 // Stage: the next stage's requirements not met, failing first, then a human's, then the rest. The
@@ -339,6 +339,46 @@ function pDepartments(c) {
     pChips(c).map(([id]) => `<div data-pdp="${id}"${pst.dept === id ? "" : " hidden"}>${deptPane(key, id)}</div>`).join("");
 }
 
+// Knowledge: the project's whole space in one tab (hub_core::space, the page JSON's `space`): its
+// status, cadence and tracker, the lab's docs, the repo's docs, ADRs and CHANGELOG head, the agent's
+// plans, lessons, sessions and outcomes, the knowledge notes that name it, and its open asks and
+// queue items. A part with nothing says so; a source that failed is named in `errors`.
+const P_DOC_HEAD = `<tr><th data-role="lead">file</th><th>title</th><th>modified</th></tr>`;
+// A Shown's uncut words; an absent one is empty.
+const pWhole = (x) => (x ? x.full || x.text : "");
+const pDocRow = (d) => `<tr><td class="wrap">${esc(d.path)}</td><td class="wrap">${esc(pWhole(d.title))}</td><td class="muted">${esc(d.modified || "")}</td></tr>`;
+const pDocs = (id, title, docs, none) => secHead(id, title, docs.length) +
+  (docs.length ? pTbl(P_DOC_HEAD, docs.map(pDocRow)) : `<div class="card muted">${esc(none)}</div>`);
+function pCadence(c) {
+  const m = c.measured_days == null ? "none measured yet" : `${c.measured_days} measured over ${c.cuts} cuts`;
+  return `<b>cadence</b> every ${c.target_days} days promised, ${m}` +
+    (c.due_on ? `, due ${esc(c.due_on)}${c.due ? ` <span class="warn">(due now)</span>` : ""}` : "");
+}
+function pKnowledge(pg) {
+  const s = pg.space;
+  if (!s) return `<div class="card muted">The knowledge space could not be read; see the page's errors.</div>`;
+  const t = s.tracker, urls = t.urls.map((u) => `<a href="${esc(u)}">${esc(u)}</a>`).join(" ");
+  let html = secHead("p-space-head", "Status", s.status.date || null) +
+    `<div class="card">${s.status.headline ? `<div class="pstat">${esc(pWhole(s.status.headline))}</div>` : `<div class="muted">No status line.</div>`}` +
+    `<div class="cline">${pCadence(s.cadence)}</div><div class="cline"><b>tracker</b> ${esc(t.system || "none")} ${urls}</div></div>`;
+  const lab = [...s.lab.core, ...s.lab.docs], r = s.repo, a = s.agent;
+  html += pDocs("p-space-docs", "Lab docs", lab, "No docs in the lab folder.");
+  html += r ? pDocs("p-space-repo", "Repo docs", r.docs, "No docs/ in the repo.") + pDocs("p-space-adrs", "ADRs", r.adrs, "No ADRs.") +
+    secHead("p-space-changelog", "Changelog", r.repo) + (r.changelog_head.length ? `<div class="card">${pLines(r.changelog_head)}</div>` : `<div class="card muted">No CHANGELOG.</div>`)
+    : secHead("p-space-repo", "Repo") + `<div class="card muted">No repo cloned here.</div>`;
+  html += pDocs("p-space-plans", "Plans", a.plans, "No plans.") +
+    secHead("p-space-lessons", "Lessons", a.lessons.count) + `<div class="card muted">${esc(a.lessons.path || "No lessons file.")}</div>` +
+    pDocs("p-space-sessions", "Sessions", a.sessions, "No session notes.") + pDocs("p-space-outcomes", "Outcomes", a.outcomes, "No outcomes.");
+  html += secHead("p-space-notes", "Knowledge notes", s.knowledge.length) + (s.knowledge.length
+    ? pTbl(`<tr><th data-role="lead">note</th><th>title</th><th>names it in</th></tr>`,
+      s.knowledge.map((n) => `<tr><td class="wrap">${esc(n.path)}</td><td class="wrap">${esc(pWhole(n.title))}</td><td class="muted">${esc(n.why)}</td></tr>`))
+    : `<div class="card muted">No knowledge note names this project.</div>`);
+  html += secHead("p-space-work", "Open asks and queue", s.asks.length + s.queue.length) +
+    `<div class="card">${s.asks.length ? s.asks.map((k) => `<div><b>${esc(k.id)}</b> ${esc(k.title)}</div>`).join("") : `<div class="muted">No open asks.</div>`}</div>` +
+    `<div class="card">${s.queue.length ? s.queue.map((i) => `<div><b>${esc(i.slug)}</b> <span class="muted">${esc(i.state)}</span> ${esc(i.title || "")}</div>`).join("") : `<div class="muted">No live queue items.</div>`}</div>`;
+  return html + (s.errors.length ? `<div class="panel down">${s.errors.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "");
+}
+
 // The inner tabs' own panes, each in its data-pin group, around the board's (Rows) and
 // Deliverables' elements, in the strip's order: `p-pane` holds Overview,
 // the Sprint tab, a product's departments and the Rows head, `p-pane2` Releases, Stage and Activity. One that needs the page
@@ -350,7 +390,7 @@ function pPanes(c) {
   const pin = (id, html) => `<div data-pin="${id}"${pst.inner === id ? "" : " hidden"}>${html}</div>`;
   return [pin("overview", pOverview(c, pg) + (pg ? "" : wait)) + (pDepts(c).length ? pin(P_DEPT_TAB, pDepartments(c)) : "") + pin("sprint", pSprint(c, pg)) +
     pin("rows", secHead("p-rows", "Rows", c.progress.open)),
-  pin("releases", pg ? pReleases(pg) : wait) + pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait))];
+  pin("releases", pg ? pReleases(pg) : wait) + pin("stage", pg ? pStage(pg) : wait) + pin("activity", pActivity(c, pg) + (pg ? "" : wait)) + pin("knowledge", pg ? pKnowledge(pg) : wait)];
 }
 
 // Read the opened card's page, once per open (it runs fleet-bench and the stage check).
@@ -508,7 +548,7 @@ $("projects").addEventListener("change", (e) => {
 });
 $("projects").addEventListener("click", (e) => {
   if (e.target.id === "p-back") { e.preventDefault(); pGo(null); return; }
-  if (e.target.dataset.pfclear) { pFocusSet(e.target.dataset.pfclear, "high"); return; }
+  if (e.target.dataset.pfclear) { pFocusSet(e.target.dataset.pfclear, "normal"); return; }
   if (e.target.dataset.pfset != null) {
     const box = e.target.closest(".pfocus");
     pFocusSet(box.querySelector("[data-pfpick=key]").value, "focus", box.querySelector("[data-pfpick=hours]").value);

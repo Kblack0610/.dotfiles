@@ -150,6 +150,9 @@ fn some(s: String) -> Option<String> {
     Some(s).filter(|s| !s.trim().is_empty())
 }
 
+const UNKNOWN_VERB: &str =
+    "the verb is add, done, start, drop, move, promote, demote, edit, priority or tag";
+
 fn to_write(b: WriteBody) -> Result<Write, &'static str> {
     let verb = match b.verb.as_str() {
         "add" => Verb::Add {
@@ -184,12 +187,13 @@ fn to_write(b: WriteBody) -> Result<Write, &'static str> {
             raw: b.raw,
             text: b.text,
         },
+        "priority" => tasks::set_priority(&b.raw, &b.priority).ok_or(tasks::NOT_A_PRIORITY)?,
         "tag" => Verb::Tag {
             raw: b.raw,
             add: words(&b.add),
             remove: words(&b.remove),
         },
-        _ => return Err("the verb is add, done, start, drop, move, promote, demote, edit or tag"),
+        _ => return Err(UNKNOWN_VERB),
     };
     Ok(Write {
         profile: b.profile,
@@ -326,9 +330,9 @@ mod tests {
         assert_eq!(texts(&one), ["tidy"]);
         assert_eq!(one["table"]["total"], 3, "the total is the scope's");
         assert_eq!(one["table"]["shown"], 1);
-        assert_eq!(one["table"]["states"][3]["name"], "urgent");
+        assert_eq!(one["table"]["states"][4]["name"], "urgent");
         assert_eq!(
-            one["table"]["states"][3]["n"], 0,
+            one["table"]["states"][4]["n"], 0,
             "the query narrows the chips"
         );
     }
@@ -448,6 +452,22 @@ mod tests {
             tasks::argv(&w).unwrap()[5..],
             ["--agent", "--exact", "edit", "--text", "b", "--", "- [ ] a"]
         );
+    }
+
+    #[test]
+    fn a_priority_is_one_level_and_runs_as_a_tag_add() {
+        let w = to_write(body(
+            r#"{"verb":"priority","profile":"bnb","project":"demo","lane":"agent","raw":"- [ ] a","priority":"high"}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            tasks::argv(&w).unwrap()[5..],
+            ["--agent", "--exact", "tag", "--add=high", "--", "- [ ] a"]
+        );
+        let refused = to_write(body(
+            r#"{"verb":"priority","profile":"bnb","project":"demo","lane":"agent","raw":"- [ ] a","priority":"medium"}"#,
+        ));
+        assert!(refused.is_err(), "a retired word is refused");
     }
 
     #[test]

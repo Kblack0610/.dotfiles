@@ -1,0 +1,16 @@
+[Unit]
+Description=Start a fleet-dispatch kick when work is queued, a slot frees or a hold lifts
+
+# Every writer rewrites ~/.agent/dispatch/.wake through dispatch_wake (.local/lib/dispatch-wake.sh);
+# the writers are listed in .local/src/docs/fleet-dispatch.md (kick). Each write starts one
+# `fleet-dispatch kick`, the fast start-only path; systemd drops a write that lands
+# while one runs, so the kick reads the queue again when the wake file moved during its run, and the
+# 15-minute `fleet-dispatch run` (agentctl-fleet-dispatch.timer) catches what that missed.
+# The unit is a generated agentctl runner (agents/fleet-dispatch-kick.conf), a singleton: on a machine
+# that does not hold the fleet lease its ExecCondition skips the start.
+[Path]
+PathChanged=%h/.agent/dispatch/.wake
+Unit=agentctl@fleet-dispatch-kick.service
+
+[Install]
+WantedBy=default.target

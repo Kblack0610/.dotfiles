@@ -24,7 +24,7 @@ for (const f of ["../../web-kit/kb-ui.js", "ui.js", "md.js", "app.js", "waiting.
 
 const now = () => Math.floor(Date.now() / 1000);
 const KINDS = { perm: "Permission", turn: "Your turn", plan: "Plan to approve" };
-const agent = (o) => ({ target: "lab:w-1", short: "w-1", session: "c1", project: "p", summary: "Wire the join", items: [], actions: [],
+const agent = (o) => ({ target: "lab:w-1", short: "w-1", session: "c1", project: "p", summary: { text: "Wire the join" }, items: [], actions: [],
   question: { kind: "tool", text: "Run `rm x`?" }, wrote: now() - 300, need: { kind: "perm", label: "Permission" }, ...o });
 // An ask as hub_core::boards::Ask serves it: `session` is the tmux session that filed it,
 // `claude_session` the Claude session, `judge_line` the server's wording of the judge's verdict.
@@ -60,10 +60,10 @@ test("a plan card puts its buttons above the whole plan, uncapped", () => {
 
 test("a session card with no summary is titled by its plan, then its target; its estimate is on the line", () => {
   const eta = now() + 3600;
-  const html = sessionHtml(agent({ summary: "", plan: "big-plan", phases: { done: 1, total: 3, eta_epoch: eta } }));
+  const html = sessionHtml(agent({ summary: { text: "" }, plan: "big-plan", phases: { done: 1, total: 3, eta_epoch: eta } }));
   assert.match(html, /<div class="ntitle"[^>]*>big-plan<\/div>/);
   assert.match(html, /<span>phase 1\/3<\/span><span><span title="estimate ">ETA /);
-  assert.match(sessionHtml(agent({ summary: "", short: "" })), /<div class="ntitle"[^>]*>lab:w-1<\/div>/);
+  assert.match(sessionHtml(agent({ summary: { text: "" }, short: "" })), /<div class="ntitle"[^>]*>lab:w-1<\/div>/);
 });
 
 test("an ask card: first sentence as title, age, who filed it, then the rest of the question", () => {

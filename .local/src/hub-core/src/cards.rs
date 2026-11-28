@@ -445,8 +445,9 @@ pub fn queue(
 
 /// The room the last dispatch pass had, as parts: sessions against the target (amber once the run
 /// units fill it, the gates and not the count decide when the machine is full) and load against its
-/// cap (amber from 80%, red past it; none when the pass sent no load), and the focus projects that go
-/// first. None without a pass.
+/// cap (amber from 80%, red past it; none when the pass sent no load; held on load, the load the gate
+/// judged), and how many projects are on focus (each runs its release windows as sprints). None
+/// without a pass.
 fn room(mut c: Card, v: &crate::queue_verdict::Verdict) -> Card {
     let d = |k: &str| v.get(&format!("dispatch.{k}"));
     if let Some(cap) = d("room_max_live") {
@@ -455,7 +456,13 @@ fn room(mut c: Card, v: &crate::queue_verdict::Verdict) -> Card {
         let ul = if units >= cap { Level::Warn } else { Level::Ok };
         c = c.part("Sessions", format!("{total} of {cap}"), ul);
         let f = |k: &str| v.fact(&format!("dispatch.{k}"));
-        if let (Some(load), Some(lcap)) = (f("room_load"), f("room_load_cap")) {
+        // Held on load, the load is the one the gate judged, as the pause line says it.
+        let load = if d("room_held_load") == Some(1) {
+            f("room_load_at_hold")
+        } else {
+            f("room_load")
+        };
+        if let (Some(load), Some(lcap)) = (load, f("room_load_cap")) {
             let ll = if load > lcap {
                 Level::Red
             } else if load >= lcap * 0.8 {
@@ -467,7 +474,7 @@ fn room(mut c: Card, v: &crate::queue_verdict::Verdict) -> Card {
         }
     }
     match d("focus_projects") {
-        Some(n) if n > 0 => c.part("Focus first", n, Level::Warn),
+        Some(n) if n > 0 => c.part("On focus", n, Level::Warn),
         _ => c,
     }
 }
@@ -770,12 +777,11 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
         Level::Ok | Level::Nodata if !k.budget.needs.is_empty() => Level::Warn,
         l => l,
     };
-    c.big = if fc.why.is_some() {
-        "-".into()
+    (c.big, c.unit) = if fc.why.is_some() {
+        ("-".into(), NO_DATA.into())
     } else {
-        fc.usd.clone()
+        (fc.usd.clone(), "estimated, 24h".into())
     };
-    c.unit = "in 24h".into();
     c = c
         .part("Month", &k.budget.spent, Level::Ok)
         .part(
@@ -960,7 +966,8 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     let mut c = Card::new(
         "projects",
         "Projects",
-        "lab projects with their board slice and queue (notes projects --stats)",
+        "lab projects with their board slice and queue (notes projects --stats); growing is the \
+         projects whose board filed more points than it closed in the last 7 days (day-log)",
     )
     .part(
         "In flight",
@@ -975,6 +982,12 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
             .count(),
         Level::Ok,
     );
+    // The board's growth, per project (`board_flow`): left out when no day-log record carries
+    // points, since a count of none read is not a count of zero.
+    if cards.iter().any(|c| c.board_7d.is_some()) {
+        let n = cards.iter().filter(|c| c.growing()).count();
+        c = c.part("Growing", n, lvl(n, Level::Warn));
+    }
     // Every project counted is one green: a bar of one segment would repeat the big number.
     c.level = worst(0, 0, cards.len());
     c.big = cards.len().to_string();
@@ -1716,7 +1729,8 @@ mod tests {
                 s("summary_dispatch", "last_pass_epoch", 990.0),
                 s("summary_dispatch", "held_s", 600.0),
                 s("summary_dispatch", "room_held_load", 1.0),
-                s("summary_dispatch", "room_load", 30.0),
+                s("summary_dispatch", "room_load", 11.0),
+                s("summary_dispatch", "room_load_at_hold", 30.0),
                 s("summary_dispatch", "room_load_cap", 25.0),
                 s("summary_dispatch", "room_max_live", 40.0),
                 s("summary_dispatch", "room_total_live", 20.0),
@@ -2056,6 +2070,29 @@ mod tests {
             "#projects/busy"
         );
         assert_eq!(projects(&Default::default()).level, Level::Nodata);
+        // The board's growth is a part only once a day-log record has points: no reading is no
+        // part, never a 0.
+        assert!(c.parts.iter().all(|p| p.label != "Growing"));
+        let grew = |net: i64| crate::projects::Card {
+            board_7d: Some(crate::board_flow::BoardFlow {
+                net,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let read = projects(&crate::projects::Projects {
+            cards: vec![grew(120), grew(-5), grew(0), grew(7)],
+            ..Default::default()
+        });
+        let growing = read.parts.iter().find(|p| p.label == "Growing").unwrap();
+        assert_eq!((growing.value.as_str(), growing.level), ("2", Level::Warn));
+        // Nothing grew: the part reads 0 and is green (Home's grid then leaves it out).
+        let calm = projects(&crate::projects::Projects {
+            cards: vec![grew(-5), grew(0)],
+            ..Default::default()
+        });
+        let growing = calm.parts.iter().find(|p| p.label == "Growing").unwrap();
+        assert_eq!((growing.value.as_str(), growing.level), ("0", Level::Ok));
         // A read that failed is said, and a green card never hides it.
         let c = projects(&crate::projects::Projects {
             errors: vec!["notes projects: exit 1".into()],
@@ -2204,6 +2241,8 @@ mod tests {
         k.budget.needs = vec!["projected over cap".into()];
         let c = costs(&k);
         assert_eq!((c.big.as_str(), c.level), ("$573", Level::Warn));
+        // The big is the figure alone, so the 4x2 tile shows it whole; the unit says estimate.
+        assert_eq!(c.unit, "estimated, 24h");
         // Negative control: a cost that could not be read must not paint green, and a partial
         // read never reads as all clear.
         k.fleet_cost.why = Some("file missing".into());

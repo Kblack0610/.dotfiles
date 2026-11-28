@@ -429,6 +429,27 @@ make_drifted_submodule() {
   assert_output 'dirty (1 uncommitted)'
 }
 
+@test "a worktree whose git status FAILS is held, never recycled or listed reapable" {
+  # Refusal first. A canary run on razer-laptop left a submodule .git holding a bare sha, so
+  # every status there died; read as zero lines, the tree was idle and dispatch tried to
+  # recycle it every pass, and the switch refused on the run's files (ar-6220).
+  make_drifted_submodule
+  git -C "$WT" submodule update --quiet
+  printf '%s\n' "$C1" >"$WT/sub/.git"
+  run git -C "$WT" status --porcelain=v2
+  assert_failure # the fixture really is in the broken state
+  run wt_dirty_count "$WT"
+  assert_failure
+  assert_output --regexp '.+' # git's own error, whatever its wording
+  run wt_reap_reason "$WT"
+  assert_failure
+  assert_output --regexp '^git status fails: .+'
+  run wt_next_slot platform "$MAIN"
+  assert_output "2${PANEL_TAB}fresh"
+  run wt_row "$WT" agent-1 origin/main ''
+  assert_output --regexp $'\tdirty\t'
+}
+
 @test "a STAGED submodule pointer is somebody's intent, not drift" {
   make_drifted_submodule
   git -C "$WT" add sub
@@ -728,6 +749,42 @@ EOF
   run wt_default_branch "$MAIN"
   assert_success
   assert_output 'develop'
+}
+
+@test "a Forgejo-canonical repo's trunk remote is its forge, any other repo's is origin (ar-3218)" {
+  make_repo
+  git -C "$MAIN" remote add forgejo https://git.example.test/me/repo.git
+  export SO_FORGEJO_HOSTS=git.example.test
+  # NEGATIVE CONTROL: no mirror marker, so the forge remote is not where it lands
+  run wt_trunk_remote "$MAIN"
+  assert_output origin
+  mkdir -p "$MAIN/.forgejo/workflows"
+  : > "$MAIN/.forgejo/workflows/mirror-to-github.yaml"
+  run wt_trunk_remote "$MAIN"
+  assert_output forgejo
+}
+
+@test "wt_prepare fetches the forge and cuts off its tip in a clone with no origin (ar-3218)" {
+  # razer-laptop's home-config clone has only a `forgejo` remote: `fetch origin` failed every
+  # dispatch start there, and the cut went off a local master 414 commits behind the forge.
+  FORGE="$SANDBOX/forge.git"
+  MAIN="$SANDBOX/repo"
+  git init --quiet --bare -b main "$FORGE"
+  git init --quiet -b main "$MAIN"
+  git -C "$MAIN" commit --quiet --allow-empty -m seed
+  git -C "$MAIN" remote add forgejo "$FORGE"
+  git -C "$MAIN" push --quiet -u forgejo main
+  git clone --quiet "$FORGE" "$SANDBOX/other"
+  git -C "$SANDBOX/other" commit --quiet --allow-empty -m landed-elsewhere
+  git -C "$SANDBOX/other" push --quiet origin main
+  tip=$(git -C "$FORGE" rev-parse main)
+  # so_forge_remote reads a forge host off the URL, which a bare path has none of; the test above
+  # covers that half.
+  so_forge_remote() { printf 'forgejo git.example.test/me/repo\n'; }
+  run wt_prepare "$MAIN" "$WT_ROOT/repo-agent-1" 1 fresh
+  assert_success
+  refute_output --partial 'fetch failed'
+  assert_equal "$(git -C "$WT_ROOT/repo-agent-1" rev-parse HEAD)" "$tip"
 }
 
 # ── Squash merges, editors, submodule worktrees, and reaping with submodules ─
@@ -1206,7 +1263,7 @@ Description=tmux child pane 40 launched by process 95
 ControlGroup=/s/mute
 EOF
   mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)" "$SANDBOX/fakes"
-  python3 -c 'import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$TMUX_TMPDIR/tmux-$(id -u)/hub"
+  unix_sock "$TMUX_TMPDIR/tmux-$(id -u)/hub"
   echo '81 10' > "$SANDBOX/panes.hub"
   printf '#!/bin/sh\ncat %q\n' "$SANDBOX/scopes" > "$SANDBOX/fakes/systemctl"
   # list-panes for the server after -L, from panes.<server>; no such file is a server that is silent
@@ -1247,6 +1304,23 @@ EOF
   assert_line 'ended 31  dead (rustc x1)'
   assert_equal "$(cat "$SANDBOX/kill.log")" $'-TERM 21 22\n-TERM 31'
   assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24\n25'
+}
+
+@test "orphans spares a live tmux server's run-shell jobs in a closed pane's scope" {
+  # 2026-11-23: the lab server was started from a hub pane since closed, so its scope read as a
+  # closed pane's, and orphan-gc killed wind-down's `run-shell -b` reap in `git worktree remove`
+  # (ar-5133). Here server 24 runs job 27 (sh) whose child 28 is git; bats 21 is the pane's own.
+  pane_scopes
+  mkdir -p "$WT_PROC_ROOT/27" "$WT_PROC_ROOT/28"
+  echo sh > "$WT_PROC_ROOT/27/comm"; echo git > "$WT_PROC_ROOT/28/comm"
+  printf 'Name:\tsh\nPPid:\t24\n' > "$WT_PROC_ROOT/27/status"
+  printf 'Name:\tgit\nPPid:\t27\n' > "$WT_PROC_ROOT/28/status"
+  printf 'Name:\tbats\nPPid:\t20\n' > "$WT_PROC_ROOT/21/status"
+  printf '27\n28\n' >> "$WT_CGROUP_ROOT/s/gone/cgroup.procs"
+  run cmd_orphans
+  assert_success
+  assert_line 'ended 21,22  gone (bats x1, chrome-headless x1)'
+  assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24\n25\n27\n28'
 }
 
 @test "orphans never touches an open pane, or the scopes of a server that does not answer (negative control)" {
@@ -1859,6 +1933,21 @@ held_slot() {
 
 @test "a hold that outlived its directory frees the slot for the next new" {
   held_slot
+  rm -rf "$SLOT"
+  run wt_next_slot repo "$MAIN"
+  assert_success
+  assert_output "1${PANEL_TAB}fresh"
+  run wt_prepare "$MAIN" "$SLOT" 1 fresh
+  assert_success
+  [ -f "$SLOT/file.txt" ]
+}
+
+@test "an unlocked entry that outlived its directory frees the slot too" {
+  # 2026-11-24: a reap killed inside `git worktree remove`, after its unlock, left platform-agent-3
+  # registered and unlocked with no directory; unlock failing gated the remove, and every
+  # dispatch start on the slot hit "missing but already registered" (ar-5133).
+  held_slot
+  git -C "$MAIN" worktree unlock "$SLOT"
   rm -rf "$SLOT"
   run wt_next_slot repo "$MAIN"
   assert_success

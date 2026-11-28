@@ -73,8 +73,7 @@ impl BuildsView {
     /// Move the selection to the run with this key after a read, or keep the index in range.
     pub fn reselect(&mut self, b: &Builds, id: Option<RunKey>) {
         let rows = self.shown(b);
-        let at = id.and_then(|id| rows.iter().position(|r| r.key() == id));
-        self.table.keep(at, rows.len());
+        self.table.reselect(&rows, id, |r, id| r.key() == *id);
     }
 
     /// The section's heading (`title`) with how the runs divide, the view and what stopped a
@@ -207,7 +206,7 @@ pub struct DetailPane {
     pub top: usize,
 }
 
-const JOB_HEADER: [&str; 6] = ["JOB", "CLASS", "WAIT", "TOOK", "RUNNER", "$"];
+const JOB_HEADER: [&str; 5] = ["JOB", "CLASS", "WAIT", "TOOK", "RUNNER"];
 
 /// The opened run as the pane draws it: its title, header, then one line per job, every job
 /// (none capped), with its steps under a job that failed or took longest.
@@ -226,9 +225,6 @@ pub fn detail_lines(d: &RunDetail, p: Palette, w: usize) -> Vec<Line<'static>> {
         line.push_str(part);
     }
     out.push(Line::styled(format!("  {line}"), p.dim()));
-    if let Some(e) = &d.rates_error {
-        out.push(Line::styled(format!("  no rates: {e}"), p.warn()));
-    }
     if d.coverage != "complete" {
         out.push(Line::styled(format!("  {}", d.coverage_text), p.warn()));
     }
@@ -261,11 +257,10 @@ pub fn detail_lines(d: &RunDetail, p: Palette, w: usize) -> Vec<Line<'static>> {
                 j.wait_text.clone().into(),
                 j.took_text.clone().into(),
                 j.runner.clone().into(),
-                j.price.text.clone().into(),
             ]
         })
         .collect();
-    // The runner sits before the price, as the mock has it, so it takes what the others leave.
+    // The runner, last, takes what the others leave.
     let w = w.saturating_sub(2);
     let widest = |j: usize, cap: usize| {
         rows.iter()
@@ -275,22 +270,21 @@ pub fn detail_lines(d: &RunDetail, p: Palette, w: usize) -> Vec<Line<'static>> {
             .unwrap_or(0)
             .min(cap)
     };
-    let others: usize = [(0, 18), (1, 16), (2, 6), (3, 6), (5, 32)]
+    let others: usize = [(0, 18), (1, 16), (2, 6), (3, 6)]
         .iter()
         .map(|&(j, cap)| widest(j, cap) + 2)
         .sum();
     let table = Table {
         header: JOB_HEADER.to_vec(),
         rows,
-        keep: vec![0, 5, 3, 2, 1, 4],
+        keep: vec![0, 3, 2, 1, 4],
         right: vec![2, 3],
         cap: vec![
             (0, 18),
             (1, 16),
             (2, 6),
             (3, 6),
-            (5, 32),
-            (4, w.saturating_sub(others).clamp(8, 28)),
+            (4, w.saturating_sub(others).clamp(8, 40)),
         ],
         ..Default::default()
     }
@@ -870,7 +864,7 @@ pub mod tests {
         assert_eq!(eta(None, 1720), "-");
     }
 
-    fn job(i: usize, runner: &str, price: &str, took: i64) -> hub_core::run_detail::JobRow {
+    fn job(i: usize, runner: &str, took: i64) -> hub_core::run_detail::JobRow {
         hub_core::run_detail::JobRow {
             name: format!("shard {i}"),
             conclusion: "success".into(),
@@ -879,10 +873,6 @@ pub mod tests {
             wait_text: "21m".into(),
             took_text: hub_core::run_detail::took_text(Some(took)),
             runner: runner.into(),
-            price: hub_core::run_detail::Price {
-                text: price.into(),
-                ..Default::default()
-            },
             steps_text: "checkout 2s, PlayMode 43m10".into(),
             ..Default::default()
         }
@@ -890,7 +880,7 @@ pub mod tests {
 
     fn opened(jobs: Vec<hub_core::run_detail::JobRow>) -> RunDetail {
         RunDetail {
-            title: "#42871773354 Tests (affected)  red  46m  $0.20".into(),
+            title: "#42871773354 Tests (affected)  red  46m".into(),
             header:
                 "end to end 46m | before first job 2m | runner time 1h42 | tested a1b2c3 | complete"
                     .into(),
@@ -901,15 +891,10 @@ pub mod tests {
     }
 
     #[test]
-    fn an_opened_run_fits_80_columns_with_its_price_and_the_longest_jobs_steps() {
+    fn an_opened_run_fits_80_columns_with_its_runners_and_the_longest_jobs_steps() {
         let d = opened(vec![
-            job(1, "cachyos-x8664-main-pool-1", "0.00 owned", 2590),
-            job(
-                2,
-                "aws-burst-1-unity-pool-3",
-                "0.20 (1/5 of $1.855/h)",
-                1965,
-            ),
+            job(1, "cachyos-x8664-main-pool-1", 2590),
+            job(2, "arc-org-heavy-runner-x7k2p", 1965),
         ]);
         let p = Palette { no_color: true };
         let out: Vec<String> = detail_lines(&d, p, 80).iter().map(plain).collect();
@@ -919,11 +904,11 @@ pub mod tests {
             .iter()
             .position(|l| l.trim_start().starts_with("JOB"))
             .unwrap();
-        assert!(out[head].contains('$'), "{out:?}");
-        let aws = out.iter().find(|l| l.contains("shard 2")).unwrap();
+        assert!(!out[head].contains('$'), "no price column: {out:?}");
+        let arc = out.iter().find(|l| l.contains("shard 2")).unwrap();
         assert!(
-            aws.contains("32m45") && aws.contains("0.20 (1/5 of $1.855/h)"),
-            "{aws}"
+            arc.contains("32m45") && arc.contains("arc-org-heavy-runner-x7k2p"),
+            "{arc}"
         );
         assert_eq!(
             out[head + 2].trim(),
@@ -939,16 +924,17 @@ pub mod tests {
 
     #[test]
     fn every_one_of_130_jobs_draws_and_a_partial_read_says_so() {
-        let mut d = opened(
-            (0..130)
-                .map(|i| job(i, "hp-victus-light-1", "no rate", 60))
-                .collect(),
-        );
+        let mut d = opened((0..130).map(|i| job(i, "hp-victus-light-1", 60)).collect());
         d.coverage = "partial".into();
         d.coverage_text = "partial: 130 jobs so far".into();
         let p = Palette { no_color: true };
         let out: Vec<String> = detail_lines(&d, p, 80).iter().map(plain).collect();
-        assert_eq!(out.iter().filter(|l| l.contains("no rate")).count(), 130);
+        assert_eq!(
+            out.iter()
+                .filter(|l| l.contains("hp-victus-light-1"))
+                .count(),
+            130
+        );
         assert!(
             out.iter().any(|l| l.contains("partial: 130 jobs so far")),
             "{out:?}"
@@ -969,7 +955,7 @@ pub mod tests {
             Artifact, Artifacts, Chain, Changes, Commit, FailedTest, Hop, Stage, StageJob, Stages,
             TestsPart,
         };
-        let mut d = opened(vec![job(1, "hp-victus-light-1", "no rate", 60)]);
+        let mut d = opened(vec![job(1, "hp-victus-light-1", 60)]);
         d.page = Some(Page {
             changes: Changes {
                 since: "#41 (a1b2c3d, green)".into(),

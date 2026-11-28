@@ -17,10 +17,14 @@ setup() {
   done
 }
 
+# The default bar is noctalia (the first row of desk's parts), so a test of waybar's
+# path records it first.
+on_waybar() { mkdir -p "$(dirname "$STATE")" && echo "bar=waybar-classic" > "$STATE"; }
+
 @test "no state file: each slot runs its first part" {
   run "$DESK" current
   assert_success
-  assert_output $'bar=waybar-classic\nnotify=dunst'
+  assert_output $'bar=noctalia\nnotify=dunst'
 }
 
 @test "use records the part and restarts its unit" {
@@ -55,17 +59,18 @@ setup() {
 @test "a part this checkout no longer knows falls back to the default" {
   mkdir -p "$(dirname "$STATE")" && echo "bar=retired-bar" > "$STATE"
   run "$DESK" get bar
-  assert_output waybar-classic
+  assert_output noctalia
 }
 
 @test "start starts every slot's unit" {
   run "$DESK" start
   assert_success
-  run grep -c -x -e 'systemctl --user start waybar.service' -e 'systemctl --user start dunst.service' "$NOTES_FIXTURE/calls.log"
+  run grep -c -x -e 'systemctl --user start noctalia.service' -e 'systemctl --user start dunst.service' "$NOTES_FIXTURE/calls.log"
   assert_output 2
 }
 
 @test "signal reads each chip's number from config.base and the pin config" {
+  on_waybar
   run "$DESK" signal custom/gungan custom/passthrough custom/machines custom/ci
   assert_success
   run cat "$FX/calls.log"
@@ -103,6 +108,7 @@ setup() {
 }
 
 @test "signal still signals the known chips when one id has no number" {
+  on_waybar
   run "$DESK" signal custom/nonexistent custom/gungan
   assert_failure 2
   assert_output --partial "no signal for 'custom/nonexistent'"
@@ -120,6 +126,7 @@ setup() {
 }
 
 @test "switching the notifier restarts the bar, so its notify chip rebinds" {
+  on_waybar
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/swaync" && chmod +x "$SANDBOX/bin/swaync"
   run "$DESK" use notify swaync
   assert_success
@@ -473,6 +480,97 @@ sys.exit(1 if bad else 0)
   assert_failure 2
 }
 
+@test "notify show keeps the app name a popup was sent with, for the bell's groups (ar-3668)" {
+  printf '#!/usr/bin/env bash\necho 41\n' > "$SANDBOX/bin/notify-send"
+  printf '#!/usr/bin/env bash\n[[ "$*" == *GetNameOwner* ]] && { echo "(\x27:1.7\x27,)"; exit; }\n' > "$SANDBOX/bin/gdbus"
+  chmod +x "$SANDBOX/bin/notify-send" "$SANDBOX/bin/gdbus"
+  export XDG_RUNTIME_DIR="$FX/run"
+  run "$DESK" notify show a -u normal -a Agents title body
+  assert_success
+  run "$DESK" notify show n --app-name="Needs you" title
+  assert_success
+  run "$DESK" notify show h -aHealth title
+  assert_success
+  assert_equal "$(cat "$FX/run/desk/notify-a.id")" "41 (':1.7',) Agents"
+  assert_equal "$(cat "$FX/run/desk/notify-n.id")" "41 (':1.7',) Needs you"
+  assert_equal "$(cat "$FX/run/desk/notify-h.id")" "41 (':1.7',) Health"
+  # A bus that does not answer leaves no owner, and then no app to misread as one.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gdbus"
+  run "$DESK" notify show a -a Agents title
+  assert_success
+  assert_equal "$(cat "$FX/run/desk/notify-a.id")" "41 "
+}
+
+# bell_fixture COUNT: swaync's stream says COUNT wait; the kept pages are three Agents and two
+# Health from notifier :1.7, one Health from an earlier notifier :1.3 and one with no app name.
+bell_fixture() {
+  printf '#!/usr/bin/env bash\necho "{\\"text\\": \\"%s\\", \\"alt\\": \\"notification\\", \\"tooltip\\": \\"%s Notifications\\", \\"class\\": \\"notification\\"}"\n' "$1" "$1" > "$SANDBOX/bin/swaync-client"
+  printf '#!/usr/bin/env bash\n[[ "$*" == *GetNameOwner* ]] && { echo "(\x27:1.7\x27,)"; exit; }\n' > "$SANDBOX/bin/gdbus"
+  chmod +x "$SANDBOX/bin/swaync-client" "$SANDBOX/bin/gdbus"
+  export XDG_RUNTIME_DIR="$FX/run"
+  mkdir -p "$FX/run/desk" "$(dirname "$STATE")" && echo "notify=swaync" > "$STATE"
+  local k
+  for k in "a1 11 :1.7 Agents" "a2 12 :1.7 Agents" "a3 13 :1.7 Agents" "h1 21 :1.7 Health" "h2 22 :1.7 Health" "old 31 :1.3 Health"; do
+    set -- $k
+    printf "%s ('%s',) %s\n" "$2" "$3" "$4" > "$FX/run/desk/notify-$1.id"
+  done
+  printf "41 (':1.7',)\n" > "$FX/run/desk/notify-plain.id"
+}
+
+@test "notify bell counts the waiting pages by group and forgets the one its notifier closed (ar-3668)" {
+  bell_fixture 8
+  # NotificationClosed as dbus-monitor prints it: id 12 from this notifier, id 21 from another.
+  # The bell stops dbus-monitor once swaync's stream ends, so swaync's stub holds its stream open
+  # on a fifo until dbus-monitor's stub has printed both signals; without it the stream could end
+  # first and the close of 12 never be read (run 45761164937: 3 agents).
+  export CLOSED_FIFO="$SANDBOX/closed.fifo"
+  mkfifo "$CLOSED_FIFO"
+  # read-write open never blocks, so the 10 s guard holds even if dbus-monitor never starts
+  printf 'exec 3<>"$CLOSED_FIFO"; read -r -t 10 _ <&3\n' >> "$SANDBOX/bin/swaync-client"
+  cat > "$SANDBOX/bin/dbus-monitor" <<'EOF'
+#!/usr/bin/env bash
+printf 'signal time=1.0 sender=:1.7 -> destination=(null destination) serial=9 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=NotificationClosed\n   uint32 12\n   uint32 2\n'
+printf 'signal time=1.1 sender=:1.3 -> destination=(null destination) serial=4 path=/org/freedesktop/Notifications; interface=org.freedesktop.Notifications; member=NotificationClosed\n   uint32 21\n   uint32 2\n'
+echo printed > "$CLOSED_FIFO"
+EOF
+  chmod +x "$SANDBOX/bin/dbus-monitor"
+  run "$DESK" notify bell
+  assert_success
+  # The two streams interleave in any order, and the last line is the state after both.
+  last="$(tail -n 1 <<<"$output")"
+  assert_equal "$(jq -r .text <<<"$last")" " 2 agents, 2 health"
+  assert_equal "$(jq -r .tooltip <<<"$last")" $'8 Notifications\nAgents 2, Health 2'
+  assert_equal "$(jq -r .alt <<<"$last")" notification
+  [ ! -e "$FX/run/desk/notify-a2.id" ]
+  [ -e "$FX/run/desk/notify-h1.id" ]
+}
+
+@test "notify bell names no group while swaync says nothing waits, forgets every kept id, and is swaync's only (ar-3668)" {
+  bell_fixture 0
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/dbus-monitor"
+  chmod +x "$SANDBOX/bin/dbus-monitor"
+  run "$DESK" notify bell
+  assert_success
+  assert_equal "$(jq -r .text <<<"$output")" ""
+  assert_equal "$(jq -r .tooltip <<<"$output")" "0 Notifications"
+  run ls "$FX/run/desk"
+  assert_output ""
+  echo "notify=dunst" > "$STATE"
+  run "$DESK" notify bell
+  assert_failure 2
+}
+
+@test "notify bell ends with swaync's stream though dbus-monitor still runs, so the bar restarts it (ar-3668)" {
+  bell_fixture 2
+  # dbus-monitor that never prints and never exits: only the bell's kill ends it.
+  printf '#!/usr/bin/env bash\nmkfifo "$FX/never" && read -r _ < "$FX/never"\n' > "$SANDBOX/bin/dbus-monitor"
+  chmod +x "$SANDBOX/bin/dbus-monitor"
+  run timeout 20 "$DESK" notify bell
+  assert_success
+  # No NotificationClosed: all three Agents pages from :1.7 still count.
+  assert_equal "$(jq -r .text <<<"$output")" " 3 agents, 2 health"
+}
+
 @test "notify show passes on the clicked action of a --wait popup, and a / in a tag stays out of the path" {
   # notify-send -p --wait: the id, then the action once the popup closes.
   printf '#!/usr/bin/env bash\necho 88; echo default\n' > "$SANDBOX/bin/notify-send"
@@ -502,6 +600,7 @@ noctalia msg plugin dotfiles/chips:chip all letters off"
 }
 
 @test "panel under waybar exits 2 and names the bar, without calling noctalia" {
+  on_waybar
   printf '#!/usr/bin/env bash\necho "noctalia $*" >> "$FX/calls.log"\n' > "$SANDBOX/bin/noctalia" && chmod +x "$SANDBOX/bin/noctalia"
   run "$DESK" panel custom/ci
   assert_failure 2

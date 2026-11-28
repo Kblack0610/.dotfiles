@@ -5,11 +5,12 @@
 //! page (`layout::project_page`: its work tabs, then Departments with a chip per department, Rows being tasktab.rs),
 //! `a` opens Board, `d` Deliverables (Coverage and the department tabs are coveragetab.rs,
 //! Ladder laddertab.rs); in the rows Esc clears the view first and then comes back here, as
-//! Backspace does at once. `P` steps the selected project's priority (normal, focus, high, low;
-//! from `only` it clears it); app.rs runs the write. This file reads and writes nothing.
+//! Backspace does at once. `P` toggles the selected project's focus, the sprint switch; app.rs
+//! runs the write. This file reads and writes nothing.
 
 use hub_core::deliverables::{Deliverable, Deliverables};
 use hub_core::departments::{self, Coverage};
+use hub_core::display::Shown;
 use hub_core::home::Running;
 use hub_core::layout::{self, Inner, Tab};
 use hub_core::page::{NeedGroup, Page, System};
@@ -23,7 +24,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::{DataTable, Took};
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{dash, Palette};
 use crate::tasktab::TaskView;
 
 /// One read of the cards' input that is not the board feed: `notes projects --stats --json`.
@@ -39,9 +40,10 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 }
 
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
-const HEADER: [&str; 21] = [
-    "PROJECT", "STATE", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE",
-    "7D", "PTS", "PTS7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "SHIPPED", "OLDEST",
+const HEADER: [&str; 22] = [
+    "PROJECT", "STATE", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "NET7D", "DOING", "HOT",
+    "DONE", "7D", "PTS", "PTS7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "SHIPPED",
+    "OLDEST",
 ];
 
 #[derive(Debug)]
@@ -421,6 +423,8 @@ impl ProjView {
         if let Some((first, q)) = name.split_once(char::is_whitespace) {
             if crate::innertabs::named(projects_tab(), first) == Some(ALL) {
                 self.set_top(tv, ALL);
+                // The default chip, which lists the row an `id:=` term names (hub-core `Row::PIN`).
+                tv.table.view.state.clear();
                 tv.table.view.q = q.trim().to_string();
                 return;
             }
@@ -666,8 +670,12 @@ pub(crate) fn wrapped(
         .collect()
 }
 
-/// A project state's hue (`projects::state_level`), grey for `parked`.
+/// A project state's hue (`projects::state_level`): plain for `flow`, which is active and
+/// warns of nothing, grey for `parked`.
 fn state_style(c: &Card, p: Palette) -> ratatui::style::Style {
+    if c.state == projects::FLOW {
+        return ratatui::style::Style::default();
+    }
     projects::state_level(c.state).map_or_else(|| p.dim(), |l| crate::releases::level(l, p))
 }
 
@@ -1049,6 +1057,173 @@ fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     for f in &c.status.rows {
         let lead = format!("  {:<key$}  ", f.label.text());
         out.extend(wrapped(&lead, f.value.full(), p.dim(), p, w));
+    }
+    out
+}
+
+/// A doc list as `path  title  day` lines under a head: the first `KNOWLEDGE_SHOWN`, then how
+/// many more the page holds (the CLI caps each list itself).
+fn doc_lines(
+    head: &str,
+    docs: &[hub_core::space::Doc],
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let mut out = vec![sec_head(head, &docs.len().to_string(), "", p, w)];
+    for d in docs.iter().take(KNOWLEDGE_SHOWN) {
+        let day = if d.modified.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", d.modified)
+        };
+        out.push(clip_line(
+            Line::styled(
+                format!(
+                    "  {}  {}{day}",
+                    d.path,
+                    d.title.as_ref().map_or("", Shown::full)
+                ),
+                p.dim(),
+            ),
+            w,
+        ));
+    }
+    out.extend(crate::fmt::older(
+        docs.len(),
+        docs.len().min(KNOWLEDGE_SHOWN),
+        p,
+    ));
+    out
+}
+
+/// Rows each Knowledge list shows before `+N older`.
+const KNOWLEDGE_SHOWN: usize = 12;
+
+/// Knowledge (`hub_core::space`, agent-web's Knowledge tab): the project's lab docs, repo docs and
+/// ADRs, agent plans, lessons, sessions, knowledge notes, open asks and queue items in one place,
+/// then its cadence and tracker. A section with nothing says `0`, never an error.
+fn knowledge(pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let Some(s) = &pg.space else {
+        return vec![Line::styled(
+            "  the knowledge space could not be read (see the page's errors)",
+            p.dim(),
+        )];
+    };
+    let mut out = vec![];
+    if let Some(h) = &s.status.headline {
+        out.push(sec_head("STATUS", &s.status.date, "", p, w));
+        out.extend(wrapped("  ", h.full(), p.dim(), p, w));
+        out.push(Line::raw(""));
+    }
+    out.push(sec_head(
+        "CADENCE",
+        &hub_core::space::cadence_says(&s.cadence),
+        "",
+        p,
+        w,
+    ));
+    let t = &s.tracker;
+    let tracker = [t.system.as_deref().unwrap_or("none").to_string()]
+        .into_iter()
+        .chain(t.urls.iter().cloned())
+        .collect::<Vec<_>>()
+        .join("  ");
+    out.extend(wrapped("  tracker  ", &tracker, p.dim(), p, w));
+    out.push(Line::raw(""));
+    out.extend(doc_lines(
+        "LAB DOCS",
+        &[&s.lab.core[..], &s.lab.docs[..]].concat(),
+        p,
+        w,
+    ));
+    if let Some(r) = &s.repo {
+        out.push(Line::raw(""));
+        out.extend(doc_lines("REPO DOCS", &r.docs, p, w));
+        out.push(Line::raw(""));
+        out.extend(doc_lines("ADRS", &r.adrs, p, w));
+        out.push(Line::raw(""));
+        out.push(sec_head("CHANGELOG", &r.repo, "", p, w));
+        for l in r.changelog_head.iter().take(KNOWLEDGE_SHOWN) {
+            out.push(clip_line(Line::styled(format!("  {l}"), p.dim()), w));
+        }
+    }
+    let a = &s.agent;
+    out.push(Line::raw(""));
+    out.extend(doc_lines("PLANS", &a.plans, p, w));
+    out.push(Line::raw(""));
+    let les = &a.lessons;
+    out.push(sec_head(
+        "LESSONS",
+        &format!(
+            "{}  {}",
+            les.count,
+            les.path.as_deref().unwrap_or("no lessons file")
+        ),
+        "",
+        p,
+        w,
+    ));
+    out.push(Line::raw(""));
+    out.extend(doc_lines("SESSIONS", &a.sessions, p, w));
+    out.push(Line::raw(""));
+    out.extend(doc_lines("OUTCOMES", &a.outcomes, p, w));
+    out.push(Line::raw(""));
+    out.push(sec_head(
+        "KNOWLEDGE NOTES",
+        &s.knowledge.len().to_string(),
+        "",
+        p,
+        w,
+    ));
+    for n in s.knowledge.iter().take(KNOWLEDGE_SHOWN) {
+        out.push(clip_line(
+            Line::styled(
+                format!(
+                    "  {:<11} {}  {}",
+                    n.why,
+                    n.path,
+                    n.title.as_ref().map_or("", Shown::full)
+                ),
+                p.dim(),
+            ),
+            w,
+        ));
+    }
+    out.extend(crate::fmt::older(
+        s.knowledge.len(),
+        s.knowledge.len().min(KNOWLEDGE_SHOWN),
+        p,
+    ));
+    out.push(Line::raw(""));
+    out.push(sec_head("OPEN ASKS", &s.asks.len().to_string(), "", p, w));
+    for k in s.asks.iter().take(KNOWLEDGE_SHOWN) {
+        out.extend(wrapped(&format!("  {}  ", k.id), &k.title, p.dim(), p, w));
+    }
+    out.extend(crate::fmt::older(
+        s.asks.len(),
+        s.asks.len().min(KNOWLEDGE_SHOWN),
+        p,
+    ));
+    out.push(Line::raw(""));
+    out.push(sec_head("QUEUE", &s.queue.len().to_string(), "", p, w));
+    for i in s.queue.iter().take(KNOWLEDGE_SHOWN) {
+        // The state as the web tab shows it: the serialized, lowercase word.
+        let state = format!("{:?}", i.state).to_lowercase();
+        out.extend(wrapped(
+            &format!("  {}  ", i.slug),
+            &format!("{state}  {}", i.title),
+            p.dim(),
+            p,
+            w,
+        ));
+    }
+    out.extend(crate::fmt::older(
+        s.queue.len(),
+        s.queue.len().min(KNOWLEDGE_SHOWN),
+        p,
+    ));
+    for e in &s.errors {
+        out.extend(wrapped("  ", e, p.dim(), p, w));
     }
     out
 }
@@ -1557,6 +1732,7 @@ pub fn open_lines(
         SPRINT => sprint(c, pg, feed, pv, p, w),
         "releases" => (releases(pg, pv, p, w), None),
         "stage" => (stage(pg, p, w), None),
+        "knowledge" => (knowledge(pg, p, w), None),
         _ => (activity(c, pg, p, w), None),
     };
     out.extend(body);
@@ -1565,7 +1741,6 @@ pub fn open_lines(
 
 /// One line of the list: `Card`'s columns, a blank word as `-`.
 fn row(c: &Card, p: Palette) -> Vec<Cell> {
-    let dash = |s: &str| if s.is_empty() { "-" } else { s }.to_string();
     let lit = |n: usize, on| {
         let style = if n > 0 { on } else { p.dim() };
         cell(n.to_string(), style)
@@ -1581,6 +1756,7 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
             if c.prio == "focus" { p.head() } else { p.dim() },
         ),
         c.progress.open.to_string().into(),
+        cell(projects::net_cell(c), warn_if(c.growing(), p)),
         c.doing.to_string().into(),
         lit(c.hot, p.warn()),
         c.progress.done.to_string().into(),
@@ -1794,7 +1970,7 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
             header: HEADER.to_vec(),
             rows: shown.iter().map(|c| row(c, p)).collect(),
             keep: vec![
-                0, 1, 13, 16, 17, 18, 8, 20, 6, 3, 15, 19, 7, 9, 11, 12, 10, 14, 4, 5, 2,
+                0, 1, 14, 17, 18, 19, 9, 21, 6, 7, 3, 16, 20, 8, 10, 12, 13, 11, 15, 4, 5, 2,
             ],
             right: (6..HEADER.len()).collect(),
             mark: pv.table.mark::<Card>(),
@@ -1857,7 +2033,7 @@ pub(crate) mod tests {
             state: if done > 0 {
                 projects::ON_TRACK
             } else {
-                projects::NO_WINDOW
+                projects::FLOW
             },
             // A window committing what the version holds, due in 7 days; `demo` has none.
             window: (done > 0).then(|| projects::Window {
@@ -1873,6 +2049,13 @@ pub(crate) mod tests {
                 &serde_json::from_str(r#"{"done":"the arena (#9).","needs":"nothing."}"#).unwrap(),
             ),
             status_date: "2026-11-05".into(),
+            // `garden` grew by 120 points this week; `demo` has no day-log reading.
+            board_7d: (done > 0).then_some(hub_core::board_flow::BoardFlow {
+                opened: 150,
+                done: 20,
+                dropped: 10,
+                net: 120,
+            }),
             ..Default::default()
         };
         Projects {
@@ -1881,12 +2064,14 @@ pub(crate) mod tests {
             errors: vec![],
             board_open: Some(4),
             board_backlog: Some(9),
+            board_7d: None,
         }
     }
 
     fn a_page() -> Page {
         Page {
             project: "garden".into(),
+            space: None,
             releases: None,
             release_tab: Default::default(),
             sprint_past: vec![],
@@ -1971,7 +2156,7 @@ pub(crate) mod tests {
         // An untyped project has no department tabs, so its strip has no break.
         assert_eq!(
             l[7],
-            "[Overview 1] Sprint  Rows  Deliverables  Releases  Stage  Activity   <- -> switch"
+            "[Overview 1] Sprint  Rows  Deliverables  Releases  Stage  Activity  Knowledge   <- -> switch"
         );
         let body = l[9..].join("\n");
         assert!(
@@ -2133,6 +2318,55 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn knowledge_lists_the_projects_docs_asks_and_queue_and_says_so_when_unread() {
+        let pr = fixture();
+        let mut pg = a_page();
+        let at = |pg: &Page| {
+            draw(
+                &pr.cards[0],
+                Some(pg),
+                &ProjView {
+                    inner: "knowledge",
+                    ..Default::default()
+                },
+            )
+            .join("\n")
+        };
+        let none = at(&pg);
+        assert!(
+            none.contains("the knowledge space could not be read"),
+            "{none}"
+        );
+        pg.space = Some(
+            serde_json::from_value(serde_json::json!({
+                "project": "garden",
+                "status": {"headline": "beta next", "date": "2026-11-20"},
+                "cadence": {"target_days": 14, "measured_days": 16, "cuts": 8, "due_on": "2026-12-02"},
+                "tracker": {"system": "github", "urls": ["https://example.test/garden"]},
+                "lab": {"docs": [{"path": "docs/briefs/menu.md", "title": "Menu brief", "modified": "2026-11-01"}]},
+                "repo": {"repo": "garden", "docs": [], "adrs": [{"path": "docs/adr/0001.md", "title": "Use SQLite"}], "changelog_head": ["## 0.1.0"]},
+                "agent": {"plans": [{"path": "garden/plan.md", "title": "Plan"}], "lessons": {"path": "garden.md", "count": 3}},
+                "knowledge": [{"path": "projects/garden.md", "title": "Garden", "why": "frontmatter"}]
+            }))
+            .unwrap(),
+        );
+        let k = at(&pg);
+        for s in [
+            "STATUS  2026-11-20\n  beta next",
+            "CADENCE  every 14 days promised, 16 measured over 8 cuts, due 2026-12-02",
+            "  docs/briefs/menu.md  Menu brief  2026-11-01",
+            "ADRS  1",
+            "  docs/adr/0001.md  Use SQLite",
+            "LESSONS  3  garden.md",
+            "frontmatter projects/garden.md  Garden",
+            "OPEN ASKS  0",
+            "QUEUE  0",
+        ] {
+            assert!(k.contains(s), "{s} in {k}");
+        }
+    }
+
+    #[test]
     fn left_right_step_the_inner_tabs_and_enter_walks_overview_to_deliverables_to_rows() {
         let pr = fixture();
         let mut pg = a_page();
@@ -2156,7 +2390,7 @@ pub(crate) mod tests {
         assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), None, 10));
         assert!(pv.page_key(&mut tv, k(KeyCode::Left), Some(&pg), None, 10));
         assert_eq!(
-            pv.inner, "activity",
+            pv.inner, "knowledge",
             "Left from the first wraps to the last"
         );
         pv.inner = OVERVIEW;
@@ -2440,15 +2674,15 @@ pub(crate) mod tests {
         assert_eq!(
             s[4].split_whitespace().collect::<Vec<_>>(),
             [
-                "garden", "on", "track", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0",
-                "3", "2", "3", "2", "3/4", "7d", "1.0", "0", "1", "0", "0", "-"
+                "garden", "on", "track", "personal", "alpha", "v0.0.1", "focus", "1", "+120", "0",
+                "0", "3", "2", "3", "2", "3/4", "7d", "1.0", "0", "1", "0", "0", "-"
             ]
         );
         assert_eq!(
             s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
-                "demo", "no", "window", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2",
-                "0", "2", "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
+                "demo", "flow", "personal", "alpha", "-", "-", "2", "-", "0", "0", "0", "2", "0",
+                "2", "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
             ]
         );
         let tail = s.join("\n");
@@ -2753,14 +2987,14 @@ pub(crate) mod tests {
         let t = lines(&l);
         assert!(t.iter().all(|s| crate::fit::len(s) <= 80), "{t:#?}");
         let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
-        // Eight tabs fit one line; Departments is the last, and its nine chips sit on their own
-        // strip beneath it, which is not drawn until Departments is open.
+        // Departments, the last tab, starts the second line; its chips show only when it is open.
         assert_eq!(
             t[s],
-            "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity  Departments "
+            "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity  Knowledge "
         );
+        assert!(t[s + 1].starts_with(" Departments"), "{t:#?}");
         let titles = layout::project_page(&pv.tabs);
-        assert_eq!(titles.len(), 8);
+        assert_eq!(titles.len(), 9);
         assert_eq!(layout::project_depts(&pv.tabs).len(), 9);
         assert!(!t.iter().any(|s| s.contains("Engineering")), "{t:#?}");
 
@@ -2862,11 +3096,11 @@ pub(crate) mod tests {
         assert_eq!(
             t[s..s + 2],
             [
-                "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity  Departments ",
-                "  <- -> switch"
+                "[Overview] Sprint  Rows  Deliverables  Releases  Stage  Activity  Knowledge ",
+                " Departments   <- -> switch"
             ]
         );
-        assert_eq!(pv.page_tabs().len(), 8);
+        assert_eq!(pv.page_tabs().len(), 9);
         assert_eq!(layout::project_depts(&pv.tabs).len(), 2);
         pv.go(&mut tv, &pr.cards, "demo/legal");
         assert_eq!(

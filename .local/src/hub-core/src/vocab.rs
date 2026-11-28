@@ -20,8 +20,8 @@ pub const QUEUE: &[(&str, &str)] = &[
     ),
     ("stalled", "its session is STALLED"),
     ("no session", "running 10m+, and no session works it"),
-    ("PR red, yours", "its fix-ci tries are spent; yours now"),
-    ("PR green, yours", "its land tries are spent; yours now"),
+    ("PR red, escalated", "its fix-ci tries are spent; an agent row (#red #escalate) on its board owns it"),
+    ("PR green, escalated", "its land tries are spent; an agent row (#red #escalate) on its board owns it"),
 ];
 
 /// A job that has not started (`jobs::State::Queued`), the Jobs table's STATE.
@@ -106,6 +106,17 @@ pub fn tone(overrides: &[(&str, Level)], word: &str) -> Option<Level> {
             .map(|(_, l)| *l)
     };
     find(overrides).or_else(|| find(TONES))
+}
+
+/// A pass rate's hue, on both surfaces: red under 70%, amber under 90% (the whole percent, as it
+/// prints), plain at or above; grey when nothing finished to judge.
+pub fn pass_level(ratio: Option<f64>) -> Level {
+    match ratio.map(|r| (r * 100.0).round()) {
+        Some(p) if p < 70.0 => Level::Bad,
+        Some(p) if p < 90.0 => Level::Warn,
+        Some(_) => Level::Ok,
+        None => Level::Neutral,
+    }
 }
 
 #[cfg(test)]
@@ -227,5 +238,16 @@ mod tests {
             json.get("tone").is_none() && json.get("means").is_none(),
             "{json}"
         );
+    }
+
+    #[test]
+    fn a_pass_rate_is_red_under_70_and_amber_under_90() {
+        use super::{pass_level, Level};
+        assert_eq!(pass_level(Some(0.70)), Level::Warn);
+        assert_eq!(pass_level(Some(0.69)), Level::Bad);
+        assert_eq!(pass_level(Some(0.90)), Level::Ok);
+        assert_eq!(pass_level(Some(0.89)), Level::Warn);
+        assert_eq!(pass_level(Some(1.0)), Level::Ok);
+        assert_eq!(pass_level(None), Level::Neutral);
     }
 }

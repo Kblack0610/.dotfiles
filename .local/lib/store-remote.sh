@@ -12,7 +12,7 @@ SSH_KEY="${SSH_KEY-${STORE_SYNC_SSH_KEY:-$HOME/.ssh/id_agent_sync}}"
 CONNECT_TIMEOUT_S=10
 
 # ssh for one remote: the store's deploy key, when this machine has one, only for origin; backup
-# (GitHub) authenticates with this machine's own identities. -T: a `RequestTTY yes` in ssh_config
+# (GitHub, an https URL in store.env) answers with gh's token through git's credential helper. -T: a `RequestTTY yes` in ssh_config
 # would otherwise print a pseudo-terminal warning on every call.
 ssh_cmd() {
   local c="ssh -T -o BatchMode=yes -o ConnectTimeout=$CONNECT_TIMEOUT_S -o StrictHostKeyChecking=accept-new"

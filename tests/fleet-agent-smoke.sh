@@ -12,8 +12,8 @@ set -euo pipefail
 repo=$(cd "$(dirname "$0")/.." && pwd)
 
 # The probe is the one probe_hosts runs, read from fleet-dispatch, so this cannot drift from it: the
-# single-quoted word after `sh -c` on its fleet_host_run line, unquoted by the shell itself.
-probe_line=$(grep -m1 "fleet_host_run \"\$name\" sh -c '.*\.sync/peer" "$repo/.local/bin/fleet-dispatch") ||
+# single-quoted word after `sh -c` on its fleet_host_run line (the `env FLEET_PROBE_REPOS=` words before it carry the roster's clones), unquoted by the shell itself.
+probe_line=$(grep -m1 "fleet_host_run \"\$name\" env [^ ]* sh -c '.*\.sync/peer" "$repo/.local/bin/fleet-dispatch") ||
   { echo "smoke: no readiness probe found in fleet-dispatch probe_hosts" >&2; exit 1; }
 probe_word=${probe_line#*sh -c }
 probe_word=${probe_word%% _ \$listed*}
@@ -22,7 +22,8 @@ eval "probe=$probe_word"
 
 image=${1:?usage: fleet-agent-smoke.sh <image> | --probe}
 run=smoke-$$
-work=$(mktemp -d)
+# Under RUNNER_TEMP on CI: a dind pod's docker sees the job's work volume, never its /tmp, and the key is bind-mounted.
+work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/fleet-agent-smoke.XXXXXX")
 port=${SMOKE_PORT:-2299}
 
 cleanup() {

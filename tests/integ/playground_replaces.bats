@@ -102,7 +102,7 @@ guard() {
   assert_output ""
   run guard "{ grep '^CI gate green' Logs/gate.txt; } >> Logs/pr-body.md" /home/u/src/other-game
   assert_output ""
-  # playground-nightly-fix runs affected-classes.py --why by hand to name a merge: not a bypass
+  # the nightly-red runbook runs affected-classes.py --why by hand to name a merge: not a bypass
   run guard 'scripts/test/affected-classes.py m^1 m --why'
   assert_output ""
 }

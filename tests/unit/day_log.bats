@@ -90,7 +90,28 @@ EOF
   echo '{"github:o/GAME":{"runs":4,"green":3,"pass":0.75,"workflows":{}}}' > "$SANDBOX/pass-trunk"
   echo '{"aws-burst-1-unity-pool":{"runs":50,"green":42,"pass":0.84},"mac-mini-mac":{"runs":3,"green":3,"pass":1.0}}' > "$SANDBOX/hosts"
   export DAYLOG_NOTES_DIR="$SANDBOX/notes"
-  sheet_commit 2026-10-20T12:00:00Z '- [ ] seed <!-- id:s-1 -->'
+  # notes board --weigh: the built notes when the notes CI job names one (NOTES_BIN), so the board
+  # cases prove the real contract there; else notes-stub, the same JSON for the shapes these cases
+  # write (`#pts/N`, else 1; a `dropped:` or `dup:` marker; a version note's rows are closed).
+  if [ -n "${NOTES_BIN:-}" ]; then
+    export DAYLOG_NOTES_CMD="$NOTES_BIN"
+  else
+    export DAYLOG_NOTES_CMD=notes-stub
+    cat > "$SANDBOX/bin/notes-stub" <<'EOF'
+#!/usr/bin/env python3
+import json, re, sys
+for e in sys.stdin.read().splitlines():
+    m = re.search(r"([^/:]+)/agent/(README\.md|versions/[^/:]+\.md):(.*)$", e)
+    row = m and re.match(r"\s*- (\[(.)\] )?.*<!-- id:([a-z]{2,4}-\d+)", m[3])
+    if not row or (m[2] == "README.md") != bool(row[1]):
+        continue
+    pts = re.search(r"#pts/(\d+)", m[3])
+    closed = m[2] != "README.md" or row[2] in "xX"
+    state = "open" if not closed else "dropped" if re.search(r"dropped:|dup:", m[3]) else "done"
+    print(json.dumps({"project": m[1], "id": row[3], "state": state, "weight": int(pts[1]) if pts else 1}))
+EOF
+  fi
+  sheet_commit 2026-10-20T12:00:00Z '- [ ] seed <!-- id:sd-1 -->'
   chmod +x "$SANDBOX/bin/"*-stub
   cat > "$DAYLOG_GROUPS" <<'EOF'
 # test groups
@@ -367,6 +388,9 @@ fleet_cost() {
   assert_output '1 PR merged across 1 repos'
   run grep -c 'game#1' "$DAYLOG_REFS_DIR/2026-10-27/shipped.md"
   assert_output 1
+  # A digest to `notes report` and the knowledge engine: generated frontmatter first.
+  run head -n 3 "$DAYLOG_REFS_DIR/2026-10-27/shipped.md"
+  assert_output $'---\ngenerated: true\n---'
 }
 
 @test "spend is the fleet cost: a row a project, the dollars no session carries, and the total with its parts" {
@@ -625,23 +649,56 @@ EOF
   assert_output --partial '- Plan phases: 5 ticked, 2 added'
 }
 
-@test "board: a row is opened or closed by what its id did across the day, and the sum balances" {
-  sheet_commit 2026-10-28T02:00:00Z '- [ ] stays <!-- id:d-1 -->\n- [ ] gets done <!-- id:d-2 -->\n- [/] gets deleted <!-- id:d-3 -->\n- [x] was done <!-- id:d-4 -->\n- [x] done and gone <!-- id:d-5 -->'
-  sheet_commit 2026-10-28T20:00:00Z '- [ ] stays <!-- id:d-1 -->\n- [x] gets done <!-- id:d-2 -->\n- [x] was done <!-- id:d-4 -->\n- [ ] new <!-- id:d-6 -->\n- [/] new with an ask <!-- id:d-7 ask:Ab12 -->\n- [ ] no id yet'
+@test "board: a row is opened, done or dropped by what its id did across the day, in rows and points" {
+  sheet_commit 2026-10-28T02:00:00Z '- [ ] stays #pts/2 <!-- id:dm-1 -->\n- [ ] gets done #pts/3 <!-- id:dm-2 -->\n- [/] gets deleted #pts/5 <!-- id:dm-3 -->\n- [x] was done <!-- id:dm-4 -->\n- [x] done and gone <!-- id:dm-5 -->\n- [ ] gets dropped #pts/8 <!-- id:dm-8 -->'
+  sheet_commit 2026-10-28T20:00:00Z '- [ ] stays #pts/2 <!-- id:dm-1 -->\n- [x] gets done #pts/3 <!-- id:dm-2 -->\n- [x] was done <!-- id:dm-4 -->\n- [ ] new #pts/1 <!-- id:dm-6 -->\n- [/] new with an ask #pts/2 <!-- id:dm-7 ask:Ab12 -->\n- [ ] no id yet\n- [x] gets dropped #pts/8 <!-- id:dm-8 dropped: 2026-10-28 -->'
   DAYLOG_NOW=1793300000 "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
-  run rec -c '.work.board' 2026-10-28
-  assert_output '{"opened":2,"closed":2,"open_end":3}'
+  run rec -c '.work.board | del(.by_project)' 2026-10-28
+  assert_output '{"opened":2,"closed":3,"done":1,"dropped":2,"open_end":3,"opened_pts":3,"done_pts":3,"dropped_pts":13,"open_pts":5}'
+  run rec -c '.work.board.by_project | map(.project)' 2026-10-28
+  assert_output '["demo"]'
+  run "$SUBJECT" show --date 2026-10-28
+  assert_output --partial '- Board: 2 rows opened (3 pts), 1 done (3 pts), 2 dropped (13 pts), 3 open (5 pts)'
+}
+
+@test "board: a row done and rolled into a version note the same day reads done, never dropped (negative control)" {
+  sheet_commit 2026-10-28T02:00:00Z '- [ ] ships today #pts/5 <!-- id:dm-1 -->\n- [ ] stays <!-- id:dm-2 -->'
+  mkdir -p "$DAYLOG_NOTES_DIR/lab/projects/current/demo/agent/versions"
+  printf '%s\n' '# v0.1.0' '- ships today #pts/5 <!-- id:dm-1 pr:12 -->' > "$DAYLOG_NOTES_DIR/lab/projects/current/demo/agent/versions/v0.1.0.md"
+  sheet_commit 2026-10-28T20:00:00Z '- [ ] stays <!-- id:dm-2 -->'
+  DAYLOG_NOW=1793300000 "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c '.work.board | [.done, .done_pts, .dropped, .open_end]' 2026-10-28
+  assert_output '[1,5,0,1]'
+}
+
+@test "board: by_project splits the day per sheet project, the most open points first" {
+  sheet_commit 2026-10-28T02:00:00Z '- [ ] a #pts/1 <!-- id:dm-1 -->'
+  mkdir -p "$DAYLOG_NOTES_DIR/lab/projects/current/big/agent"
+  printf '%s\n' '- [ ] b #pts/8 <!-- id:bg-1 -->' '- [ ] c #pts/5 <!-- id:bg-2 -->' > "$DAYLOG_NOTES_DIR/lab/projects/current/big/agent/README.md"
+  sheet_commit 2026-10-28T20:00:00Z '- [x] a #pts/1 <!-- id:dm-1 -->'
+  DAYLOG_NOW=1793300000 "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
+  run rec -c '.work.board.by_project | map([.project, .opened_pts, .done_pts, .open_pts])' 2026-10-28
+  assert_output '[["big",13,0,13],["demo",0,1,0]]'
 }
 
 @test "board: a day that starts with no ids to join on reads unknown, not all opened (negative control)" {
   rm -rf "$DAYLOG_NOTES_DIR"
   sheet_commit 2026-10-28T02:00:00Z '- [ ] from before ids'
-  sheet_commit 2026-10-28T20:00:00Z '- [ ] from before ids <!-- id:d-1 -->\n- [ ] another <!-- id:d-2 -->'
+  sheet_commit 2026-10-28T20:00:00Z '- [ ] from before ids #pts/3 <!-- id:dm-1 -->\n- [ ] another <!-- id:dm-2 -->'
   DAYLOG_NOW=1793300000 "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
-  run rec -c '.work.board' 2026-10-28
-  assert_output '{"opened":null,"closed":null,"open_end":2}'
+  run rec -c '.work.board | [.opened, .done, .dropped, .open_end, .open_pts]' 2026-10-28
+  assert_output '[null,null,null,2,4]'
   run "$SUBJECT" show --date 2026-10-28
-  assert_output --partial '- Board: - rows opened, - closed, 2 open'
+  assert_output --partial '- Board: - rows opened (- pts), - done (- pts), - dropped (- pts), 2 open (4 pts)'
+}
+
+@test "board: a notes that cannot weigh names the board unreadable and keeps the rest of the record" {
+  printf '#!/usr/bin/env bash\necho "weigh broke" >&2; exit 3\n' > "$SANDBOX/bin/notes-broken"
+  chmod +x "$SANDBOX/bin/notes-broken"
+  DAYLOG_NOTES_CMD=notes-broken DAYLOG_NOW=1793300000 run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -r '.unreadable[]' 2026-10-28
+  assert_output --partial 'weigh broke'
 }
 
 @test "a source that fails keeps its last value and is named, and the record is still written" {
@@ -727,7 +784,7 @@ EOF
   assert_equal "$(cat "$SANDBOX/cif-args")" "--repo O/game --base trunk --days 1.000000 --until 2026-10-28T07:00:00Z --json"
   local since until; since=$(date -d '2026-10-27 00:00' +%s) until=$(date -d '2026-10-28 00:00' +%s)
   assert_equal "$(cat "$SANDBOX/hub-args")" "ci pass --since $since --until $until
-ci hosts --until $until --last 50
+ci hosts --since $((until - 7 * 86400)) --until $until --last 50
 ci pass --since $since --until $until --branch trunk"
   run cat "$SANDBOX/cost-args"
   assert_output --partial '--days 1.000000 --until 2026-10-28T07:00:00Z --json'
@@ -1023,10 +1080,10 @@ who_items() {
     pr game 4 'fix: a trainee row Claude redid' 2026-10-28T17:00:00Z
     pr game 5 'chore: no item carries it' 2026-10-28T16:00:00Z; } | merged
   printf '%s\n' \
-    '{"slug":"own","pr":"o/game#1","agent":"claude","model":"opus","state":"done","status":"ok","finished":"2026-10-28T20:00:00Z"}' \
-    '{"slug":"batched","pr":"o/game#2","agent":"ocfree","model":"beam","trainee":"ocfree:beam","state":"done","status":"ok","finished":"2026-10-28T19:00:00Z"}' \
-    '{"slug":"landed","pr":"o/game#3","agent":"claude","model":"sonnet","trainee":"nim:glm","pr_owner":"land","state":"done","status":"ok","finished":"2026-10-28T18:00:00Z"}' \
-    '{"slug":"redone","pr":"o/game#4","agent":"claude","model":"sonnet","trainee":"opencode-go:glm","state":"done","status":"ok","finished":"2026-10-28T17:00:00Z"}' \
+    '{"slug":"own","outcome":"landed","pr":"o/game#1","agent":"claude","model":"opus","state":"done","status":"ok","finished":"2026-10-28T20:00:00Z"}' \
+    '{"slug":"batched","outcome":"landed","pr":"o/game#2","agent":"ocfree","model":"beam","trainee":"ocfree:beam","state":"done","status":"ok","finished":"2026-10-28T19:00:00Z"}' \
+    '{"slug":"landed","outcome":"landed","pr":"o/game#3","agent":"claude","model":"sonnet","trainee":"nim:glm","pr_owner":"land","state":"done","status":"ok","finished":"2026-10-28T18:00:00Z"}' \
+    '{"slug":"redone","outcome":"landed","pr":"o/game#4","agent":"claude","model":"sonnet","trainee":"opencode-go:glm","state":"done","status":"ok","finished":"2026-10-28T17:00:00Z"}' \
     '{"slug":"broke","row":"p:ar-9","agent":"nim","model":"glm","trainee":"nim:glm","state":"done","status":"failed","end_reason":"provider","finished":"2026-10-28T15:00:00Z"}' \
     '{"slug":"waits","row":"p:ar-8","agent":"ocfree","model":"beam","trainee":"ocfree:beam","state":"review"}' \
     '{"slug":"old","row":"p:ar-7","agent":"nim","model":"glm","trainee":"nim:glm","state":"done","status":"failed","finished":"2026-10-26T15:00:00Z"}' \
@@ -1145,4 +1202,14 @@ who_items() {
   assert_line --partial '- A claude run (13:00, own) [game#1]'
   refute_line --partial 'no item) [game#1]'
   assert_line --partial '- No item carries it (09:00, no item) [game#5]'
+}
+
+@test "week: a week whose records split done from dropped says rows and points of each, never one closed figure" {
+  week_fixture
+  for f in "$DAYLOG_DIR"/2026-10-2[1-7].json; do
+    jq '.work.board += {done: 1, dropped: 0, opened_pts: 3, done_pts: 2, dropped_pts: 0}' "$f" > "$SANDBOX/r"; mv "$SANDBOX/r" "$f"
+  done
+  run "$SUBJECT" week --date 2026-10-27 --line
+  assert_output --partial 'board +14 (21 pts), 7 done (14 pts), 0 dropped (0 pts)'
+  refute_output --partial 'board +14/-7'
 }

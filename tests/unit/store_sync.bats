@@ -19,13 +19,18 @@ setup() {
   git init -q --bare -b master "$BACKUP"
   local seed="$SANDBOX/seed"
   git init -q -b master "$seed"
-  mkdir -p "$seed/queue" "$seed/bench" "$seed/daylog" "$seed/anchors"
+  mkdir -p "$seed/queue" "$seed/bench" "$seed/daylog" "$seed/anchors" "$seed/shepherd" "$seed/dispatch"
+  printf 'due 0\n' > "$seed/shepherd/.due"
+  printf '{"could_start":0}\n' > "$seed/dispatch/headroom.json"
+  printf '0\n' > "$seed/bench/findings.last"
+  printf 'id: 0\n' > "$seed/shepherd/0bb7fbc0"
+  printf '## pass 0\n' > "$seed/shepherd/log.md"
   printf 'state: open\n' > "$seed/queue/item.md"
   printf '{"n":0}\n' > "$seed/queue/events.jsonl"
   : > "$seed/bench/.keep"
   printf '{\n "head": 0,\n "x": 1,\n "y": 1,\n "z": 1,\n "w": 1,\n "tail": 0\n}\n' > "$seed/daylog/d.json"
   printf '# p\n\n## Decisions\n- d1\n\n## Notes\nhand\n<!-- AUTO:START -->\ngen 0\n<!-- AUTO:END -->\n' > "$seed/anchors/p.md"
-  printf '*.jsonl merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
+  printf '*.jsonl merge=union\nsessions/*/*-wind-down.md merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
   printf '.sync/\n' > "$seed/.gitignore"
   git -C "$seed" add -A && git -C "$seed" commit -q -m seed
   git -C "$seed" push -q "$ORIGIN" master
@@ -128,6 +133,79 @@ show() { git -C "$1" show "master:$2"; }
   assert_line '{"n":"b"}'
 }
 
+# wrap_up <name> <line>: a session on that machine appends its wrap-up block with wind-down.sh,
+# as the wind-down skill does; prints the note's path inside the store.
+wrap_up() {
+  mkdir -p "$SANDBOX/home-$1" "$SANDBOX/proj"
+  ln -sfn "$SANDBOX/$1" "$SANDBOX/home-$1/.agent"
+  local f draft="$SANDBOX/draft-$1.md"
+  printf '# Session wrap-up\n\n%s\n' "$2" > "$draft"
+  # One fixed day, so a run across midnight still has both machines write one note.
+  mkdir -p "$SANDBOX/datebin"
+  printf '#!/bin/sh\n[ "$1" = +%%Y-%%m-%%d ] && { echo 2026-01-02; exit; }\nexec %s "$@"\n' "$(command -v date)" > "$SANDBOX/datebin/date"
+  chmod +x "$SANDBOX/datebin/date"
+  f=$(PATH="$SANDBOX/datebin:$PATH" HOME="$SANDBOX/home-$1" CLAUDE_PROJECT_DIR="$SANDBOX/proj" \
+    bash "$REPO_ROOT/.local/src/tmux/wind-down.sh" note "$draft") || return 1
+  echo "${f#"$SANDBOX/home-$1/.agent/"}"
+}
+
+@test "two machines appending a wrap-up block to one day's wind-down note keep both, and the earlier block (ar-4023)" {
+  peer a; peer b
+  note=$(wrap_up a 'block 0')
+  on a
+  on b
+  [ "$(git -C "$SANDBOX/b" show "HEAD:$note" | grep -c '^# Session wrap-up')" = 1 ]
+  wrap_up a 'block a'
+  wrap_up b 'block b'
+  on a
+  run on b
+  assert_success
+  assert_output --partial "COMPLETE"
+  run show "$ORIGIN" "$note"
+  assert_line 'block 0'
+  assert_line 'block a'
+  assert_line 'block b'
+  refute_output --partial '<<<<<<<'
+  # The seed's tracked merge=union, the store's line before the note driver, keeps "block a" and
+  # "block b" but folds them under one header: 2 here, not 3.
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 3
+}
+
+@test "a wind-down block fixed in place on the merging machine while another appended is kept once, as fixed (ar-4023)" {
+  # The merge re-adds only blocks the other side added since the base, so the other side's
+  # unchanged copy of the fixed block stays out. Merged the other way round, both copies stay.
+  peer a; peer b
+  note=$(wrap_up a 'block 0')
+  on a
+  on b
+  wrap_up a 'block a'
+  sed -i 's/^block 0$/block 0 fixed/' "$SANDBOX/b/$note"
+  on a
+  run on b
+  assert_success
+  run show "$ORIGIN" "$note"
+  assert_line 'block 0 fixed'
+  refute_line 'block 0'
+  assert_line 'block a'
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 2
+}
+
+@test "merge-note adds only the other side's new blocks: one this side already took from a third peer is not doubled (ar-4023)" {
+  d="$BATS_TEST_TMPDIR"
+  blk() { local b; for b; do printf '# Session wrap-up\n\n%s\n\n' "$b"; done; }
+  blk 'block 0' > "$d/base"
+  blk 'block 0' 'block c' 'block a' > "$d/ours"
+  blk 'block 0' 'block c' 'block b' > "$d/theirs"
+  run "$BIN" merge-note "$d/base" "$d/ours" "$d/theirs" sessions/p/d-wind-down.md
+  assert_success
+  run cat "$d/ours"
+  refute_output --partial '<<<<<<<'
+  assert_equal "$(grep -c '^# Session wrap-up' <<<"$output")" 4
+  assert_equal "$(grep -c '^block c$' <<<"$output")" 1
+  assert_line 'block a'
+  assert_line 'block b'
+}
+
 @test "two machines regenerating the same snapshot both sync, and the merging machine's copy wins whole" {
   peer a; peer b
   # Lines far apart would merge hunk by hunk as text; a snapshot must never mix two passes.
@@ -141,6 +219,61 @@ show() { git -C "$1" show "master:$2"; }
   assert_line ' "head": 0,'
   assert_line ' "tail": "b"'
   [ ! -e "$SANDBOX/b/.sync/conflict" ]
+}
+
+# ar-3625: razer-laptop held the fleet lease 09:55-10:10 on 2026-11-19 and ran the singleton lanes, then
+# cachyos-x8664-main took it back and ran them too; both copies met in a text merge and the sync stopped.
+@test "two lease holders in a row both write singleton state: the sync merges it and the holder's copy wins whole" {
+  printf '#!/bin/sh\nexit "${LEASE_RC:-0}"\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
+  peer a; peer b
+  # a holds the lease now; b held it before and wrote its own pass.
+  local m
+  for m in a b; do
+    printf 'due %s\n' $m > "$SANDBOX/$m/shepherd/.due"; printf '{"could_start":"%s"}\n' $m > "$SANDBOX/$m/dispatch/headroom.json"
+    printf '%s\n' $m > "$SANDBOX/$m/bench/findings.last"; printf 'id: %s\n' $m > "$SANDBOX/$m/shepherd/0bb7fbc0"
+  done
+  run on a
+  assert_success
+  git -C "$SANDBOX/b" commit -qam "b pass"
+  git -C "$SANDBOX/b" fetch -q origin
+  # Negative control: without the lease driver (b has not synced since it joined) these copies conflict as text.
+  git -C "$SANDBOX/b" config --unset-all merge.lease.driver || :
+  run git -C "$SANDBOX/b" merge-tree --write-tree --name-only HEAD origin/master
+  assert_failure 1
+  assert_line 'shepherd/.due'
+  # b does not hold the lease, so it takes the holder's copy whole.
+  LEASE_RC=1 run on b
+  assert_success
+  assert_output --partial "COMPLETE"
+  [ ! -e "$SANDBOX/b/.sync/conflict" ]
+  assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due a'
+  assert_equal "$(show "$ORIGIN" dispatch/headroom.json)" '{"could_start":"a"}'
+  assert_equal "$(show "$ORIGIN" bench/findings.last)" a
+  assert_equal "$(show "$ORIGIN" shepherd/0bb7fbc0)" 'id: a'
+  run git -C "$SANDBOX/b" status --porcelain
+  assert_output ''
+  # The holder keeps its own copy when it merges a peer's.
+  printf 'due a2\n' > "$SANDBOX/a/shepherd/.due"; printf 'due b2\n' > "$SANDBOX/b/shepherd/.due"
+  LEASE_RC=1 on b >/dev/null
+  run on a
+  assert_success
+  [ ! -e "$SANDBOX/a/.sync/conflict" ]
+  assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due a2'
+  # A machine that cannot tell who holds it (held exits 2) keeps its own copy, still with no conflict.
+  printf 'due a3\n' > "$SANDBOX/a/shepherd/.due"; printf 'due b3\n' > "$SANDBOX/b/shepherd/.due"
+  on a >/dev/null
+  LEASE_RC=2 run on b
+  assert_success
+  [ ! -e "$SANDBOX/b/.sync/conflict" ]
+  assert_equal "$(show "$ORIGIN" shepherd/.due)" 'due b3'
+  # The shepherd's own log still keeps both sides' lines.
+  echo 'pass a' >> "$SANDBOX/a/shepherd/log.md"; echo 'pass b' >> "$SANDBOX/b/shepherd/log.md"
+  on a >/dev/null
+  LEASE_RC=1 run on b
+  assert_success
+  run show "$ORIGIN" shepherd/log.md
+  assert_line 'pass a'
+  assert_line 'pass b'
 }
 
 @test "a derived anchor keeps the other machine's hand edits, even beside the auto block both rewrote" {
@@ -444,6 +577,29 @@ EOF
   # Leave the fork nothing to push, so it exits once it has the lock.
   git -C "$SANDBOX/a" checkout -q -- queue/item.md
   exec 7>&-
+  assert_success
+}
+
+@test "a --now sync that finds another one waiting leaves its write to that one (ar-3191)" {
+  # The waiter commits only once it holds the lock, so it carries this write; a second waiter would
+  # only queue behind it, and 500+ of them SKIPped at 300s.
+  peer a
+  local before; before=$(tip "$ORIGIN")
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  mkdir -p "$SANDBOX/a/.sync"
+  exec 7>"$SANDBOX/a/.sync/lock" 6>"$SANDBOX/a/.sync/now-wait"
+  flock 7
+  flock 6
+  run on a --now
+  assert_success
+  assert_equal "$(tip "$ORIGIN")" "$before"
+  # Negative control: with no sync waiting or running, the same write goes out at once and leaves
+  # now-wait free for the next writer.
+  exec 6>&- 7>&-
+  run on a --now
+  assert_success
+  assert_equal "$(show "$ORIGIN" queue/item.md)" 'state: done'
+  run flock -n "$SANDBOX/a/.sync/now-wait" true
   assert_success
 }
 
@@ -847,6 +1003,72 @@ move_item() {
   [ ! -e "$SANDBOX/d/queue/running/y.md" ]
 }
 
+# razer-laptop 2026-11-23 18:05: an item closed between the pass's commit and its fetch went into the
+# pre-merge commit as a bare delete of its queued path, and the merge stopped on a modify/delete (ar-5087).
+@test "an item moved while the fetch runs goes into the pre-merge commit at both paths, so the merge keeps the close (ar-5087)" {
+  peer a; queue_item a
+  # Negative control: a tracked item of the same name, edited in the same window, is not a moved one.
+  mkdir -p "$SANDBOX/a/queue/done/2026-11-20"; printf -- '---\nslug: x\n---\nold\n' > "$SANDBOX/a/queue/done/2026-11-20/x.md"
+  on a --now >/dev/null; peer b
+  sed -i 's/^k5: v5$/k5: b/' "$SANDBOX/b/queue/queued/x.md"
+  on b --now >/dev/null
+  # The move lands while a's fetch runs: after its own commit, before the merge looks at the tree.
+  cat > "$SANDBOX/upload-pack-mid-move" <<EOF
+#!/usr/bin/env bash
+q="$SANDBOX/a/queue"
+[ ! -e "\$q/queued/x.md" ] || { mkdir -p "\$q/done/2026-11-21"; sed 's/^k20: v20\$/k20: v20\nstatus: ok/' "\$q/queued/x.md" > "\$q/done/2026-11-21/x.md"; rm "\$q/queued/x.md"; }
+echo edited >> "\$q/done/2026-11-20/x.md"
+# staged, as a commit that failed partway leaves it: the index tracks it, HEAD does not
+git -C "$SANDBOX/a" add -- queue/done/2026-11-21/x.md
+exec git-upload-pack "\$@"
+EOF
+  chmod +x "$SANDBOX/upload-pack-mid-move"
+  # git runs uploadpack through the shell, and the sandbox path has a space in it.
+  git -C "$SANDBOX/a" config remote.origin.uploadpack "$(printf %q "$SANDBOX/upload-pack-mid-move")"
+  # A local write, so --now fetches: a clean tree at origin's head exits before the fetch.
+  echo '{"n":"a"}' >> "$SANDBOX/a/queue/events.jsonl"
+  run on a --now
+  assert_success
+  refute_output --partial CONFLICT
+  # The move came mid-fetch (the pass's own commit did not hold it), and the pre-merge commit holds both paths.
+  run git -C "$SANDBOX/a" log --format=%s --name-status --no-renames --grep='local edits before merging origin' master
+  assert_line --regexp '^D	queue/queued/x.md$'
+  assert_line --regexp '^A	queue/done/2026-11-21/x.md$'
+  refute_line --partial 'queue/done/2026-11-20/x.md'
+  run show "$ORIGIN" queue/done/2026-11-21/x.md
+  assert_line 'status: ok'
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued
+  assert_output ''
+}
+
+@test "a short item closed on one machine and moved open on another keeps only the close, though git saw no rename (ar-4262)" {
+  peer a
+  mkdir -p "$SANDBOX/a/queue/queued"
+  printf -- '---\nslug: s\n---\nt\n' > "$SANDBOX/a/queue/queued/s.md"
+  on a --now >/dev/null
+  peer b
+  # Each side rewrites most of the short file as it moves it, so neither move reads as a rename.
+  mkdir -p "$SANDBOX/a/queue/done/2026-11-21" "$SANDBOX/b/queue/running"
+  printf -- '---\nslug: s\nstatus: ok\nfinished: 2026-11-21T01:00:00Z\nhost: a\nsession: s1\n---\nt\n' > "$SANDBOX/a/queue/done/2026-11-21/s.md"
+  printf -- '---\nslug: s\nstarted: 2026-11-21T00:59:00Z\nhost: a\nsession: s1\nwindow: w\n---\nt\n' > "$SANDBOX/b/queue/running/s.md"
+  rm "$SANDBOX/a/queue/queued/s.md" "$SANDBOX/b/queue/queued/s.md"
+  on b --now >/dev/null
+  run on a --now
+  assert_success
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued queue/running queue/done
+  assert_output 'queue/done/2026-11-21/s.md'
+  [ ! -e "$SANDBOX/a/queue/running/s.md" ]
+  assert_equal "$(git -C "$ORIGIN" rev-list --parents -1 master | wc -w)" 3
+  # Negative control: an open item done/ does not hold is left alone by the same merge.
+  printf -- '---\nslug: o\n---\nt\n' > "$SANDBOX/b/queue/running/o.md"
+  on b --now >/dev/null
+  printf -- '---\nslug: p\n---\nt\n' > "$SANDBOX/a/queue/queued/p.md"
+  run on a --now
+  assert_success
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/running
+  assert_output 'queue/running/o.md'
+}
+
 @test "an item moved to two open states, or a close beside another conflict, still conflicts" {
   peer a; queue_item a; peer b
   move_item a running 'host: a'
@@ -948,6 +1170,29 @@ requeue_item() {
   rm "$f"
 }
 
+@test "a peer's new running item stays in running/ when the other side requeued the only running item: no directory-rename move (ar-4898)" {
+  peer a; run_item a q1; peer b
+  run_item a q3
+  requeue_item b q1
+  git -C "$SANDBOX/b" add queue && git -C "$SANDBOX/b" commit -qm 'requeue q1'
+  git -C "$SANDBOX/b" fetch -q origin
+  # NEGATIVE CONTROL: git's default (conflict) stops the merge on q3's location, and true moves q3 into queued/ beside q1
+  run git -C "$SANDBOX/b" -c merge.directoryRenames=conflict merge-tree --write-tree --name-only HEAD origin/master
+  assert_failure
+  assert_output --partial 'CONFLICT (file location): queue/running/q3.md'
+  run git -C "$SANDBOX/b" -c merge.directoryRenames=true merge-tree --write-tree --name-only HEAD origin/master
+  run git -C "$SANDBOX/b" ls-tree -r --name-only "${lines[0]}"
+  assert_line 'queue/queued/q3.md'
+  run on b --now
+  assert_success
+  run show "$ORIGIN" queue/running/q3.md
+  assert_success
+  run show "$ORIGIN" queue/queued/q3.md
+  assert_failure
+  run show "$ORIGIN" queue/queued/q1.md
+  assert_success
+}
+
 # route_item <machine> <slug>: the other machine records the route and a PR on the running item.
 route_item() {
   sed -i 's/^---$/routed: ocfree\npr: o#5\n---/' "$SANDBOX/$1/queue/running/$2.md"
@@ -990,6 +1235,104 @@ route_item() {
   assert_line 'routed: ocfree'
 }
 
+# queued_item <machine> <slug>: a queued item as agent-queue writes it. The body is load-bearing: it
+# keeps each moved copy above git's 50% rename similarity, so both moves read as one item.
+queued_item() {
+  mkdir -p "$SANDBOX/$1/queue/queued"
+  { printf 'slug: %s\nproject: p\nagent: claude\nqueued: 2026-11-23T23:48:41Z\nlane: agent\naccount: agy\nmodel: \n' "$2"
+    printf 'sessions: agy_1\nrequeued: 2026-11-23T23:50:01Z\n---\nfix(x): a task title long enough to read as one item\n'
+    printf 'The body of the item, so a move that adds a run header is still the same file to git rename detection.\n'; } > "$SANDBOX/$1/queue/queued/$2.md"
+  on "$1" --now >/dev/null
+}
+
+# start_item <machine> <slug>: the dispatcher's running move, with its own started:.
+start_item() {
+  mkdir -p "$SANDBOX/$1/queue/running"
+  sed -e 's/^account: .*/account: claude-b/' -e 's/^model: .*/model: sonnet/' \
+    -e 's/^---$/host: b\nstarted: 2026-11-24T02:05:23Z\nlane_run: ab29\n---/' \
+    "$SANDBOX/$1/queue/queued/$2.md" > "$SANDBOX/$1/queue/running/$2.md"
+  rm "$SANDBOX/$1/queue/queued/$2.md"
+}
+
+# close_queued <machine> <slug>: a worker's session closing the item from a queued copy the running move never reached.
+close_queued() {
+  mkdir -p "$SANDBOX/$1/queue/done/2026-11-23"
+  sed 's/^---$/pr: o#7\nstarted: 2026-11-24T02:05:49Z\nstatus: ok\nfinished: 2026-11-24T02:05:52Z\n---/' \
+    "$SANDBOX/$1/queue/queued/$2.md" > "$SANDBOX/$1/queue/done/2026-11-23/$2.md"
+  rm "$SANDBOX/$1/queue/queued/$2.md"
+}
+
+@test "a close and a running move that set one key two ways keep the close and write no lost file, whichever syncs first (ar-3439)" {
+  local s
+  # razer-laptop's session closed ar-4219 while the fleet home's running move set its own started: (2026-11-23)
+  peer a; queued_item a c1; peer b
+  close_queued a c1; start_item b c1
+  on b --now; run on a --now
+  assert_success
+  peer c; queued_item c c2; peer d
+  close_queued c c2; start_item d c2
+  on c --now; run on d --now
+  assert_success
+  for s in c1 c2; do
+    run show "$ORIGIN" "queue/done/2026-11-23/$s.md"
+    assert_line 'status: ok'
+    assert_line 'started: 2026-11-24T02:05:49Z'
+    refute_output --partial '<<<<<<<'
+  done
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued queue/running
+  assert_output ''
+  [ ! -d "$SANDBOX/a/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/a/.sync/lost")" ]
+  [ ! -d "$SANDBOX/d/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/d/.sync/lost")" ]
+  # a requeue still outranks a close: a stale reaper's failed close beside a requeue writes no lost file
+  peer e; run_item e c3; peer f
+  route_item e c3; requeue_item f c3
+  mkdir -p "$SANDBOX/e/queue/done/2026-11-23"
+  sed 's/^---$/status: failed\nfinished: 2026-11-24T02:06:00Z\n---/' "$SANDBOX/e/queue/running/c3.md" > "$SANDBOX/e/queue/done/2026-11-23/c3.md"
+  rm "$SANDBOX/e/queue/running/c3.md"
+  on f --now; run on e --now
+  assert_success
+  [ ! -d "$SANDBOX/e/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/e/.sync/lost")" ]
+}
+
+# close_run <machine> <slug> <finished> [<extra header line>]: agent-queue closing a running item ok.
+close_run() {
+  mkdir -p "$SANDBOX/$1/queue/done/2026-11-26"
+  sed "s/^---\$/pr: o#9\nmerged: abc123\n${4:+$4\\n}status: ok\nfinished: $3\n---/" \
+    "$SANDBOX/$1/queue/running/$2.md" > "$SANDBOX/$1/queue/done/2026-11-26/$2.md"
+  rm "$SANDBOX/$1/queue/running/$2.md"
+}
+
+@test "two ok closes of one item keep the earlier finished: and both sides' other keys, with no lost file, whichever syncs first (ar-3439)" {
+  local s
+  # agent-land on razer-laptop closed hc-1128 ok with landed_by:, the fleet home closed it ok 43 seconds later (2026-11-26)
+  peer a; run_item a k1; peer b
+  close_run a k1 2026-11-27T01:54:41Z 'landed_by: s1=o#9'; close_run b k1 2026-11-27T01:55:24Z
+  on a --now; run on b --now
+  assert_success
+  peer c; run_item c k2; peer d
+  close_run c k2 2026-11-27T01:54:41Z 'landed_by: s1=o#9'; close_run d k2 2026-11-27T01:55:24Z
+  on d --now; run on c --now
+  assert_success
+  for s in k1 k2; do
+    run show "$ORIGIN" "queue/done/2026-11-26/$s.md"
+    assert_line 'status: ok'
+    assert_line 'landed_by: s1=o#9'
+    assert_line 'finished: 2026-11-27T01:54:41Z'
+    refute_line 'finished: 2026-11-27T01:55:24Z'
+    refute_output --partial '<<<<<<<'
+  done
+  for s in b c; do
+    [ ! -d "$SANDBOX/$s/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/$s/.sync/lost")" ] || fail "$s wrote a lost file"
+  done
+  # negative control: two ok closes that also set another key two ways still keep a lost copy
+  peer e; run_item e k3; peer f
+  close_run e k3 2026-11-27T01:54:41Z 'note: closed on e'; close_run f k3 2026-11-27T01:55:24Z 'note: closed on f'
+  on e --now; run on f --now
+  assert_success
+  run cat "$SANDBOX/f/.sync/lost/"queue__done__2026-11-26__k3.md.lost-*
+  assert_line 'note: closed on e'
+}
+
 @test "a clone set up with the old close driver moves to the item driver" {
   peer a
   printf 'queue/done/*/*.md merge=close\n' > "$SANDBOX/a/.git/info/attributes"
@@ -997,7 +1340,10 @@ route_item() {
   echo 'state: x' > "$SANDBOX/a/queue/item.md"
   on a --now >/dev/null
   run cat "$SANDBOX/a/.git/info/attributes"
-  assert_output $'queue/*/*.md merge=item\nqueue/done/*/*.md merge=item'
+  assert_line 'queue/*/*.md merge=item'
+  assert_line 'queue/done/*/*.md merge=item'
+  refute_line --partial 'merge=close'
+  assert_line 'sessions/*/*-wind-down.md merge=note'
   run git -C "$SANDBOX/a" config --get merge.close.driver
   assert_failure
   run git -C "$SANDBOX/a" config --get merge.item.driver
@@ -1037,10 +1383,12 @@ lose_head_tree() {
   run on a
   assert_failure 3
   assert_output --partial "no remote answered to refetch them"
+  # With no reflog left, no older commit can stand in for HEAD either.
+  rm "$SANDBOX/a/.git/logs/refs/heads/master"
   conf "$ORIGIN"; mv "$BACKUP.off" "$BACKUP"
   run on a
   assert_failure 3
-  assert_output --partial "names trees missing here and no remote has them"
+  assert_output --partial "no remote has them and no commit in its reflog reads"
   refute_output --partial "could not commit"
   # The refetch that reached a remote is not repeated for this HEAD: an unreachable origin now
   # changes nothing, since no fetch runs.
@@ -1049,6 +1397,57 @@ lose_head_tree() {
   assert_failure 3
   assert_output --partial "no remote has them"
   refute_output --partial "no remote answered"
+}
+
+# empty_object <machine> <oid>: a reboot mid-commit leaves the object's file at zero bytes (ar-4193).
+empty_object() {
+  mkdir -p "$SANDBOX/$1/.git/objects/${2:0:2}"
+  rm -f "$SANDBOX/$1/.git/objects/${2:0:2}/${2:2}"
+  : > "$SANDBOX/$1/.git/objects/${2:0:2}/${2:2}"
+}
+
+@test "an unpushed HEAD commit a reboot left empty is dropped, the branch moves back to the newest commit that reads, and the files land (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" commit -q -am local
+  empty_object a "$(git -C "$SANDBOX/a" rev-parse HEAD)"
+  run on a
+  assert_success
+  assert_output --partial "removed 1 zero-byte loose object"
+  assert_output --partial "moved master back to"
+  assert_output --partial "COMPLETE: origin at"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+  run git -C "$SANDBOX/a" fsck --connectivity-only
+  assert_success
+}
+
+@test "a zero-byte blob a reboot left under an intact HEAD is dropped, so the add writes it and the push lands (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  empty_object a "$(git -C "$SANDBOX/a" hash-object queue/item.md)"
+  run on a
+  assert_success
+  assert_output --partial "removed 1 zero-byte loose object"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+  run git -C "$SANDBOX/a" fsck --connectivity-only
+  assert_success
+}
+
+@test "an unpushed HEAD whose tree no remote holds moves back to the newest commit that reads, and the files land (ar-4193)" {
+  peer a
+  echo 'state: running' > "$SANDBOX/a/queue/item.md"
+  on a >/dev/null
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" commit -q -am local
+  lose_head_tree a
+  run on a
+  assert_success
+  assert_output --partial "no refetch restored; moved master back to"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
 }
 
 @test "a store with no commit yet makes its first one, with no refetch (ar-3439)" {
@@ -1060,4 +1459,59 @@ lose_head_tree() {
   run on a
   refute_output --partial "trees missing"
   git -C "$SANDBOX/a" cat-file -e 'HEAD:new.md'
+}
+
+# plan dispatch-event-wake, step 5: an add or close made in a worker's clone reaches the lease holder only
+# through its pull, so the holder's sync is what wakes the kick; the holder's own writers touch .wake.
+@test "a pull that brings in a queued or done item wakes a dispatch kick on the lease holder only (dispatch-event-wake)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/dispatch"
+  printf '#!/bin/sh\nexit "${LEASE_RC:-0}"\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
+  peer a; peer b
+  mkdir -p "$SANDBOX/b/queue/queued"
+  echo 'state: queued' > "$SANDBOX/b/queue/queued/one.md"
+  run on b
+  assert_success
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "the clone that wrote the item woke a kick for its own write"
+  # A peer that does not hold the lease runs no kick, so it writes no wake.
+  LEASE_RC=1 run on a
+  assert_success
+  [ -e "$SANDBOX/a/queue/queued/one.md" ] || fail "the pull did not bring the item in"
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "a peer without the lease wrote a wake"
+  # Negative control: a pull that changed nothing under queue/queued or queue/done wakes nothing.
+  echo 'state: other' > "$SANDBOX/b/queue/item.md"
+  run on b
+  run on a
+  [ ! -e "$FLEET_DISPATCH_DIR/.wake" ] || fail "a pull of another path wrote a wake"
+  # The holder: the next arrival wakes it.
+  mkdir -p "$SANDBOX/b/queue/done/2026-11-23"
+  echo 'state: done' > "$SANDBOX/b/queue/done/2026-11-23/two.md"
+  run on b
+  run on a
+  assert_success
+  [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "the lease holder's pull of a done item wrote no wake"
+  # A close is a move of a queued file into done with its status edited: git reads that as a rename.
+  rm -f "$FLEET_DISPATCH_DIR/.wake"
+  mkdir -p "$SANDBOX/b/queue/done/2026-11-24"
+  mv "$SANDBOX/b/queue/queued/one.md" "$SANDBOX/b/queue/done/2026-11-24/one.md"
+  echo 'status: ok' >> "$SANDBOX/b/queue/done/2026-11-24/one.md"
+  run on b
+  run on a
+  assert_success
+  [ -s "$FLEET_DISPATCH_DIR/.wake" ] || fail "the lease holder's pull of a closed (moved) item wrote no wake"
+}
+
+@test "a sync keeps the machine-local dispatch files out of the shared store (dispatch-event-wake)" {
+  export FLEET_DISPATCH_DIR="$SANDBOX/a/dispatch"
+  peer a
+  run on a
+  grep -qxF 'dispatch/.wake' "$SANDBOX/a/.git/info/exclude"
+  grep -qxF 'dispatch/.kick' "$SANDBOX/a/.git/info/exclude"
+  mkdir -p "$SANDBOX/a/dispatch"
+  echo 1 > "$SANDBOX/a/dispatch/.wake"; : > "$SANDBOX/a/dispatch/.kick"; echo 1 > "$SANDBOX/a/dispatch/log.md"
+  run on a
+  assert_success
+  run git -C "$SANDBOX/a" ls-files dispatch
+  assert_line 'dispatch/log.md'
+  refute_line 'dispatch/.wake'
+  refute_line 'dispatch/.kick'
 }

@@ -21,7 +21,7 @@ use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
 use crate::fit::{cell, clip_line, wrap, Cell, Table};
-use crate::fmt::Palette;
+use crate::fmt::{heading, Palette};
 
 /// What a key on the rows asks the app to do.
 #[derive(Debug, PartialEq)]
@@ -47,6 +47,7 @@ pub enum Kind {
     Edit,
     Tag,
     Untag,
+    Priority,
 }
 
 /// A line being typed at the status line, and the row it is about.
@@ -59,9 +60,9 @@ pub struct Prompt {
 
 /// The table's columns, in `tasks::Row`'s COLUMNS order so the sort mark lands on its header.
 /// The row's whole text is the preview's, under the rows.
-const HEADER: [&str; 13] = [
-    "SECTION", "TITLE", "EPIC", "PRIORITY", "STATE", "WHEN", "PROJECT", "LANE", "ID", "VERSION",
-    "SIZE", "TIER", "SINCE",
+const HEADER: [&str; 16] = [
+    "SECTION", "TYPE", "AREA", "TITLE", "EPIC", "PRIORITY", "STATE", "WHEN", "PROJECT", "LANE",
+    "ID", "VERSION", "SIZE", "PTS", "TIER", "SINCE",
 ];
 
 #[derive(Debug, Default)]
@@ -124,11 +125,8 @@ impl TaskView {
     /// A new read keeps the selection on the same line when it is still open.
     pub fn reselect(&mut self, was: Option<Row>, f: &Feed) {
         let rows = shown(f, self);
-        let at = was.and_then(|w| {
-            rows.iter()
-                .position(|r| r.sheet == w.sheet && r.raw == w.raw)
-        });
-        self.table.keep(at, rows.len());
+        self.table
+            .reselect(&rows, was, |r, w| r.sheet == w.sheet && r.raw == w.raw);
     }
 
     /// The selected row when it can be written, else why not (said on the status line).
@@ -203,6 +201,13 @@ impl TaskView {
                     text: p.text,
                 },
             ),
+            Kind::Priority => match tasks::set_priority(&r.raw, &p.text) {
+                Some(verb) => (format!("priority in {at}"), verb),
+                None => {
+                    self.said = Some(Err(tasks::NOT_A_PRIORITY.into()));
+                    return Ask::Done;
+                }
+            },
             Kind::Tag | Kind::Untag => {
                 let tags: Vec<String> = p.text.split_whitespace().map(str::to_string).collect();
                 let (add, remove) = if p.kind == Kind::Tag {
@@ -342,6 +347,15 @@ impl TaskView {
                     self.prompt = prompt(kind, r);
                 }
             }
+            KeyCode::Char('p') => {
+                if let Some(r) = self.target(f, false) {
+                    self.prompt = Some(Prompt {
+                        kind: Kind::Priority,
+                        text: String::new(),
+                        row: r,
+                    });
+                }
+            }
             KeyCode::Char('e') => {
                 if let Some(r) = self.target(f, false) {
                     self.prompt = Some(Prompt {
@@ -429,13 +443,6 @@ pub fn sprint_lines(rows: &[tasks::SprintRow], p: Palette, w: usize) -> Vec<Line
     out
 }
 
-fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(title.to_string(), p.head()),
-        Span::styled(rest, p.dim()),
-    ])
-}
-
 fn prio_style(priority: &str, p: Palette) -> ratatui::style::Style {
     match priority {
         "urgent" => p.bad(),
@@ -459,6 +466,8 @@ fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
     let when = r.when();
     vec![
         cell(section, p.head()),
+        or_dash(r.r#type.as_deref()),
+        or_dash(r.area.as_deref()),
         title.into(),
         or_dash(r.epic.as_deref().or(r.parent.as_deref())),
         cell(r.priority.clone(), prio),
@@ -469,6 +478,7 @@ fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
         or_dash(r.id.as_deref()),
         or_dash(r.release()),
         or_dash(r.size.as_deref()),
+        r.points.map_or("-".to_string(), |n| n.to_string()).into(),
         r.tier.map_or("-".to_string(), |t| t.to_string()).into(),
         or_dash(r.since.as_deref().map(|d| d.get(5..).unwrap_or(d))),
     ]
@@ -532,11 +542,12 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
             ))
             .map(|(r, s)| row(r, s, p))
             .collect(),
-        keep: vec![0, 3, 4, 2, 5, 6, 8, 7, 9, 10, 12, 11],
-        flex: Some(1),
+        // Indices are HEADER's: the area stays with the title, the type and points drop first.
+        keep: vec![0, 2, 5, 6, 4, 7, 8, 10, 9, 1, 13, 11, 12, 15, 14],
+        flex: Some(3),
         flexmin: 20,
         flexkeep: true,
-        cap: vec![(2, 24), (5, 18), (9, 16)],
+        cap: vec![(2, 16), (4, 24), (7, 18), (11, 16)],
         mark: v.table.mark::<Row>(),
         ..Default::default()
     }
@@ -629,7 +640,7 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
     let l = if let Some(pr) = &v.prompt {
         let what = match pr.kind {
             Kind::Add => format!(
-                "Add to {} ({}), #urgent, #high or #low to set it: ",
+                "Add to {} ({}), #urgent, #high, #normal or #low to set it: ",
                 group(&pr.row),
                 pr.row.lane
             ),
@@ -641,6 +652,7 @@ fn status_line(v: &TaskView, p: Palette, w: usize) -> Line<'static> {
             Kind::Edit => "New text (tags stay): ".into(),
             Kind::Tag => "Add tags (size/s, requested; a new size replaces the old): ".into(),
             Kind::Untag => "Remove tags: ".into(),
+            Kind::Priority => "Priority (urgent, high, normal or low): ".into(),
         };
         Line::styled(format!("{what}{}_", pr.text), p.warn())
     } else if let Some(r) = &v.running {
@@ -762,7 +774,7 @@ pub(crate) mod tests {
             "{s}"
         );
         assert!(
-            s.contains("all 5  in progress 0  filed today 0  urgent 1"),
+            s.contains("all 5  in progress 0  epics 0  filed today 0  urgent 1"),
             "{s}"
         );
         // Each section is named once, over its first row, then the closed rows with day and PR.
@@ -773,7 +785,10 @@ pub(crate) mod tests {
             at("SECTION") < at("TITLE") && at("TITLE") < at("EPIC") && at("PROJECT") < at("LANE"),
             "{s}"
         );
-        assert!(s.contains("v0.1.0") && s.contains("demo"), "{s}");
+        assert!(s.contains("demo"), "{s}");
+        // The type, area and points outrank the version, which a wider screen shows.
+        assert!(at("TITLE") > at("AREA") && at("AREA") > at("TYPE"), "{s}");
+        assert!(text(&f, &v, 160).contains("v0.1.0"));
         // j/k follow the page's order, not the feed's.
         let order: Vec<&str> = shown(&f, &v).iter().map(|r| r.text.as_str()).collect();
         assert_eq!(
@@ -837,6 +852,10 @@ pub(crate) mod tests {
             assert!(!["profile", "tag"].contains(&v.table.view.sort.as_str()));
         }
         assert_eq!(v.table.view.sort, "section", "c comes back round");
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "type");
+        v.key(key('c'), Some(&f), 10);
+        assert_eq!(v.table.view.sort, "area");
         v.key(key('c'), Some(&f), 10);
         assert_eq!(v.table.view.sort, "title");
         v.key(key('c'), Some(&f), 10);
@@ -997,6 +1016,26 @@ pub(crate) mod tests {
                 text: "fix the menu bar".into()
             }
         );
+
+        v.key(key('p'), Some(&f), 10);
+        assert_eq!(v.prompt.as_ref().unwrap().text, "", "priority starts empty");
+        typed(&mut v, &f, "high");
+        let Ask::Write(label, w) = enter(&mut v, &f) else {
+            panic!("priority runs")
+        };
+        assert_eq!(label, "priority in bnb/demo");
+        assert_eq!(
+            w.verb,
+            Verb::Tag {
+                raw: "- [ ] fix the menu".into(),
+                add: vec!["high".into()],
+                remove: vec![]
+            }
+        );
+        v.key(key('p'), Some(&f), 10);
+        typed(&mut v, &f, "medium");
+        assert_eq!(enter(&mut v, &f), Ask::Done, "a retired word is refused");
+        assert!(matches!(&v.said, Some(Err(e)) if e.contains("priority is")));
 
         let Ask::Write(label, w) = v.key(key('+'), Some(&f), 10) else {
             panic!("+ runs")

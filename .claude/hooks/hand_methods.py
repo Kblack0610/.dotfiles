@@ -21,8 +21,9 @@ had not moved that (skill-refine's propose-only run, retired 2026-11-05), so a f
 is denied, not reported.
 
 The command is matched as code the way block-poll.py parses it (it owns that parse): heredoc
-bodies dropped, quoted text blanked, `sh -c`/`eval`/`ssh` payloads kept. A grep for the pattern
-is not the pattern.
+bodies dropped, quoted text blanked, `sh -c`/`eval`/`ssh` payloads kept. A row also reads a second
+parse that leaves each quoted plain word bare (the shell passes it bare), so a quoted kill target is
+seen; the blanked parse stays, so no row loses a match. A grep for the pattern is not the pattern.
 
 The rows are read from every deployed SKILL.md (CLAUDE_SKILLS, default ~/.claude/skills) and
 cached in ~/.cache/claude-hooks/replaces-<root hash>.json, rebuilt when any SKILL.md or this file changes; this module is
@@ -30,16 +31,16 @@ the cache's one writer. `hand_methods.py --list` prints the rows; `--check <SKIL
 what is wrong with one file's rows (skill-drift's BADMETA lint).
 Fail-open: any error allows the call.
 """
-import importlib.util
 import json
 import os
 import re
 import sys
 from pathlib import Path
 
+import hooklib
+
 HOOK = "hand-methods"
 MODES = ("deny", "report")
-_HERE = Path(__file__).resolve().parent
 
 
 def skills_dir():
@@ -52,13 +53,6 @@ def cache_path(root):
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     tag = hashlib.sha1(str(root).encode()).hexdigest()[:12]
     return Path(base) / "claude-hooks" / f"replaces-{tag}.json"
-
-
-def _block_poll():
-    spec = importlib.util.spec_from_file_location("block_poll", _HERE / "block-poll.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 FRONTMATTER = re.compile(r"---[ \t]*\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", re.S)
@@ -165,19 +159,35 @@ def load_rules(root=None):
 _BP = None
 
 
-def code_texts(cmd):
-    """The command as code, block-poll's strict parse plus each $(...) body."""
+def _parse(cmd, keep_words):
+    """block-poll's strict parse of cmd plus each $(...) or backtick body in it."""
+    texts = _BP.code_texts(cmd, True, keep_words)
+    # Inside single quotes `...` and $(...) are literal (a commit message, a PR body), so only
+    # substitutions outside them run. Single-quoted spans are blanked to find the bodies, and the
+    # bodies are cut from the original, so a quoted word inside one is still there to read.
+    blanked = re.sub(r"'[^']*'", lambda m: "'" + " " * (len(m.group()) - 2) + "'", cmd)
+    for m in re.finditer(r"\$\(([^()]*)\)|`([^`]*)`", blanked):
+        g = 1 if m.group(1) is not None else 2
+        texts += _BP.code_texts(cmd[m.start(g):m.end(g)], True, keep_words)
+    return texts
+
+
+def code_texts(cmd, keep_words=False):
+    """The command as code, block-poll's strict parse plus each $(...) body.
+
+    keep_words=True adds the same parse with each quoted plain word left bare (a quoted kill
+    target is that word to the shell). The blanked parse stays too: rows written around its
+    ` Q ` (a quoted gh api endpoint, FILES='x.bats') keep matching, so this only adds matches.
+    """
     global _BP
     if _BP is None:
-        _BP = _block_poll()
+        _BP = hooklib.load("block-poll")
     cmd = _BP.strip_heredocs(cmd)
     # A backslash-newline outside quotes is one command line to the shell, and so to a row.
     cmd = cmd.replace("\\\n", " ")
-    texts = _BP.code_texts(cmd, True)
-    # Inside single quotes `...` and $(...) are literal (a commit message, a PR body), so only
-    # substitutions outside them run.
-    for sub in re.findall(r"\$\(([^()]*)\)|`([^`]*)`", re.sub(r"'[^']*'", "''", cmd)):
-        texts += _BP.code_texts(sub[0] or sub[1], True)
+    texts = _parse(cmd, False)
+    if keep_words:
+        texts += [t for t in _parse(cmd, True) if t not in texts]
     return texts
 
 
@@ -185,7 +195,7 @@ def matches(cmd, cwd, rules):
     """The rules one Bash command hits, in rule order."""
     if not rules or not cmd:
         return []
-    texts = code_texts(cmd)
+    texts = code_texts(cmd, True)
     hit = []
     for r in rules:
         if r["_where"] and not r["_where"].search(cwd or ""):
@@ -205,18 +215,15 @@ def reason(rule):
             f"metadata.replaces, fix it there if it is wrong).")
 
 
-def main():
-    data = json.load(sys.stdin)
+def decide(data):
     if data.get("tool_name", "Bash") != "Bash":
-        return
+        return None
     cmd = (data.get("tool_input") or {}).get("command") or ""
     for r in matches(cmd, data.get("cwd") or os.getcwd(), load_rules()):
         # gate: hook-hand-methods
         if r["mode"] == "deny":
-            print(json.dumps({"hookSpecificOutput": {
-                "hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": reason(r)}}))
-            return
+            return reason(r)
+    return None
 
 
 def list_rows():
@@ -250,8 +257,4 @@ if __name__ == "__main__":
         for line in check_file(sys.argv[2]):
             print(line)
         sys.exit(0)
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

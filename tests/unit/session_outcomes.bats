@@ -5,7 +5,7 @@
 # Fixture: three registry sessions in one project. A opened PR #10 (merged, kept) and
 # closed a board row with --proof. B opened #11, which #12 reverted a day later. C hit an
 # API error, was interrupted, had a tool call rejected, and wrote a lesson. D is a headless
-# runner (entrypoint sdk-cli) that wrote a lesson. `ss-stub` stands in for schedules-sync, serving
+# runner (entrypoint sdk-cli) that wrote a lesson. The shared schedules-sync stub (ss_script) serves
 # the PR store from canned `gh pr list`-shaped JSON (`$GH_FIXTURE/prs.<owner>-<repo>`) turned into
 # store rows by the real pr_row; nothing here reaches the network.
 
@@ -42,8 +42,7 @@ rows = [ss.pr_row(forge, repo, {"number": p["number"], "state": "open" if p["sta
                    None, p["state"] == "MERGED") for p in json.load(sys.stdin)]
 print(json.dumps(sorted(rows, key=lambda r: -r["number"])))
 STUB
-  cat > "$SANDBOX/bin/ss-stub" <<STUB
-#!/usr/bin/env bash
+  ss_script <<STUB
 [ "\$1" = prs ] || exit 2
 echo "\$*" >> "$SANDBOX/ss.calls"
 f="$GH_FIXTURE/prs.\${2//\//-}"
@@ -52,8 +51,9 @@ f="$GH_FIXTURE/prs.\${2//\//-}"
 [ -f "\$f" ] || { echo '[]'; exit 0; }
 gh2store "$REPO_ROOT/.local/bin/schedules-sync" "\$2" < "\$f"
 STUB
-  chmod +x "$SANDBOX/bin/gh2store" "$SANDBOX/bin/ss-stub"
-  export SCHEDULES_SYNC=ss-stub
+  chmod +x "$SANDBOX/bin/gh2store"
+  # No fleet worker unless a test names one: the real roster is the workstation's.
+  export SO_WORKERS=true
   # 2026-10-20T00:00:00Z; every fixture session stopped 2026-10-19.
   export SO_NOW=1792454400
   STOP=1792368000
@@ -183,6 +183,63 @@ EOF2
   assert_equal "$(field e '[.prs[].number] | join(",")')" "20,21"
   assert_equal "$(field e .prs_merged)" 2
   assert_equal "$(field a '[.prs[].number] | join(",")')" 10
+}
+
+@test "pr-link records: a PR the session only viewed or commented on is not claimed, one gh printed or one never named still is" {
+  cat > "$TR/v.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"v1","name":"Bash","input":{"command":"gh pr view 30 -R o/r --json state,title | head -c 500"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"v1","content":"{\"state\":\"OPEN\"}"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"v2","name":"Bash","input":{"command":"gh pr comment https://github.com/o/r/pull/31 --body 'quarantined'"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"v2","content":"https://github.com/o/r/pull/31#issuecomment-1"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"v3","name":"Bash","input":{"command":"gh pr create --title 'feat: v' --body x && gh pr view 32 -R o/r"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"v3","content":"https://github.com/o/r/pull/32"}]}}
+{"type":"pr-link","sessionId":"sess-v","prNumber":30,"prUrl":"https://github.com/o/r/pull/30","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-v","prNumber":31,"prUrl":"https://github.com/o/r/pull/31","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-v","prNumber":32,"prUrl":"https://github.com/o/r/pull/32","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-v","prNumber":33,"prUrl":"https://github.com/o/r/pull/33","prRepository":"o/r"}
+EOF2
+  jq -cn --arg t "$TR/v.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-v", project: "proj", transcript: $t, title: "title v", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$GH_FIXTURE/prs.o-r" <<'EOF2'
+[{"number":10,"state":"MERGED","title":"feat: a","mergedAt":"2026-10-19T01:00:00Z"},
+ {"number":30,"state":"OPEN","title":"feat: theirs 30"},
+ {"number":31,"state":"OPEN","title":"feat: theirs 31"},
+ {"number":32,"state":"MERGED","title":"feat: v","mergedAt":"2026-10-19T03:00:00Z"},
+ {"number":33,"state":"MERGED","title":"feat: subagent","mergedAt":"2026-10-19T04:00:00Z"}]
+EOF2
+  "$SUBJECT" run
+  # 30 and 31 were only looked at; 32 was printed by gh pr create; 33 is a subagent's, never named
+  assert_equal "$(field v '[.prs[].number] | join(",")')" "32,33"
+}
+
+@test "pr-link records: only a command that runs and names the PR first drops it (heredoc, quoted text, a flag value, another repo's PR, checks keep the claim)" {
+  cat > "$TR/w.jsonl" <<'EOF2'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w1","name":"Bash","input":{"command":"gh pr comment 40 -R o/r --body 'quarantined 2 tests'"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"w2","name":"Bash","input":{"command":"cat >> t.bats <<'X'\ngh pr view 41 -R o/r\nX\nrg 'gh pr view 42' x; gh pr checks 43 --interval 10; gh pr view 44 -R other/repo"}}]}}
+{"type":"pr-link","sessionId":"sess-w","prNumber":2,"prUrl":"https://github.com/o/r/pull/2","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":10,"prUrl":"https://github.com/o/r/pull/10","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":40,"prUrl":"https://github.com/o/r/pull/40","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":41,"prUrl":"https://github.com/o/r/pull/41","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":42,"prUrl":"https://github.com/o/r/pull/42","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":43,"prUrl":"https://github.com/o/r/pull/43","prRepository":"o/r"}
+{"type":"pr-link","sessionId":"sess-w","prNumber":44,"prUrl":"https://github.com/o/r/pull/44","prRepository":"o/r"}
+EOF2
+  jq -cn --arg t "$TR/w.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-w", project: "proj", transcript: $t, title: "title w", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$GH_FIXTURE/prs.o-r" <<'EOF2'
+[{"number":2,"state":"MERGED","title":"feat: two","mergedAt":"2026-10-19T01:00:00Z"},
+ {"number":10,"state":"MERGED","title":"feat: a","mergedAt":"2026-10-19T01:30:00Z"},
+ {"number":40,"state":"OPEN","title":"feat: theirs"},
+ {"number":41,"state":"MERGED","title":"feat: 41","mergedAt":"2026-10-19T02:00:00Z"},
+ {"number":42,"state":"MERGED","title":"feat: 42","mergedAt":"2026-10-19T03:00:00Z"},
+ {"number":43,"state":"MERGED","title":"feat: 43","mergedAt":"2026-10-19T04:00:00Z"},
+ {"number":44,"state":"MERGED","title":"feat: 44","mergedAt":"2026-10-19T05:00:00Z"}]
+EOF2
+  "$SUBJECT" run
+  # 40 is the only one a command ran against: 41 and 42 are text, 2 and 10 are a flag value and a body word, 44 is another repo's
+  assert_equal "$(field w '[.prs[].number] | join(",")')" "2,10,41,42,43,44"
 }
 
 @test "a claim in a repo the PR store does not list (a fixture's pr-link, a search's output) is dropped and named, the run still WORKED" {
@@ -354,6 +411,14 @@ EOF
   assert_equal "$(cmd "rg -n 'gh pr create|pull/' tests/unit/session_outcomes.bats")" false
   assert_equal "$(cmd 'grep -c "gh pr merge" x')" false
   assert_equal "$(cmd 'echo gh pr create')" false
+  # an assignment's value is matched one way, so 60 quoted and $(...) values do not hit jq's retry limit (ar-920)
+  local i many=""
+  for i in $(seq 20); do many+="A$i=\"x\" B$i=\$(y) C$i='z' "; done
+  assert_equal "$(cmd "${many}gh pr view 9" 2>&1)" false
+  assert_equal "$(cmd "${many}gh pr create" 2>&1)" true
+  assert_equal "$(cmd 'X="a"b Y=a"b c" Z= gh pr merge 3')" true
+  assert_equal "$(cmd "MSG=don't gh pr create")" true
+  assert_equal "$(cmd 'X=$(a P=$HOME gh pr merge 3')" true
   refs() { jq -cn --arg t "$1" "$SO_PR_JQ"'$t | pr_refs'; }
   assert_equal "$(refs 'https://github.com/o/r/pull/10')" '[{"repo":"o/r","number":10}]'
   assert_equal "$(refs 'Squashed and merged pull request o/r#11 (x)')" '[{"repo":"o/r","number":11}]'
@@ -442,6 +507,25 @@ fj_alias_setup() {
   assert_output '{"prs":[{"repo":"git.public.test/o/r","number":1}]}'
 }
 
+@test "so_rework_repos: a Forgejo clone on any alias host is keyed by the store's host, so its PRs find their clone and project (ar-883)" {
+  # shellcheck source=/dev/null
+  . "$REPO_ROOT/.local/lib/session-outcomes.sh"
+  export SO_FORGEJO_HOSTS="git.example.test git.public.test"
+  local d
+  for d in gh fj other; do git init -q "$BATS_TEST_TMPDIR/$d"; done
+  git -C "$BATS_TEST_TMPDIR/gh" remote add origin git@github.com:o/r.git
+  git -C "$BATS_TEST_TMPDIR/fj" remote add origin ssh://git@git.public.test:2222/o/audio.git
+  git -C "$BATS_TEST_TMPDIR/other" remote add origin https://git.other.test/o/x.git
+  jq -n --arg t "$BATS_TEST_TMPDIR" '{forges: {forgejo: "git.example.test"}, paths: {"\($t)/gh": "a", "\($t)/fj": "audio", "\($t)/other": "x"}}' > "$BATS_TEST_TMPDIR/m.json"
+  run so_rework_repos "$BATS_TEST_TMPDIR/m.json"
+  assert_success
+  assert_output "$(printf 'git.example.test/o/audio\t%s/fj\no/r\t%s/gh' "$BATS_TEST_TMPDIR" "$BATS_TEST_TMPDIR")"
+  # Negative control: with no alias list the Forgejo clone is left out, as any other host is.
+  unset SO_CANON_ALIASES SO_CANON_STORE; export SO_FORGEJO_HOSTS=""
+  run so_rework_repos "$BATS_TEST_TMPDIR/m.json"
+  assert_output "$(printf 'o/r\t%s/gh' "$BATS_TEST_TMPDIR")"
+}
+
 @test "a dropped claim in a repo the project map lists is a hard error: the run writes the rest, holds that session, ends STALLED naming the repo" {
   fj_alias_setup
   touch "$GH_FIXTURE/prs.git.example.test-o-audio.unlisted"
@@ -492,7 +576,7 @@ activity_of() {
 {"type":"assistant","message":{"id":"m3","usage":{"output_tokens":7},"content":[{"type":"tool_use","id":"d","name":"Bash","input":{"command":"gh pr checks 5 --watch"}},{"type":"tool_use","id":"e","name":"Write","input":{"file_path":"/home/u/.agent/lessons/p.md"}}]}}
 EOF
   run activity_of "$TR/act.jsonl"
-  assert_output '{"tool_calls":5,"test_runs":1,"ci_polls":1,"api_messages":3,"tokens":123,"tokens_after_last_edit":7,"compactions":{"auto":0,"manual":0}}'
+  assert_output '{"tool_calls":5,"edit_calls":2,"test_runs":1,"ci_polls":1,"api_messages":3,"tokens":123,"tokens_after_last_edit":7,"compactions":{"auto":0,"manual":0}}'
 }
 
 @test "plan_gate: counts every ExitPlanMode and only the gate's own denials" {
@@ -599,6 +683,21 @@ EOF
 EOF
   run activity_of "$TR/act.jsonl"
   assert_output --partial '"tokens_after_last_edit":7'
+}
+
+@test "activity: edit_calls counts edit tool calls only, not lines or Bash that name an edit tool" {
+  cat > "$TR/act.jsonl" <<'EOF'
+{"type":"system","subtype":"api-request-shape","tools":[{"name":"Edit"},{"name":"Write"},{"name":"MultiEdit"},{"name":"NotebookEdit"}]}
+{"type":"user","message":{"content":"use the Edit and Write tools"}}
+{"type":"assistant","message":{"id":"m1","usage":{"output_tokens":9},"content":[{"type":"text","text":"Edit Write"},{"type":"tool_use","id":"a","name":"Bash","input":{"command":"echo Edit Write"}}]}}
+EOF
+  run activity_of "$TR/act.jsonl"
+  assert_output --partial '"edit_calls":0'
+  cat >> "$TR/act.jsonl" <<'EOF'
+{"type":"assistant","message":{"id":"m2","usage":{"output_tokens":1},"content":[{"type":"tool_use","id":"b","name":"Edit","input":{"file_path":"/r/a.sh"}},{"type":"tool_use","id":"c","name":"MultiEdit","input":{"file_path":"/r/b.sh"}}]}}
+EOF
+  run activity_of "$TR/act.jsonl"
+  assert_output --partial '"edit_calls":2'
 }
 
 @test "uses: agents by subagent_type, Skill calls and typed /commands; quoted or tool-result tags do not count" {
@@ -751,8 +850,9 @@ by_rows() {
   run "$SUBJECT" ended --days 1
   assert_success
   assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(.session_id) | sort')" '["sess-a","sess-b","sess-c"]'
+  # no outcome row yet: its PR counts are unknown (null), not 0
   assert_equal "$(printf '%s\n' "$output" | jq -sc 'map(select(.session_id == "sess-a"))[0]')" \
-    '{"session_id":"sess-a","project":"proj","title":"title a","harness":null,"account":null,"cost_usd":1,"updated_epoch":1792368000,"prs_merged":0,"prs_open":0}'
+    '{"session_id":"sess-a","project":"proj","title":"title a","harness":null,"account":null,"cost_usd":1,"updated_epoch":1792368000,"prs_merged":null,"prs_open":null}'
   # negative control: a stop before the window is not listed
   SO_NOW=$((STOP + 86401)) run "$SUBJECT" ended --days 1
   assert_success
@@ -1197,10 +1297,26 @@ EOF
   assert_equal "$(r '.models | join(" ")')" claude-sonnet-5
 }
 
-@test "an opencode session in a directory the registry does not know files under _unscoped; a known one keeps its project" {
+@test "an opencode session with no file summary carries null edits, not 0" {
   oc_db
-  echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
-  sqlite3 "$SO_OPENCODE_DB" "INSERT INTO session_v2 VALUES ('ses_stray', NULL, '/w/bnb-agents', 'smoke', NULL, 0, 0.1, 1, 1, 0, 0, 0, $(( (STOP - 120) * 1000 )), $(( (STOP - 60) * 1000 )));"
+  sqlite3 "$SO_OPENCODE_DB" "UPDATE session_v2 SET summary_files = NULL WHERE id = 'ses_root'"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_root")) | last | .edits | tostring')" null
+}
+
+# real_resolver -- the shipped project-name.sh over a registry that knows only /w/proj, and an
+# unregistered git clone at $SANDBOX/w/<name>: the reader files by the resolver alone.
+real_resolver() {
+  export SO_PROJECT_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" PROJECT_MAP_FILE="$SANDBOX/map.json"
+  jq -n '{paths: {"/w/proj": "proj"}}' > "$PROJECT_MAP_FILE"
+  git init -q "$SANDBOX/w/$1"
+}
+
+@test "an opencode session in a repo the registry does not know files under _unscoped; a known one keeps its project" {
+  oc_db
+  real_resolver bnb-agents
+  sqlite3 "$SO_OPENCODE_DB" "INSERT INTO session_v2 VALUES ('ses_stray', NULL, '$SANDBOX/w/bnb-agents', 'smoke', NULL, 0, 0.1, 1, 1, 0, 0, 0, $(( (STOP - 120) * 1000 )), $(( (STOP - 60) * 1000 )));"
   run "$SUBJECT" run
   assert_success
   [ ! -e "$SO_OUT/bnb-agents" ]
@@ -1237,6 +1353,43 @@ EOF
   assert_success
   assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_"))] | join(" ")')" ses_root
   assert_output --partial "opencode rows unread from $SANDBOX/oc-free/run/data/opencode/opencode.db"
+}
+
+@test "a run placed on a fleet worker gets its line from that worker's headless-rows; a worker that does not answer is a note, then read when it wakes" {
+  oc_db
+  # Each worker holds a lane DB of its own with one gateway run in it: w1 ses_eval1, w2 ses_eval2.
+  local w
+  for w in 1 2; do
+    mkdir -p "$SANDBOX/w$w"
+    cp "$SO_OPENCODE_DB" "$SANDBOX/w$w/opencode.db"
+    sqlite3 "$SANDBOX/w$w/opencode.db" "UPDATE session_v2 SET id = 'ses_eval$w' WHERE id = 'ses_root'; UPDATE session_v2 SET parent_id = 'ses_eval$w' WHERE parent_id = 'ses_root'; UPDATE session_message SET session_id = 'ses_eval$w' WHERE session_id = 'ses_root';"
+  done
+  # The roster warns that its fetch failed but still lists both workers: passed on, never "unread".
+  printf '#!/bin/sh\necho "fleet-hosts: fetch failed, so the roster is as last fetched" >&2\nprintf "w1\\nw2\\n"\n' > "$SANDBOX/bin/workers-stub"
+  # w2 is asleep (ssh 255) until $SANDBOX/w2.awake exists.
+  cat > "$SANDBOX/bin/worker-stub" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$SANDBOX/worker.calls"
+[ "\$1" = w1 ] || [ -e "$SANDBOX/\$1.awake" ] || { echo "ssh: connect to host \$1: No route to host" >&2; exit 255; }
+[ "\$2 \$4 \$5" = "timeout agentctl-session-outcomes headless-rows" ] || exit 9
+SO_OPENCODE_DB="$SANDBOX/\$1/opencode.db" SO_HARNESSES=/nonexistent SO_CODEX_SESSIONS=/nonexistent SO_AGY_RUNS=/nonexistent exec "$SUBJECT" headless-rows
+STUB
+  chmod +x "$SANDBOX/bin/workers-stub" "$SANDBOX/bin/worker-stub"
+  export SO_WORKERS=workers-stub SO_WORKER_RUN=worker-stub
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_"))] | sort | join(" ")')" 'ses_eval1 ses_root'
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs 'map(select(.session_id == "ses_eval1")) | last | [.harness, .cost_usd, .tokens_total] | join(" ")')" "opencode 1.75 175"
+  assert_output --partial "w2 rows unread (rc 255): ssh: connect to host w2"
+  assert_output --partial "fleet-hosts: fetch failed, so the roster is as last fetched"
+  refute_output --partial "fleet workers unread"
+  grep -qx "w1 timeout 300 agentctl-session-outcomes headless-rows" "$SANDBOX/worker.calls"
+  # w2 wakes: its run, never seen, is written on the next run; w1's, already seen, is not again.
+  touch "$SANDBOX/w2.awake"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(cat "$SO_OUT"/proj/*.jsonl | jq -rs '[.[].session_id | select(startswith("ses_eval"))] | join(" ")')" 'ses_eval1 ses_eval2'
+  refute_output --partial "rows unread"
 }
 
 @test "an opencode session is observed once, and turns final like any other" {
@@ -1276,6 +1429,16 @@ EOF
   assert_equal "$(field a '[.prs[].number] | join(" ")')" '10'
   assert_equal "$(field b '[.prs[].number] | join(" ")')" '11 99'
   assert_equal "$(field c '[.prs[] | "\(.number) \(.state)"] | join(",")')" '12 MERGED'
+}
+
+@test "a trainee item with no landed_by credits its PR to the trainee session before the reviewer's, the run that left the diff, not the reviewer that landed it (ar-4750)" {
+  # NEGATIVE CONTROL: before ar-4750 a two-session item with no landed_by credited neither session, so an approved trainee diff read as nothing landed.
+  queue_stub
+  jq -cn '{slug: "trn", sessions: "sess-a sess-c", pr: "o/r#11", trainee: "ocfree:beam"}' > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '[.prs[].number] | join(" ")')" '10 11'
+  assert_equal "$(field c '[.prs[].number] | join(" ")')" ''
 }
 
 @test "an item's host-less ref in a repo the map keeps on Forgejo is read from the PR store under host/owner/repo (ar-2779)" {
@@ -1340,6 +1503,23 @@ EOF
   run "$SUBJECT" run
   assert_success
   assert_equal "$(field a '.class|tojson')" '{"size":null,"kind":"fix"}'
+}
+
+@test "class: a session observed after the day its item closed still gets the item; the queue is read back a week before the oldest due session (ar-4750)" {
+  # NEGATIVE CONTROL: `list --state all` alone reads only today's done items, so before ar-4750 a
+  # session observed the day after its item closed had no item and no class (a landed trainee item
+  # read unclassed). This queue serves its items only to a list given --since.
+  export SO_QUEUE=queue-since SO_ROADMAP=false
+  printf '#!/usr/bin/env bash\ncase "$1" in\n  list) echo "$*" >> %q/list.args; [[ " $* " == *" --since "* ]] || exit 0; cat %q/items.jsonl ;;\n  set) ;;\n  *) exit 9 ;;\nesac\n' \
+    "$SANDBOX" "$SANDBOX" > "$SANDBOX/bin/queue-since"
+  chmod +x "$SANDBOX/bin/queue-since"
+  jq -cn '{slug: "closed-before", type: "fix", sessions: "sess-a"}' > "$SANDBOX/items.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field a '.items | join(" ")')" 'closed-before'
+  assert_equal "$(field a '.class|tojson')" '{"size":null,"kind":"fix"}'
+  run grep -c -- "^list --json --state all --since $(date -u -d "@$((STOP - 7 * 86400))" +%F)\$" "$SANDBOX/list.args"
+  assert_output 1
 }
 
 @test "the harness is what the launcher recorded: claude on a spilled item's account try, a legacy row by the item and the map" {
@@ -1542,11 +1722,11 @@ cx_rollouts() {
 
 @test "a codex session in a repo the registry does not know files under _unscoped, never a stray key the doctor fails" {
   cx_rollouts
-  echo 'project_known() { [ "$1" = proj ]; }' >> "$SO_PROJECT_LIB"
+  real_resolver qmk_firmware
   local t0
   t0=$(date -u -d "@$((STOP - 60))" +%Y-%m-%dT%H:%M:%S.000Z)
-  jq -cn --arg t0 "$t0" '
-    {timestamp: $t0, type: "session_meta", payload: {id: "cx-stray", cwd: "/w/qmk_firmware", originator: "codex_exec", source: "exec"}},
+  jq -cn --arg t0 "$t0" --arg cwd "$SANDBOX/w/qmk_firmware" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-stray", cwd: $cwd, originator: "codex_exec", source: "exec"}},
     {timestamp: $t0, type: "event_msg", payload: {type: "user_message", message: "trackball speed"}}
   ' > "$SO_CODEX_SESSIONS/2026/10/19/rollout-2026-10-19T00-02-00-cx-stray.jsonl"
   queue_stub
@@ -1625,6 +1805,24 @@ cx_item_rollouts() {
   assert_equal "$(r '.hard_errors | [.api_error, .denied, .tool_errors] | tostring')" '[0,null,null]'
   assert_equal "$(r '.activity | [.tool_calls, .test_failures, .api_messages] | tostring')" '[3,null,null]'
   assert_equal "$(r '[.effort, .error, .delivery.peak_context, .edits] | tostring')" '[null,null,null,1]'
+}
+
+@test "a codex row that edited only through shell carries null edits, not 0; one with an apply_patch counts it" {
+  cx_rollouts
+  local d="$SO_CODEX_SESSIONS/2026/10/19" t0
+  t0=$(date -u -d "@$((STOP - 600))" +%Y-%m-%dT%H:%M:%S.000Z)
+  jq -cn --arg t0 "$t0" '
+    {timestamp: $t0, type: "session_meta", payload: {id: "cx-shell", cwd: "/w/proj", originator: "codex_exec", source: "exec"}},
+    {timestamp: $t0, type: "turn_context", payload: {model: "gpt-6.1-sol"}},
+    {timestamp: $t0, type: "response_item", payload: {type: "function_call", name: "exec_command", call_id: "c1", arguments: ({cmd: "python3 - <<EOF\nopen(\"a\", \"w\").write(\"x\")\nEOF"} | tojson)}},
+    {timestamp: $t0, type: "event_msg", payload: {type: "token_count", info: {total_token_usage: {input_tokens: 10, cached_input_tokens: 0, output_tokens: 5}}}}
+  ' > "$d/rollout-2026-10-19T00-02-00-cx-shell.jsonl"
+  queue_stub
+  run "$SUBJECT" run
+  assert_success
+  r() { cat "$SO_OUT"/proj/*.jsonl | jq -rs "map(select(.session_id == \"$1\")) | last | $2"; }
+  assert_equal "$(r cx-shell '.edits | tostring')" 'null'
+  assert_equal "$(r cx-root '.edits | tostring')" '1'
 }
 
 # cx_prices [MODEL...] -- a harness map pricing the named Codex models (USD per million tokens).
@@ -2050,4 +2248,86 @@ link_fixture() {
     so_forgejo_auth git.example.test/o/r; echo "rc=$? $SO_FORGEJO_ERR"' _ "$SANDBOX/bin/rbw-none"
   assert_output --partial 'rc=1 no token: FORGEJO_TOKEN unset'
   assert_output --partial 'rbw forgejo_repo_admin unread, git.example.test/o/r unread'
+}
+
+@test "pruned transcript writes prs null and prs_merged null, not [] and 0; queue landed PR still counts" {
+  jq -cn --arg t "$TR/missing.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-p1", project: "proj", transcript: $t, title: "pruned 1", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  jq -cn --arg t "$TR/missing2.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-p2", project: "proj", transcript: $t, title: "pruned 2", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  cat > "$SANDBOX/bin/queue-stub" <<'STUB'
+#!/usr/bin/env bash
+[ "$1" = list ] || exit 2
+echo '{"slug":"q-p2","project":"proj","agent":"claude","pr":"o/r#10","sessions":"sess-p2","landed_by":"sess-p2=o/r#10"}'
+STUB
+  chmod +x "$SANDBOX/bin/queue-stub"
+  export SO_QUEUE=queue-stub
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(field p1 '[.transcript, .prs, .prs_merged, .prs_open, .prs_closed_unmerged, .reverted_7d] | tojson')" '[false,null,null,null,null,null]'
+  assert_equal "$(field p2 '[.transcript, (.prs | length), .prs_merged] | tojson')" '[false,1,1]'
+  run "$SUBJECT" card sess-p1
+  assert_success
+  assert_output --partial 'PRs unknown'
+  assert_output --partial 'unknown (no transcript)'
+}
+
+@test "langfuse: pruned transcript skips null PR scores and deletes stale score ids; 404 is absent, 500 holds the mark" {
+  lf_setup
+  cat > "$SANDBOX/bin/curl-lf-del" <<'STUB'
+#!/usr/bin/env bash
+cat > /dev/null
+out="" body="" method="POST" url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -o) out="$2"; shift ;;
+    -X) method="$2"; shift ;;
+    --data-binary) body="${2#@}"; shift ;;
+    http://*) url="$1" ;;
+  esac
+  shift
+done
+if [ "$method" = DELETE ]; then
+  printf '%s\n' "$url" >> "$BATS_TEST_TMPDIR/lf.deleted"
+  printf '' > "$out"
+  printf '%s' "${LF_DEL_CODE:-204}"
+  exit 0
+fi
+cat "$body" >> "$BATS_TEST_TMPDIR/lf.posted"; echo >> "$BATS_TEST_TMPDIR/lf.posted"
+printf '{"successes":[],"errors":[]}' > "$out"
+printf '%s' "${LF_CODE:-207}"
+STUB
+  chmod +x "$SANDBOX/bin/curl-lf-del"
+  export SO_CURL=curl-lf-del
+  jq -cn --arg t "$TR/missing.jsonl" --argjson u "$STOP" \
+    '{session_id: "sess-p1", project: "proj", transcript: $t, title: "pruned", updated: $u, edits: 1, cost_usd: 1, tokens: {total: 100}}' \
+    >> "$SO_SESSIONS/proj/sessions.jsonl"
+  run "$SUBJECT" run
+  assert_success
+  assert_equal "$(posted | jq -r 'select(.body.sessionId == "sess-p1") | .body.name' | grep -c -E '^(prs_merged|prs_closed_unmerged|reverted_7d)$')" 0
+  assert_equal "$(sort "$BATS_TEST_TMPDIR/lf.deleted")" "$(printf '%s\n' \
+    'http://langfuse.test/api/public/scores/so:sess-p1:prs_closed_unmerged' \
+    'http://langfuse.test/api/public/scores/so:sess-p1:prs_merged' \
+    'http://langfuse.test/api/public/scores/so:sess-p1:reverted_7d')"
+  report | grep -q '3 deleted'
+  [ -n "$(mark)" ]
+  # 202 is Langfuse's real answer ("Score deletion queued successfully"), a deletion like 204 (ar-4283)
+  : > "$BATS_TEST_TMPDIR/lf.deleted"
+  LF_DEL_CODE=202 run "$SUBJECT" langfuse --all
+  assert_success
+  assert_output --partial '3 deleted'
+  refute_output --partial 'FAILED'
+  # 404 is treated as already absent
+  : > "$BATS_TEST_TMPDIR/lf.deleted"
+  LF_DEL_CODE=404 run "$SUBJECT" langfuse --all
+  assert_success
+  refute_output --partial 'deleted'
+  # 500 on delete fails and does not advance the mark
+  rm -f "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark"
+  LF_DEL_CODE=500 run "$SUBJECT" langfuse
+  assert_success
+  assert_output --partial 'langfuse: FAILED (HTTP 500)'
+  [ -z "$(mark)" ]
 }

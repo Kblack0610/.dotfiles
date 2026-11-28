@@ -26,7 +26,7 @@ use crate::builds::{timed_as, Builds, Paths, Run};
 use crate::junit::{self, Loaded, PickRun};
 use crate::links::{Kind, Link};
 use crate::run_detail::{took_text, ts, Job, Record, RunDetail};
-use crate::session_actions::Runner;
+use crate::session_actions::{argv, Runner};
 
 /// A live job read is reused this long, so a page that repaints on every ledger line asks GitHub
 /// once. Once the run is done and every job has ended, the read is kept for good. There is no
@@ -192,10 +192,6 @@ pub struct Page {
     pub stages: Stages,
     pub artifacts: Artifacts,
     pub chain: Chain,
-}
-
-fn argv(a: &[&str]) -> Vec<String> {
-    a.iter().map(|s| s.to_string()).collect()
 }
 
 fn short(s: &str) -> &str {
@@ -707,23 +703,20 @@ fn changes(o: &Env, run: &Run) -> Changes {
 
 fn pick(reg: &Registry, r: &Run) -> PickRun {
     PickRun {
-        repo: r.repo.clone(),
-        id: r.id,
-        attempt: r.attempt,
-        branch: r.branch.clone(),
         sha: short(&r.sha).to_string(),
-        title: r.title.clone(),
-        state: r.state.clone(),
-        level: r.level,
-        started: r.started,
-        prs: r.prs.clone(),
-        url: r.url.clone(),
+        rank: reg
+            .test_workflows(&r.repo)
+            .iter()
+            .position(|w| *w == r.path)
+            .unwrap_or(0),
         artifacts: reg.test_artifacts(&r.repo),
         store: artifact_store::lister(reg, &r.repo),
+        ..PickRun::of(r)
     }
 }
 
-fn applied(b: &Builds, repo: &str, l: &Loaded) -> Loaded {
+/// The run's results with the failures `repo`'s quarantine holds marked quarantined.
+pub fn applied(b: &Builds, repo: &str, l: &Loaded) -> Loaded {
     let lane = b
         .quarantine
         .iter()

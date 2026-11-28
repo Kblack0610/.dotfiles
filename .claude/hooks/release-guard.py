@@ -11,7 +11,7 @@ Denied: `git tag` creating a release tag (`v<n>.<n>...`, `<name>-v<n>.<n>...`); 
 carries one, deletes one, pushes a tag glob, or pushes `--tags`, `--follow-tags` or `--mirror`;
 `gh release create` (or an API release write) of a release tag not yet on origin; an API write to
 `git/refs` or `git/tags` naming a release tag; `gh workflow run cut.yml`, or a workflow named by id
-or by a release-like display name; a run of a cut script (`scripts/release/{ship,release,publish}.sh`,
+or by a release-like display name, and an API dispatch of a cut or release workflow or of one named by id; a run of a cut script (`scripts/release/{ship,release,publish}.sh`,
 or a repo's `scripts/release.sh`, `scripts/publish.sh`); a `gh api` or curl write to `rulesets`,
 `environments` or `keys`, and an environment's `gh secret`/`gh variable` write (the ruleset
 bypass, the environments, the deploy key); and the untested override (`RELEASE_UNTESTED=`, a
@@ -19,7 +19,8 @@ workflow's `untested-reason` input). Wrappers (`timeout`, `nice`, `setsid`, `std
 walked through.
 Allowed: a re-send, `gh workflow run <release workflow> -f tag=<t>` (or `--ref <t>`) when every
 release tag it names is already on origin, `steam.yml -f run-id=<release run>` (an upload of a built tag), and
-`gh run rerun`. A release workflow dispatch that
+`gh run rerun`. `phone-release.yml` and `ios-release.yml` also need `--ref <t>` naming that same tag,
+since their game job refuses any other ref. A release workflow dispatch that
 names no release tag is denied, since it could only cut.
 
 The command walker is forge-guard's (cd, bash -c, eval, subshells). Codex runs this hook from
@@ -27,19 +28,24 @@ The command walker is forge-guard's (cd, bash -c, eval, subshells). Codex runs t
 (P16). Fail-open on a parse error; a tag whose presence on origin cannot be read is denied, since
 the guard cannot tell a re-send from a cut.
 """
-import json
 import os
 import re
 import shlex
 import subprocess
-import sys
+import urllib.parse
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+import hooklib
+
 RELEASE_TAG = re.compile(r"(?:^|-)v\d+\.\d+")
 RELEASE_WORKFLOWS = {"release.yml", "phone-release.yml", "ios-release.yml", "steam.yml"}
+# Built through unity-core-playground's .github/workflows/release-game.yml, whose first step refuses any
+# GITHUB_REF but refs/tags/<tag> input (line 60): a dispatch off the tag only leaves a failed run, which
+# holds playground-release-runs red for 72 h (ar-2536).
+TAG_REF_WORKFLOWS = {"phone-release.yml", "ios-release.yml"}
 CUT_WORKFLOWS = {"cut.yml"}
 CUT_SCRIPTS = {("release", "ship.sh"), ("release", "release.sh"), ("release", "publish.sh"), ("scripts", "release.sh"), ("scripts", "publish.sh")}
 GUARDED_API = re.compile(r"/(rulesets|environments|keys)(?:/|$)")
+DISPATCH_API = re.compile(r"/actions/workflows/([^/]+)/dispatches$")
 TAG_API = re.compile(r"/(?:git/refs|git/tags|releases)(?:/|$)")
 BODY_TAG = re.compile(r"(?:refs/tags/|tag_name\W+|\btag\W+)([\w.+-]+)")
 RELEASE_WF_NAME = re.compile(r"cut|release|steam|ship|publish", re.I)
@@ -66,15 +72,6 @@ WHY = ("No agent cuts a release: cut.yml cuts it when the sprint's window says s
        "fault) or `gh workflow run release.yml --ref <tag> -f tag=<tag>`; "
        "a workflow fix on main rides the next cut. The `release` skill says how.")
 MSG = "release-guard: {what} would {does}. " + WHY
-
-
-def _forge():
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("forge_guard", os.path.join(HERE, "forge-guard.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
 
 
 FORGE = None  # loaded past decide's prefilter, or set by walker-guards.py: it runs on every Bash call
@@ -186,7 +183,21 @@ def gh_repo(argv, env):
     return slug
 
 
+def split_short(argv):
+    """argv with each attached short option value split off as gh's flag parser reads it: `-ftag=x`,
+    `-f=tag=x`, `-rv1.0`, `-Ro/r`. Matched only when given apart, an attached field or ref went
+    unread: `-funtested-reason=x` passed (ar-4040)."""
+    out = []
+    for a in argv:
+        if len(a) > 2 and a[0] == "-" and a[1] in "fFrR":
+            out += [a[:2], a[3:] if a[2] == "=" else a[2:]]
+        else:
+            out.append(a)
+    return out
+
+
 def check_workflow_run(argv, env, cwd):
+    argv = split_short(argv)
     i = argv.index("run", argv.index("workflow"))
     wf, fields, refs, j = None, [], [], i + 1
     while j < len(argv):
@@ -219,6 +230,12 @@ def check_workflow_run(argv, env, cwd):
     tags += [r for r in refs if release_tag(r)]
     if not tags:
         return deny("gh workflow run %s" % name, "start a release that names no existing tag")
+    if name in TAG_REF_WORKFLOWS:
+        # gh takes the last --ref and the last tag= field
+        field = [f.split("=", 1)[1] for f in fields if f.split("=", 1)[0] == "tag" and "=" in f]
+        if not (refs and field and refs[-1].removeprefix("refs/tags/") == field[-1]):
+            return deny("gh workflow run %s" % name, "start a run whose --ref is not the tag it builds, which "
+                        "its game job refuses (release-game.yml): give `--ref <tag> -f tag=<tag>`, the same tag")
     miss = missing_tags(cwd, gh_repo(argv, env), [t.removeprefix("refs/tags/") for t in tags])
     return deny("gh workflow run %s" % name, miss[1]) if miss else None
 
@@ -262,6 +279,15 @@ def check_api(head, argv, cwd):
     shown = "%s ... %s" % ("gh api" if head == "gh" else head, path)
     if GUARDED_API.search(path):
         return deny(shown, LOCKS)
+    wf = DISPATCH_API.search(path)
+    # the segment as GitHub may resolve it: decoded, its last part, any case (review, ar-4040)
+    name = wf and os.path.basename(urllib.parse.unquote(wf.group(1))).lower()
+    if name in CUT_WORKFLOWS:
+        return deny(shown, "cut a release")
+    if name and (name in RELEASE_WORKFLOWS or not name.endswith((".yml", ".yaml"))):
+        # the API's inputs are a JSON body: `gh workflow run` is the form whose fields this guard reads (ar-4040)
+        return deny(shown, "start %s through the API, where this guard cannot read its inputs: use "
+                    "`gh workflow run <file>.yml`" % wf.group(1))
     if not TAG_API.search(path):
         return None
     body = api_body(argv, cwd)
@@ -346,20 +372,9 @@ def decide(data):
     if not any(w in cmd for w in ("tag", "push", "workflow", "release", "publish", "ship.sh", "api",
                                   "rulesets", "environments", "keys", "deploy-key", "secret", "variable", OVERRIDE_ENV)):
         return None
-    FORGE = FORGE or _forge()
+    FORGE = FORGE or hooklib.load("forge-guard")
     return FORGE.reason(cmd, data.get("cwd") or os.getcwd(), check)
 
 
-def main():
-    r = decide(json.load(sys.stdin))
-    if r:
-        print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": r}}))
-
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception:
-        pass
-    sys.exit(0)
+    hooklib.run(decide)

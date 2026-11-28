@@ -1,5 +1,5 @@
-//! The CI runners board: every machine's slots, the job each is running and the jobs waiting,
-//! each with the runners that can take it. Both surfaces draw this one answer (the TUI's Infra
+//! The CI runners board: each runner running a job (an idle or off one has no row; the
+//! Machines page keeps its state) and the jobs waiting, each with the runners that can take it. Both surfaces draw this one answer (the TUI's Infra
 //! `ci` section and agent-web's), and `fleet-bench` reads `pool_match` through `hub ci`, so
 //! there is one copy of the label join. It judges from the runner-exporter series `infra`
 //! already read and asks Prometheus for nothing.
@@ -8,6 +8,10 @@
 //! same). A queued job no online runner can take is `Queued::missing`, the labels none holds:
 //! the board draws it red, so a label standing in for a place (2026-11-10: `lan`) shows at a
 //! glance instead of as an hour of queue.
+//!
+//! An ephemeral pool (an ARC scale set, the KEDA forgejo-runner job) registers no runner until a
+//! job starts a pod, and GitHub lists that pod's runner with no labels, so a pool's labels come
+//! from the exporter's `ci_runner_pool` row (`Pool`) and it holds them like a runner (ar-5477).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -15,6 +19,7 @@ use serde::Serialize;
 
 use crate::home::Level;
 use crate::infra::Infra;
+use crate::jobpods::{Booked, Pending, Units};
 use crate::links::{Kind, Link};
 use crate::prom::Series;
 use crate::table::{Row, Val};
@@ -25,21 +30,22 @@ const LONG_RUN_SECS: i64 = 3600;
 
 /// Labels every runner and job carries, left out of NEEDS: they say where, not what.
 const COMMON: &[&str] = &["self-hosted", "linux"];
+/// The pool the exporter files a job GitHub runs on its own runners under.
+const HOSTED: &str = "github-hosted";
 
 /// Waiting groups the glance names under NEXT.
 const NEXT: usize = 5;
 
-/// One row of the machines table: a job running in a slot, or a run of slots in one state.
+/// One row of the runners table: a job running on a runner, or a local gate.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Slot {
     pub host: String,
-    /// `3`, or `2-5` for a run of slots in the same state.
+    /// The runner's slot number; `-` for a local gate.
     pub slot: String,
     /// The kind of job a busy slot runs, in the pool names `cc:pool_*` use (`ci_runner_job`'s
-    /// kind); `gates` for a local gate; for a slot with no job its one cap, empty when it takes several.
+    /// kind); `gates` for a local gate.
     pub pool: String,
-    /// `busy`, `idle`, `lent` (its pair is using its cores), `withheld` (the governor holds it
-    /// back), `off` (offline or missing) or `standby` (its host is powered off by the governor).
+    /// Always `busy`: the table lists a runner only while it runs a job.
     pub state: String,
     pub job: String,
     pub repo: String,
@@ -51,35 +57,49 @@ pub struct Slot {
     pub usual: Option<i64>,
     /// Past its usual p90, or past `LONG_RUN_SECS`.
     pub late: bool,
-    /// What the governor says of a standby host.
-    pub note: String,
+    /// Its runner is a CI job pod (an ARC runner), which `jobpods` counts on its node.
+    #[serde(skip)]
+    pub pod: bool,
 }
 
 /// A host that can take a job, and whether a slot is free there now.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Fit {
+    /// The machine, or for an ephemeral pool its name (`arc-org-light`).
     pub host: String,
-    /// `idle`, `busy`, `lent`, `withheld` or `standby` (`now_of`).
+    /// `idle` or `busy` (`now_of`), or `pool`: an ephemeral pool
+    /// that starts a pod for it.
     pub state: String,
 }
 
-/// One group of waiting jobs: the same job of the same run.
+/// One group of waiting jobs: the same workflow of a repo and kind, over every run waiting on it
+/// (135 shards of one workflow are one row, hc-1018's ask: the queue reads by workflow, not by
+/// shard).
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Queued {
+    /// The workflow (the job's own name when the exporter reports no workflow).
     pub job: String,
-    /// The pool the exporter files it under.
+    /// The pool the exporter files it under: its kind.
     pub pool: String,
     pub repo: String,
+    /// The repo's owner, from the job's URL; empty when the URL says none.
+    pub owner: String,
+    /// `github` or `forgejo`: which forge's pools may take it.
+    pub forge: String,
+    /// The pull request or branch every job in the group shares; empty once `runs` differ.
     pub pr: String,
     pub branch: String,
+    /// How many runs the group's jobs belong to.
+    pub runs: u32,
     pub n: u32,
     /// Seconds the oldest has waited.
     pub wait: i64,
     /// The labels it needs, less `COMMON`.
     pub needs: Vec<String>,
-    /// Hosts with an online runner holding every label, free ones first. Empty: nobody can.
+    /// Hosts with an online runner holding every label, and the pools holding them, free ones
+    /// first. Empty: nobody can.
     pub can: Vec<Fit>,
-    /// The labels no online runner holds, when nobody can take it.
+    /// The labels no online runner or pool holds, when nobody can take it.
     pub missing: Vec<String>,
     /// No online runner can take it: a label none of them holds, or no one runner holding all.
     pub stuck: bool,
@@ -92,6 +112,11 @@ pub struct Queued {
 }
 
 impl Queued {
+    /// GitHub runs it on its own runners, so none of ours can take it and none need to.
+    pub fn hosted(&self) -> bool {
+        self.pool == HOSTED
+    }
+
     /// The red line for a job nobody can take.
     pub fn problem(&self) -> String {
         let what = if self.repo.is_empty() {
@@ -111,8 +136,10 @@ impl Queued {
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Ci {
     pub hosts: u32,
-    /// Each physical slot once (`slots_by_host`), summed over the machines.
+    /// Each fixed slot once (`slots_by_host`), summed over the machines. Job pods have no slot:
+    /// their jobs count in `glance.busy` and the machine rows (`jobpods`).
     pub slots: u32,
+    /// The fixed slots running a job; job pods count in `glance.busy`.
     pub busy: u32,
     pub queued: u32,
     pub oldest: i64,
@@ -200,19 +227,31 @@ pub struct JobKind {
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
+    /// Finished in the last hour and five hours (`Pool::done_1h`).
+    pub done_1h: Option<f64>,
+    pub done_5h: Option<f64>,
     pub done: Option<f64>,
+    /// Seconds one of its finished jobs usually runs (`Pool::usual`).
+    pub usual: Option<f64>,
     pub pass: Option<f64>,
-    /// The share of a slot one of its jobs takes, as text (`Pool::weight`).
-    pub weight: Option<String>,
 }
 
-/// One CI machine: its slots taken (units over its capacity), the jobs running on it by kind and
-/// repo, the oldest waiting job that fits it, and its load.
+/// One CI machine: the CPU and memory every pod placed there requests against allocatable, its
+/// real CPU use,
+/// the jobs running on it by kind, the oldest waiting job that fits it, and its load.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Host {
     pub host: String,
+    /// `Machine::state`: `up`, or `NotReady`, `quarantined`, `cordoned` for a node that takes no job.
+    pub state: String,
+    /// Jobs running there (`Machine::busy`).
     pub busy: u32,
-    pub slots: u32,
+    /// What every pod placed there requests (`Machine::booked`): job pods, the build-slot hold and
+    /// other namespaces' pods. None for a machine that is no CI node (an
+    /// old Unity slot host until hc-954).
+    pub booked: Option<Booked>,
+    /// Its CPU busy share (`Machine::cpu`).
+    pub cpu: Option<f64>,
     /// Each job running there by kind and repo (`Machine::running`).
     pub running: Vec<String>,
     /// The oldest waiting job that fits it (`Machine::next`).
@@ -220,11 +259,6 @@ pub struct Host {
     /// 1-minute load per core (`Machine::load` over `cores`); the chip paints the row red past
     /// its hot ratio. None when either reading is missing.
     pub load: Option<f64>,
-    /// Its capacity in slot units and the units taken: the governor's
-    /// `ci_governor_{capacity,busy}_units` (`host_units`). None for both while the governor
-    /// publishes no row for it: shown `-`, never made up from runner counts.
-    pub units: Option<f64>,
-    pub units_busy: Option<f64>,
 }
 
 /// The oldest waiting job a machine can take (`next_by_host`): the same label join that says
@@ -274,13 +308,14 @@ pub struct Part {
 }
 
 /// What CI is doing at a glance, the same on the waybar hover (`hub ci --json`), the Infra
-/// tab's CI head and agent-web's: the ci status, busy of the slots with each slot once, the
-/// queue, the last day, one row per job kind and per CI machine, the cloud hosts that are off,
-/// and the runners down.
+/// tab's CI head and agent-web's: the ci status, the jobs running, what they book of the CI
+/// nodes, the queue and the pods waiting for room, the last day, one row per job kind and per CI
+/// machine, and the runners down.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Glance {
     /// `cc:domain_status{domain="ci"}`: the whole domain, queue waits and pass rate too. The
-    /// System health strip reads it; the CI card surfaces read `alert`.
+    /// System health strip and agent-web's CI RUNNING tile read it (ar-5013); the phone's CI row
+    /// reads `alert`.
     pub level: Level,
     /// The one CI alert: Red while a runner is down (`Infra::runners_down`) or a queued job has
     /// no online runner that can take it (`Ci::red`), Nodata with no runner read, else Ok. Queue
@@ -292,9 +327,8 @@ pub struct Glance {
     pub parts: Vec<Part>,
     /// `Infra::feed`: why runner rows may be missing.
     pub feed: Option<String>,
-    /// Jobs running now: busy slots, each once.
+    /// Jobs running now: the machine rows' `busy` summed.
     pub busy: u32,
-    pub slots: u32,
     /// The first waiting groups (`Ci::queue`, oldest first), with where and about when each
     /// starts: the hover's NEXT.
     pub next: Vec<Queued>,
@@ -303,44 +337,33 @@ pub struct Glance {
     pub oldest: Option<f64>,
     /// Jobs finished in the last day, and their pass share weighed by each kind's count.
     pub done: u32,
+    /// Jobs finished in the last hour and five hours, summed over the kinds that report the
+    /// window; None until one does, so a head never prints a 0 for a window nobody measured.
+    pub done_1h: Option<u32>,
+    pub done_5h: Option<u32>,
     pub pass: Option<f64>,
     pub kinds: Vec<JobKind>,
-    /// Machines with a slot, busiest first.
+    /// Every CI node, and any other machine running a job, the most booked first.
     pub machines: Vec<Host>,
-    /// Cloud hosts the governor holds off, or with nothing online: one line, not one row each.
-    pub off: Vec<String>,
     pub down: Vec<Down>,
     pub long: Vec<Long>,
-    /// CI in slot units: the machine rows' `units_busy` and `units` summed, so the bar equals
-    /// its rows. The waiting jobs' summed weight and how long that
-    /// backlog takes to run are the governor's own (home-config hc-668). None while the governor
-    /// has no series: shown `-`.
-    pub units_busy: Option<f64>,
-    pub units: Option<f64>,
-    pub backlog: Option<f64>,
-    pub drain: Option<f64>,
-}
-
-/// `6.4`, or `-` with no reading.
-pub fn units_of(x: Option<f64>) -> String {
-    x.map_or("-".into(), |v| format!("{v:.1}"))
+    /// The CI pool in units over the CI machine rows (`jobpods::units`): total, taken by kind,
+    /// free and real use, with the words every surface prints. None with no CI node read.
+    pub units: Option<Units>,
+    /// Job pods no node has room for, by kind and size (`jobpods::pending`).
+    pub pending: Vec<Pending>,
+    /// The head line and the waiting-for-room line, worded once (`head`, `pending_line`) for the
+    /// surfaces that only draw them: agent-web reads these, never rebuilds them.
+    pub head: String,
+    pub pending_line: Option<String>,
 }
 
 impl Glance {
-    /// `6.4/16`: busy units of the capacity, `-` for a missing side.
-    pub fn units_line(&self) -> String {
-        format!(
-            "{}/{}",
-            units_of(self.units_busy),
-            self.units.map_or("-".into(), |v| format!("{v:.0}"))
-        )
-    }
-
-    /// `~12m`, or `-` with no reading; None with nothing queued.
-    pub fn drain_line(&self, dur: impl Fn(i64) -> String) -> Option<String> {
-        (self.queued > 0).then(|| {
-            self.drain
-                .map_or("-".into(), |d| format!("~{}", dur(d as i64)))
+    /// `waiting for room: arc-org-light x3 (1.69 cpu 1.2G each)`; None when every pod has a node.
+    pub fn pending_line(&self) -> Option<String> {
+        (!self.pending.is_empty()).then(|| {
+            let p: Vec<String> = self.pending.iter().map(Pending::line).collect();
+            format!("waiting for room: {}", p.join(", "))
         })
     }
 
@@ -352,19 +375,23 @@ impl Glance {
         format!("{}/{}", self.up, self.expected)
     }
 
-    /// `4 running, 23 queued (oldest 21m), 9.2 queued ~12m, 12/12 runners up, 759 done 24h,
-    /// 91% passed`: jobs running and waiting, then runner liveness. Slot units stay in the
-    /// machine rows; a slot held back or lent is no count here, and a job it makes wait is in
-    /// queued.
+    /// `4 running, 23 queued (oldest 21m), taken 72.4/108 units (67%), 12/12 runners up, 6 done 1h, 80 done 5h,
+    /// 759 done 24h, 91% passed`: jobs running and waiting, the pool's units taken (`Units`),
+    /// then runner liveness.
     pub fn head(&self, dur: impl Fn(i64) -> String) -> String {
         let mut s = format!("{} running, {} queued", self.busy, self.queued);
         if let Some(o) = self.oldest.filter(|_| self.queued > 0) {
             s += &format!(" (oldest {})", dur(o as i64));
         }
-        if let Some(d) = self.drain_line(&dur) {
-            s += &format!(", {} queued {d}", units_of(self.backlog));
+        if let Some(u) = &self.units {
+            s += &format!(", {}", u.brief);
         }
         s += &format!(", {} runners up", self.up_line());
+        for (n, w) in [(self.done_1h, "1h"), (self.done_5h, "5h")] {
+            if let Some(n) = n {
+                s += &format!(", {n} done {w}");
+            }
+        }
         if self.done > 0 {
             s += &format!(", {} done 24h", self.done);
             if let Some(p) = self.pass {
@@ -372,16 +399,6 @@ impl Glance {
             }
         }
         s
-    }
-
-    /// `cloud: 4 hosts off`: the cloud hosts the governor holds off, one line in place of a
-    /// row each (agent-web's `offLine` and the waybar chip say the same).
-    pub fn off_line(&self) -> Option<String> {
-        match self.off.len() {
-            0 => None,
-            1 => Some("cloud: 1 host off".into()),
-            n => Some(format!("cloud: {n} hosts off")),
-        }
     }
 }
 
@@ -419,51 +436,39 @@ pub fn glance(infra: &Infra) -> Glance {
             running: p.running,
             waiting: p.waiting,
             oldest: p.oldest,
+            done_1h: p.done_1h,
+            done_5h: p.done_5h,
             done: p.done,
+            usual: p.usual,
             pass: p.pass,
-            weight: p.weight.clone(),
         });
     }
     g.pass = (ran > 0.0).then(|| passed / ran);
-    // The governor's backlog and drain, summed over its kinds; None when it has no series.
-    let total = |name: &str| {
-        infra
-            .get("governor")
-            .iter()
-            .filter(|s| s.label("__name__") == name)
-            .filter_map(|s| s.value)
-            .reduce(|a, b| a + b)
+    let window = |f: fn(&crate::machines::Pool) -> Option<f64>| {
+        let n: Vec<f64> = infra.pools.iter().filter_map(f).collect();
+        (!n.is_empty()).then(|| n.iter().sum::<f64>() as u32)
     };
-    g.backlog = total("ci_governor_backlog_units");
-    g.drain = total("ci_governor_drain_seconds");
+    (g.done_1h, g.done_5h) = (window(|p| p.done_1h), window(|p| p.done_5h));
+    g.pending = crate::jobpods::pending(&infra.pods);
     let alias = infra.aliases();
-    let mut off: Vec<String> = infra
-        .powered_off()
-        .keys()
-        .map(|h| crate::infra::host(&alias, h))
-        .collect();
-    // A host the governor reads as off but that still holds a slot is not off: show its row.
-    off.retain(|h| !infra.machines.iter().any(|m| &m.host == h && m.slots > 0));
-    off.sort();
-    // A host whose every runner the governor holds back keeps its row: no slot, no queue of its
-    // own, but still a CI machine, so it does not drop off the bar while held.
-    let poff = infra.powered_off();
-    let held: BTreeSet<String> = runners(infra)
-        .into_iter()
-        .filter(|r| matches!(now_of(r, &poff), "withheld" | "lent"))
-        .map(|r| r.host)
-        .collect();
+    let mut ci_nodes: BTreeMap<String, Booked> = BTreeMap::new();
+    // Busy cores over the CI nodes; None once one has no reading.
+    let mut real = Some(0.0);
     for m in &infra.machines {
-        let idle = m.busy + m.slots == 0 && m.running.is_empty() && !held.contains(&m.host);
-        if idle || off.contains(&m.host) {
+        if m.booked.is_none() && m.busy + m.slots == 0 && m.running.is_empty() {
             continue;
         }
         g.busy += m.busy;
-        g.slots += m.slots;
+        if let Some(b) = m.booked.filter(Booked::on_ci) {
+            ci_nodes.insert(m.host.clone(), b);
+            real = real.zip(m.cpu.zip(m.cores)).map(|(r, (c, n))| r + c * n);
+        }
         g.machines.push(Host {
             host: m.host.clone(),
+            state: m.state.clone(),
             busy: m.busy,
-            slots: m.slots,
+            booked: m.booked,
+            cpu: m.cpu,
             running: m.running.clone(),
             next: m.next.clone(),
             load: m
@@ -471,24 +476,16 @@ pub fn glance(infra: &Infra) -> Glance {
                 .zip(m.cores)
                 .filter(|(_, c)| *c > 0.0)
                 .map(|(l, c)| l / c),
-            units: m.units,
-            units_busy: m.units_busy,
         });
-        if let Some(cap) = m.units {
-            *g.units.get_or_insert(0.0) += cap;
-        }
-        if let Some(used) = m.units_busy {
-            *g.units_busy.get_or_insert(0.0) += used;
-        }
     }
+    let share = |h: &Host| h.booked.map_or(-1.0, |b| b.share());
     g.machines.sort_by(|a, b| {
-        b.units_busy
-            .unwrap_or(0.0)
-            .total_cmp(&a.units_busy.unwrap_or(0.0))
+        share(b)
+            .total_cmp(&share(a))
             .then_with(|| b.busy.cmp(&a.busy))
             .then_with(|| a.host.cmp(&b.host))
     });
-    g.off = off;
+    g.units = crate::jobpods::units(&ci_nodes, &infra.pods, real);
     g.next = infra.ci.queue.iter().take(NEXT).cloned().collect();
     let mut down: BTreeMap<(String, String), u32> = BTreeMap::new();
     for s in &infra.down {
@@ -528,18 +525,22 @@ pub fn glance(infra: &Infra) -> Glance {
         .collect();
     long.sort_by_key(|a| std::cmp::Reverse(a.ran));
     g.long = long;
+    g.head = g.head(|s| crate::display::fmt::dur_secs(s as f64));
+    g.pending_line = g.pending_line();
     g
 }
 
-/// Each machine's busy and slots, each physical slot once: a running runner, or an idle one not
-/// withheld. A local gate is no runner, so it is no slot: the governor's local seats count it, in units. The
-/// machines table and every CI header add this up.
+/// Each machine's busy and slots, each physical slot once: a running runner, or an idle one. A
+/// local gate is no runner, so it is no slot. An ARC runner is its job pod, no slot: `jobpods`
+/// counts it on its node.
 pub fn slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
-    let off = infra.powered_off();
     let mut by: BTreeMap<String, (u32, u32)> = BTreeMap::new();
     for r in runners(infra) {
+        if infra.pod(r.s.label("name")).is_some() {
+            continue;
+        }
         let e = by.entry(r.host.clone()).or_default();
-        match now_of(&r, &off) {
+        match now_of(&r) {
             "busy" => *e = (e.0 + 1, e.1 + 1),
             "idle" => e.1 += 1,
             _ => {}
@@ -548,36 +549,14 @@ pub fn slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
     by
 }
 
-/// Each machine's (capacity units, busy units): the governor's
-/// `ci_governor_{capacity,busy}_units{host}`, the one writer of both for every self-hosted
-/// machine (one unit per slot, a lent slot's seats by measured weight, at most 1; a whole-slot
-/// host or a local seat at 1). A machine with no row here has no units: it reads `-`, nothing
-/// makes them up from runner counts. Empty while the governor publishes no capacity at all.
-pub(crate) fn host_units(infra: &Infra) -> HashMap<String, (f64, f64)> {
-    let alias = infra.aliases();
-    let mut by: HashMap<String, (f64, f64)> = HashMap::new();
-    for s in infra.get("governor") {
-        let (cap, used) = match s.label("__name__") {
-            "ci_governor_capacity_units" => (s.value.unwrap_or(0.0), 0.0),
-            "ci_governor_busy_units" => (0.0, s.value.unwrap_or(0.0)),
-            _ => continue,
-        };
-        let e = by
-            .entry(crate::infra::host(&alias, s.label("host")))
-            .or_default();
-        (e.0, e.1) = (e.0 + cap, e.1 + used);
-    }
-    by
-}
-
 /// The jobs running on each machine, each by kind and repo, the most of a kind first:
-/// `[unity] unity-core-playground x2, [light] home-config`. A running runner says the kind of job it
-/// runs (`Slot::pool`, `forgejo` for a Forgejo seat), `job` when that is not known; a local gate
-/// is `[gates]`. Only running jobs: a slot held back, lent or idle
-/// says nothing, and the runners table keeps each slot's state.
+/// `[arc-org-light] x3, [unity] unity-core-playground`. A job pod is its scale set
+/// (`jobpods::running_by_node`, by the kind of job it runs); a running fixed slot says the kind
+/// of job it runs (`Slot::pool`), `job` when that is not known; a local gate is `[gates]`. Only running jobs: an idle
+/// slot says nothing, and the runners table keeps each slot's state.
 pub fn running_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
-    let mut by: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
-    for r in infra.ci.rows.iter().filter(|r| r.state == "busy") {
+    let mut by = crate::jobpods::running_by_node(&infra.pods, &infra.job_kinds());
+    for r in infra.ci.rows.iter().filter(|r| r.state == "busy" && !r.pod) {
         let kind = if r.pool.is_empty() { "job" } else { &r.pool };
         let what = if r.repo.is_empty() {
             format!("[{kind}]")
@@ -644,15 +623,37 @@ impl Ci {
     }
 }
 
+/// An ephemeral pool's runner GitHub still lists after its job pod is gone (finished, deleted):
+/// the exporter files it under a host that is no machine (`unknown`, `arc-org`), it runs nothing
+/// and sits on no node, so it has no row, no slot and takes no job (2026-11-27: 6 rows with host
+/// unknown, 3 of them with no job). Read only when the job pods were read at all, an idle
+/// cluster with no pod included.
+fn gone(infra: &Infra, pools: &[Pool], name: &str) -> bool {
+    infra.instant.contains_key("job_pods")
+        && infra.pod(name).is_none()
+        && pools
+            .iter()
+            .any(|p| !p.name.is_empty() && name.starts_with(p.name))
+}
+
+/// The names of the runners `gone` says have no pod, for the machine rows.
+pub fn gone_runners(infra: &Infra) -> HashSet<String> {
+    let pools = pools(infra);
+    infra
+        .get("runners")
+        .iter()
+        .map(|s| s.label("name"))
+        .filter(|n| gone(infra, &pools, n))
+        .map(String::from)
+        .collect()
+}
+
 /// A runner as the exporter reports it, one per name.
 struct Runner<'a> {
     s: &'a Series,
     /// Its machine's one name (`Infra::aliases`): the runner label can be the node's hostname.
     host: String,
     labels: Vec<String>,
-    held: bool,
-    /// Held because its pair is using its cores: to `tests` or `build` (`Infra::lent`).
-    lent: Option<&'a str>,
     /// The kind of job it runs while busy (`Infra::job_kinds`). Its runner row has no pool: an
     /// agnostic slot takes every kind, so only `ci_runner_job` says which one it runs.
     kind: Option<&'a str>,
@@ -669,19 +670,91 @@ fn holds(have: &[String], need: &[String]) -> bool {
     need.iter().all(|x| have.contains(x))
 }
 
+/// An ephemeral runner pool, the exporter's `ci_runner_pool` row: an ARC scale set or the KEDA
+/// forgejo-runner job.
+struct Pool<'a> {
+    name: &'a str,
+    forge: &'a str,
+    /// `org` (every repo of its owner), or the `owner/repo` of a repo-scoped scale set.
+    scope: &'a str,
+    labels: Vec<String>,
+}
+
+impl Pool<'_> {
+    /// Whether it may take a job of this forge (empty reads github, on either side) in this
+    /// repo of this owner. A repo-scoped pool matches the repo's owner and name; with no owner
+    /// known (a waiting row with no URL) it matches by the short name alone.
+    ///
+    /// An org-scoped set holds the runners of an organisation, and the pool row names no
+    /// organisation. A personal account has none: its repos each get a scale set of their own
+    /// (`owned`: the owner has a repo-scoped pool), so an org set never takes its jobs
+    /// (2026-11-27: `arc-org-light` was named for `.dotfiles` jobs it cannot take).
+    fn serves(&self, forge: &str, owner: &str, repo: &str, owned: bool) -> bool {
+        if github(self.forge) != github(forge) {
+            return false;
+        }
+        if self.scope == "org" {
+            return !owned;
+        }
+        let (own, name) = self.scope.split_once('/').unwrap_or(("", self.scope));
+        name.eq_ignore_ascii_case(repo) && (owner.is_empty() || own.eq_ignore_ascii_case(owner))
+    }
+}
+
+fn github(f: &str) -> &str {
+    if f.is_empty() {
+        "github"
+    } else {
+        f
+    }
+}
+
+/// The pools that may take a job of this forge in this repo of this owner.
+fn serving<'p>(pools: &'p [Pool<'p>], forge: &str, owner: &str, repo: &str) -> Vec<&'p Pool<'p>> {
+    let owned = !owner.is_empty()
+        && pools.iter().any(|p| {
+            github(p.forge) == github(forge)
+                && p.scope
+                    .split_once('/')
+                    .is_some_and(|(o, _)| o.eq_ignore_ascii_case(owner))
+        });
+    pools
+        .iter()
+        .filter(|p| p.serves(forge, owner, repo, owned))
+        .collect()
+}
+
+/// The owner in a job's URL (`https://github.com/<owner>/<repo>/actions/...`), else empty.
+fn owner_of(url: &str) -> &str {
+    url.split_once("://")
+        .and_then(|(_, rest)| rest.split('/').nth(1))
+        .unwrap_or_default()
+}
+
+fn pools(infra: &Infra) -> Vec<Pool<'_>> {
+    infra
+        .get("pools")
+        .iter()
+        .map(|s| Pool {
+            name: s.label("name"),
+            forge: s.label("forge"),
+            scope: s.label("scope"),
+            labels: lower(s.label("labels")),
+        })
+        .collect()
+}
+
 /// One row per runner name, a running one winning when two exporter pods disagree during a
 /// rollout.
 fn runners(infra: &Infra) -> Vec<Runner<'_>> {
     let alias = infra.aliases();
-    let held: HashSet<&str> = infra
-        .get("withheld")
-        .iter()
-        .map(|s| s.label("name"))
-        .collect();
-    let lent = infra.lent();
     let kinds = infra.job_kinds();
+    let pools = pools(infra);
     let mut by: BTreeMap<&str, &Series> = BTreeMap::new();
     for s in infra.get("runners") {
+        if gone(infra, &pools, s.label("name")) {
+            continue;
+        }
         let e = by.entry(s.label("name")).or_insert(s);
         if s.label("state") == "running" && e.label("state") != "running" {
             *e = s;
@@ -690,25 +763,19 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
     by.into_iter()
         .map(|(n, s)| Runner {
             s,
-            host: crate::infra::host(&alias, s.label("host")),
+            host: infra.runner_host(&alias, s),
             labels: lower(s.label("labels")),
-            held: held.contains(n),
-            lent: lent.get(n).copied(),
             kind: kinds.get(n).copied(),
         })
         .collect()
 }
 
-/// A runner's state now, as every CI table says it: `busy`, `lent`, `withheld`, `idle`,
-/// `standby` (its host powered off by the governor) or `off`; an offline runner is down
-/// (`Infra::runners_down`).
-fn now_of(r: &Runner, off: &HashMap<&str, &str>) -> &'static str {
+/// A runner's state now, as every CI table says it: `busy`, `idle` or `off`; an offline runner
+/// is down (`Infra::runners_down`).
+fn now_of(r: &Runner) -> &'static str {
     match r.s.label("state") {
         "running" => "busy",
-        "idle" if r.held && r.lent.is_some() => "lent",
-        "idle" if r.held => "withheld",
         "idle" => "idle",
-        _ if off.contains_key(r.s.label("host")) => "standby",
         _ => "off",
     }
 }
@@ -721,23 +788,19 @@ pub struct RunnerNow {
     pub host: String,
     /// As `now_of` says it.
     pub state: String,
-    /// The job it runs (`repo / job`), `-> tests` for one lent to its pair, else empty.
+    /// The job it runs (`repo / job`), else empty.
     pub job: String,
 }
 
 /// Every runner now, by name.
 pub fn runners_now(infra: &Infra) -> Vec<RunnerNow> {
-    let off = infra.powered_off();
     runners(infra)
         .iter()
         .map(|r| {
-            let state = now_of(r, &off);
-            let job = match (state, r.lent) {
-                ("busy", _) => match r.s.label("repo") {
-                    "" => job_name(r.s),
-                    repo => format!("{repo} / {}", job_name(r.s)),
-                },
-                ("lent", Some(to)) => format!("-> {to}"),
+            let state = now_of(r);
+            let job = match (state, r.s.label("repo")) {
+                ("busy", "") => job_name(r.s),
+                ("busy", repo) => format!("{repo} / {}", job_name(r.s)),
                 _ => String::new(),
             };
             RunnerNow {
@@ -762,37 +825,6 @@ fn slot_of(name: &str, host: &str) -> String {
             .unwrap_or(name)
             .to_string()
     }
-}
-
-/// Slot numbers as ranges: `1,3-5`. A name that is no number is listed as it is.
-fn ranges(mut slots: Vec<String>) -> String {
-    slots.sort_by_key(|s| (s.parse::<u32>().unwrap_or(u32::MAX), s.clone()));
-    let mut out: Vec<String> = vec![];
-    let mut run: Option<(u32, u32)> = None;
-    let flush = |run: &mut Option<(u32, u32)>, out: &mut Vec<String>| {
-        if let Some((a, b)) = run.take() {
-            out.push(if a == b {
-                a.to_string()
-            } else {
-                format!("{a}-{b}")
-            });
-        }
-    };
-    for s in slots {
-        match (s.parse::<u32>(), run) {
-            (Ok(n), Some((a, b))) if n == b + 1 => run = Some((a, n)),
-            (Ok(n), _) => {
-                flush(&mut run, &mut out);
-                run = Some((n, n));
-            }
-            (Err(_), _) => {
-                flush(&mut run, &mut out);
-                out.push(s);
-            }
-        }
-    }
-    flush(&mut run, &mut out);
-    out.join(",")
 }
 
 /// The usual job time per (pool, workflow) from the exporter's day of finished jobs, as
@@ -839,58 +871,41 @@ fn job_name(s: &Series) -> String {
 
 pub fn build(infra: &Infra) -> Ci {
     let all = runners(infra);
-    let off = infra.powered_off();
     let usual = usual(infra);
     let alias = infra.aliases();
     let mut ci = Ci::default();
     let mut hosts: BTreeSet<String> = BTreeSet::new();
     let mut rows: Vec<Slot> = vec![];
-    // Slots with no job to say, by host, state, whom a lent one is lent to and pool: they fold
-    // into one row each. A slot with no job names its pool only when it takes one cap; one that
-    // takes several (unity, light, heavy) has no one pool until a job gives it a kind.
-    let caps = infra.caps();
-    let mut quiet: BTreeMap<(String, &str, &str, &str), Vec<String>> = BTreeMap::new();
     for r in &all {
         let s = r.s;
         let host = r.host.clone();
         hosts.insert(host.clone());
-        let slot = slot_of(s.label("name"), s.label("host"));
-        let state = now_of(r, &off);
-        match state {
-            "busy" => {
-                let ran = s.value.map(|v| v as i64).filter(|v| *v > 0);
-                let u = usual_of(&usual, r);
-                let title = s.label("title");
-                rows.push(Slot {
-                    host,
-                    slot,
-                    pool: r.kind.unwrap_or_default().into(),
-                    state: "busy".into(),
-                    job: job_name(s),
-                    repo: s.label("repo").into(),
-                    pr: s.label("pr").into(),
-                    branch: if !title.is_empty() && title != s.label("workflow") {
-                        title.into()
-                    } else {
-                        s.label("branch").into()
-                    },
-                    ran,
-                    usual: u.map(|u| u.0),
-                    late: ran.is_some_and(|t| {
-                        t > LONG_RUN_SECS || u.and_then(|u| u.1).is_some_and(|p| t > p)
-                    }),
-                    note: String::new(),
-                });
-            }
-            _ => {
-                let to = r.lent.filter(|_| state == "lent").unwrap_or_default();
-                let pool = match caps.get(s.label("name")).map(Vec::as_slice) {
-                    Some([one]) => *one,
-                    _ => "",
-                };
-                quiet.entry((host, state, to, pool)).or_default().push(slot)
-            }
+        // A runner with no job has no row: the machine rows say what is booked.
+        if now_of(r) != "busy" {
+            continue;
         }
+        let ran = s.value.map(|v| v as i64).filter(|v| *v > 0);
+        let u = usual_of(&usual, r);
+        let title = s.label("title");
+        rows.push(Slot {
+            host,
+            slot: slot_of(s.label("name"), s.label("host")),
+            pool: r.kind.unwrap_or_default().into(),
+            state: "busy".into(),
+            job: job_name(s),
+            repo: s.label("repo").into(),
+            pr: s.label("pr").into(),
+            branch: if !title.is_empty() && title != s.label("workflow") {
+                title.into()
+            } else {
+                s.label("branch").into()
+            },
+            ran,
+            usual: u.map(|u| u.0),
+            late: ran
+                .is_some_and(|t| t > LONG_RUN_SECS || u.and_then(|u| u.1).is_some_and(|p| t > p)),
+            pod: infra.pod(s.label("name")).is_some(),
+        });
     }
     // A machine that is not a runner runs its gates locally: one busy row each, no slot number.
     for g in infra.get("gates") {
@@ -924,43 +939,17 @@ pub fn build(infra: &Infra) -> Ci {
             ..Default::default()
         });
     }
-    for ((host, state, to, pool), slots) in quiet {
-        let note = match state {
-            "standby" => format!(
-                "governor {}",
-                off.get(host.as_str()).copied().unwrap_or("off")
-            ),
-            "lent" if to == "build" => "lent to the build that shares its cores".into(),
-            "lent" => "cores lent to tests until a build waits".into(),
-            "withheld" => "the governor holds it back".into(),
-            _ => String::new(),
-        };
-        rows.push(Slot {
-            host,
-            slot: ranges(slots),
-            pool: pool.into(),
-            state: state.into(),
-            note,
-            ..Default::default()
-        });
-    }
-    // Busy hosts first, then by name; on a host the longest job first, then idle, held, off.
+    // Busy hosts first, then by name; on a host the longest job first.
     let busy_on = |h: &str| {
         rows.iter()
             .filter(|r| r.host == h && r.state == "busy")
             .count()
-    };
-    let order = |s: &str| {
-        ["busy", "idle", "lent", "withheld", "standby", "off"]
-            .iter()
-            .position(|x| *x == s)
     };
     let host_rank: HashMap<String, usize> = hosts.iter().map(|h| (h.clone(), busy_on(h))).collect();
     rows.sort_by(|a, b| {
         host_rank[&b.host]
             .cmp(&host_rank[&a.host])
             .then_with(|| a.host.cmp(&b.host))
-            .then_with(|| order(&a.state).cmp(&order(&b.state)))
             .then_with(|| a.pool.cmp(&b.pool))
             .then_with(|| b.ran.cmp(&a.ran))
             .then_with(|| a.slot.cmp(&b.slot))
@@ -971,7 +960,7 @@ pub fn build(infra: &Infra) -> Ci {
     }
     ci.hosts = hosts.len() as u32;
     ci.rows = rows;
-    ci.queue = queue(infra, &all, &off);
+    ci.queue = queue(infra, &all);
     ci.queued = ci.queue.iter().map(|q| q.n).sum();
     ci.oldest = ci.queue.iter().map(|q| q.wait).max().unwrap_or(0);
     ci.red = ci.red_lines();
@@ -980,56 +969,98 @@ pub fn build(infra: &Infra) -> Ci {
     ci
 }
 
-/// Waiting jobs grouped by job and run, oldest first. A stuck run (queued with no jobs) is RED
-/// NOW's, so it cannot pass for the queue's age.
-fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued> {
-    let mut by: BTreeMap<[String; 5], Queued> = BTreeMap::new();
+/// The run a job belongs to: its URL up to `/job/`, else its pull request or branch.
+fn run_of(s: &Series) -> String {
+    match s.label("url").split_once("/job/") {
+        Some((run, _)) => run.to_string(),
+        None if !s.label("url").is_empty() => s.label("url").to_string(),
+        None => format!("{}|{}", s.label("pr"), s.label("branch")),
+    }
+}
+
+/// What the waiting jobs of one group share, or empty when they differ.
+fn shared<'a>(vals: impl Iterator<Item = &'a str>) -> String {
+    let set: BTreeSet<&str> = vals.collect();
+    match set.len() {
+        1 => set.into_iter().next().unwrap_or_default().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// Waiting jobs grouped by repo, workflow and kind (`Queued`), oldest first. A stuck run (queued
+/// with no jobs) is RED NOW's, so it cannot pass for the queue's age.
+fn queue(infra: &Infra, all: &[Runner]) -> Vec<Queued> {
+    let mut by: BTreeMap<[String; 6], (Queued, Vec<&Series>)> = BTreeMap::new();
     for s in infra.get("waiting") {
         if s.label("stuck") == "true" {
             continue;
         }
         let labels = lower(s.label("labels"));
         let wait = s.value.map_or(0, |v| v as i64);
-        let q = by
+        let group = ["workflow", "job_name"]
+            .into_iter()
+            .map(|k| s.label(k))
+            .find(|v| !v.is_empty())
+            .unwrap_or("-")
+            .to_string();
+        let (q, members) = by
             .entry([
-                job_name(s),
+                group.clone(),
                 s.label("repo").into(),
-                s.label("pr").into(),
-                s.label("branch").into(),
+                s.label("forge").into(),
+                owner_of(s.label("url")).into(),
+                s.label("pool").into(),
                 labels.join(","),
             ])
-            .or_insert_with(|| Queued {
-                job: job_name(s),
-                pool: s.label("pool").into(),
-                repo: s.label("repo").into(),
-                pr: s.label("pr").into(),
-                branch: s.label("branch").into(),
-                needs: s
-                    .label("labels")
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty() && !COMMON.contains(&l.to_lowercase().as_str()))
-                    .map(String::from)
-                    .collect(),
-                ..Default::default()
+            .or_insert_with(|| {
+                (
+                    Queued {
+                        job: group,
+                        pool: s.label("pool").into(),
+                        repo: s.label("repo").into(),
+                        owner: owner_of(s.label("url")).into(),
+                        forge: s.label("forge").into(),
+                        needs: s
+                            .label("labels")
+                            .split(',')
+                            .map(str::trim)
+                            .filter(|l| {
+                                !l.is_empty() && !COMMON.contains(&l.to_lowercase().as_str())
+                            })
+                            .map(String::from)
+                            .collect(),
+                        ..Default::default()
+                    },
+                    vec![],
+                )
             });
         q.n += 1;
         q.wait = q.wait.max(wait);
+        members.push(s);
     }
+    for (q, members) in by.values_mut() {
+        q.runs = members
+            .iter()
+            .map(|s| run_of(s))
+            .collect::<BTreeSet<_>>()
+            .len() as u32;
+        q.pr = shared(members.iter().map(|s| s.label("pr")));
+        q.branch = shared(members.iter().map(|s| s.label("branch")));
+    }
+    let by: BTreeMap<[String; 6], Queued> = by.into_iter().map(|(k, (q, _))| (k, q)).collect();
     let online: Vec<&Runner> = all
         .iter()
-        .filter(|r| {
-            matches!(r.s.label("state"), "running" | "idle") || off.contains_key(r.s.label("host"))
-        })
+        .filter(|r| matches!(r.s.label("state"), "running" | "idle"))
         .collect();
     let usual = usual(infra);
+    let pools = pools(infra);
     let mut out: Vec<Queued> = by
         .into_iter()
         .map(|([.., labels], mut q)| {
             let need = lower(&labels);
             if !need.is_empty() {
-                q.can = fits(all, off, &need);
-                (q.at, q.starts) = starts(all, off, &usual, &need);
+                q.can = fits(all, &serving(&pools, &q.forge, &q.owner, &q.repo), &need);
+                (q.at, q.starts) = starts(all, &usual, &need);
                 if q.at.is_empty() {
                     q.at = q.can.first().map(|f| f.host.clone()).unwrap_or_default();
                 }
@@ -1038,13 +1069,20 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
         })
         .collect();
     for q in &mut out {
-        q.stuck = q.can.is_empty() && !q.needs.is_empty();
+        // GitHub's own runners are not ours to hold: a hosted job waits on GitHub, never stuck.
+        q.stuck = !q.hosted() && q.can.is_empty() && !q.needs.is_empty();
         if q.stuck {
-            // The labels no online runner holds; empty when each is held but never together.
+            // The labels no online runner or pool of its own holds; empty when each is held but
+            // never together.
+            let mine = serving(&pools, &q.forge, &q.owner, &q.repo);
             q.missing = q
                 .needs
                 .iter()
-                .filter(|n| !online.iter().any(|r| r.labels.contains(&n.to_lowercase())))
+                .filter(|n| {
+                    let n = n.to_lowercase();
+                    !online.iter().any(|r| r.labels.contains(&n))
+                        && !mine.iter().any(|p| p.labels.contains(&n))
+                })
                 .cloned()
                 .collect();
         }
@@ -1058,13 +1096,12 @@ fn queue(infra: &Infra, all: &[Runner], off: &HashMap<&str, &str>) -> Vec<Queued
 /// fitting slot is idle or busy with a usual time.
 fn starts(
     all: &[Runner],
-    off: &HashMap<&str, &str>,
     usual: &HashMap<(String, String), (i64, Option<i64>)>,
     need: &[String],
 ) -> (String, Option<i64>) {
     let mut best: Option<(i64, &str)> = None;
     for r in all.iter().filter(|r| holds(&r.labels, need)) {
-        let left = match now_of(r, off) {
+        let left = match now_of(r) {
             "idle" => 0,
             "busy" => {
                 let Some((median, _)) = usual_of(usual, r) else {
@@ -1081,18 +1118,18 @@ fn starts(
     best.map_or((String::new(), None), |(t, h)| (h.to_string(), Some(t)))
 }
 
-/// The hosts with an online runner (or one waiting on a powered-off host) holding every label
-/// (`now_of`).
-fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> {
+/// The hosts with an online runner holding every label (`now_of`), and the pools that may take the job holding them (`pools`, state `pool`), after
+/// an idle runner: a pool starts a pod once a node has room.
+fn fits(all: &[Runner], pools: &[&Pool], need: &[String]) -> Vec<Fit> {
     let mut by: BTreeMap<&str, &str> = BTreeMap::new();
     let rank = |s: &str| {
-        ["idle", "busy", "lent", "withheld", "standby"]
+        ["idle", "pool", "busy"]
             .iter()
             .position(|x| *x == s)
             .unwrap_or(9)
     };
     for r in all.iter().filter(|r| holds(&r.labels, need)) {
-        let state = match now_of(r, off) {
+        let state = match now_of(r) {
             "off" => continue,
             s => s,
         };
@@ -1100,6 +1137,9 @@ fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> 
         if rank(state) < rank(e) {
             *e = state;
         }
+    }
+    for p in pools.iter().filter(|p| holds(&p.labels, need)) {
+        by.entry(p.name).or_insert("pool");
     }
     let mut out: Vec<Fit> = by
         .into_iter()
@@ -1116,7 +1156,7 @@ fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> 
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct PoolMatch {
     pub pool: String,
-    /// Runners running or idle and not withheld, each once.
+    /// Runners running or idle, each once.
     pub slots: u32,
     pub busy: u32,
     /// Runners in any state: no slot because they are down reads differently from no runner
@@ -1130,12 +1170,13 @@ pub struct PoolMatch {
 /// total busy/slots says nothing about a job that fits two of its ten runners (2026-11-05:
 /// razer-laptop-unity-pool-1/2 were the only ones that matched while mac-studio slots sat idle).
 /// Nothing when no job waits that long, or no runner is read: the finding then falls back to the
-/// pool's own totals.
+/// pool's own totals. A job an ephemeral pool of its own holds is left out: its labels match.
 pub fn pool_match(infra: &Infra, min_wait: i64) -> Vec<PoolMatch> {
     let all = runners(infra);
     if all.is_empty() {
         return vec![];
     }
+    let pools = pools(infra);
     let mut sets: BTreeMap<String, BTreeSet<Vec<String>>> = BTreeMap::new();
     for s in infra.get("waiting") {
         let mut labels = lower(s.label("labels"));
@@ -1143,7 +1184,16 @@ pub fn pool_match(infra: &Infra, min_wait: i64) -> Vec<PoolMatch> {
         if s.label("stuck") != "true"
             && s.value.is_some_and(|v| v as i64 >= min_wait)
             && !s.label("pool").is_empty()
+            && s.label("pool") != HOSTED
             && !labels.is_empty()
+            && !serving(
+                &pools,
+                s.label("forge"),
+                owner_of(s.label("url")),
+                s.label("repo"),
+            )
+            .iter()
+            .any(|p| holds(&p.labels, &labels))
         {
             sets.entry(s.label("pool").into())
                 .or_default()
@@ -1156,9 +1206,7 @@ pub fn pool_match(infra: &Infra, min_wait: i64) -> Vec<PoolMatch> {
                 .iter()
                 .filter(|r| sets.iter().any(|set| holds(&r.labels, set)))
                 .collect();
-            let slot = |r: &&&Runner| {
-                r.s.label("state") == "running" || (r.s.label("state") == "idle" && !r.held)
-            };
+            let slot = |r: &&&Runner| matches!(r.s.label("state"), "running" | "idle");
             PoolMatch {
                 slots: fit.iter().filter(slot).count() as u32,
                 busy: fit
@@ -1255,43 +1303,36 @@ impl Slot {
 }
 
 impl Queued {
+    /// `repo#pr` or its branch when its runs share one, else how many runs it spans.
     pub fn reference(&self) -> String {
+        if self.runs > 1 && self.pr.is_empty() && self.branch.is_empty() {
+            return format!("{} runs", self.runs);
+        }
         reference(&self.repo, &self.pr, &self.branch)
     }
 }
 
-/// The CI runners table on both surfaces: each slot with the job it runs, idle and held runs of
-/// slots folded to one row each.
+/// The CI runners table on both surfaces: each runner with the job it runs, none without one.
 impl Row for Slot {
     const COLUMNS: &'static [&'static str] = &[
         "host", "slot", "state", "pool", "ran", "usual", "job", "ref",
     ];
-    const STATES: &'static [&'static str] = &[
-        "all", "busy", "idle", "lent", "withheld", "standby", "off", "late",
-    ];
-    const FACETS: &'static [&'static str] = &["host", "state", "pool"];
+    const STATES: &'static [&'static str] = &["all", "busy", "late"];
+    const FACETS: &'static [&'static str] = &["host", "pool"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "host";
     const GLANCE: &'static [&'static str] = &["state", "ran", "job"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "host" => text(&self.host),
-            "slot" => text(&self.slot),
-            "state" => text(&self.state),
-            "pool" => text(&self.pool),
+            "host" => Val::word(&self.host),
+            "slot" => Val::word(&self.slot),
+            "state" => Val::word(&self.state),
+            "pool" => Val::word(&self.pool),
             "ran" => opt(self.ran),
             "usual" => opt(self.usual),
-            "job" if self.state == "busy" => text(&self.job),
-            "job" => text(&self.note),
-            "ref" => text(&self.reference()),
+            "job" => Val::word(&self.job),
+            "ref" => Val::word(&self.reference()),
             _ => Val::None,
         }
     }
@@ -1335,8 +1376,7 @@ impl Row for Queued {
     fn val(&self, col: &str) -> Val {
         match col {
             "job" => Val::Text(self.job.clone()),
-            "pool" if self.pool.is_empty() => Val::None,
-            "pool" => Val::Text(self.pool.clone()),
+            "pool" => Val::word(&self.pool),
             "ref" => Val::Text(self.reference()),
             "n" => Val::Num(self.n as f64),
             "wait" => Val::Num(self.wait as f64),
@@ -1362,7 +1402,10 @@ impl Row for Queued {
     fn in_state(&self, s: &str) -> bool {
         match s {
             "stuck" => self.stuck,
-            "free" => self.can.iter().any(|f| f.state == "idle"),
+            "free" => self
+                .can
+                .iter()
+                .any(|f| f.state == "idle" || f.state == "pool"),
             _ => false,
         }
     }
@@ -1430,7 +1473,7 @@ mod tests {
     fn waiting(job: &str, labels: &str, v: &'static str) -> (Value, &'static str) {
         (
             json!({"pool": "unity", "repo": "game", "branch": "main", "stuck": "false", "job_name": job,
-                "workflow": "Soak", "labels": labels}),
+                "workflow": job, "labels": labels}),
             v,
         )
     }
@@ -1509,33 +1552,18 @@ mod tests {
                 ),
             ]),
         );
-        i.instant.insert(
-            "power",
-            series(vec![(
-                json!({"__name__": "ci_governor_power_state", "host": "spot", "state": "stopped"}),
-                "1",
-            )]),
-        );
         i
     }
 
     #[test]
-    fn a_host_is_its_busy_slots_longest_first_then_its_idle_ones_folded_to_a_range() {
+    fn the_runners_table_lists_only_runners_running_a_job_longest_first() {
         let ci = build(&board());
         let at: Vec<_> = ci
             .rows
             .iter()
             .map(|r| (r.host.as_str(), r.slot.as_str(), r.state.as_str()))
             .collect();
-        assert_eq!(
-            at,
-            [
-                ("razer", "1", "busy"),
-                ("razer", "2", "busy"),
-                ("aws", "1-4", "idle"),
-                ("spot", "1-2", "standby"),
-            ]
-        );
+        assert_eq!(at, [("razer", "1", "busy"), ("razer", "2", "busy"),]);
         let multi = &ci.rows[0];
         assert_eq!(
             (multi.job.as_str(), multi.ran, multi.usual),
@@ -1543,7 +1571,6 @@ mod tests {
         );
         assert!(multi.late, "past the hour is amber whatever its usual");
         assert!(!ci.rows[1].late, "22m is under its 3000s p90");
-        assert_eq!(ci.rows[3].note, "governor stopped");
         assert_eq!((ci.hosts, ci.slots, ci.busy), (3, 6, 2));
     }
 
@@ -1602,33 +1629,6 @@ mod tests {
             running_by_host(&i)["razer"],
             ["[unity] game x2", "[light] web"]
         );
-        // A slot with no job takes every kind it has caps for: no pool when it has several, its
-        // one cap when it has one, and the two fold apart.
-        let cap = |name: &str, pool: &str| (json!({"name": name, "pool": pool}), "1");
-        i.instant.insert(
-            "runner_caps",
-            series(vec![
-                cap("aws-unity-pool-1", "unity"),
-                cap("aws-unity-pool-1", "light"),
-                cap("aws-unity-pool-2", "unity"),
-                cap("aws-unity-pool-2", "light"),
-                cap("aws-unity-pool-3", "macos"),
-                cap("aws-unity-pool-4", "macos"),
-            ]),
-        );
-        let idle: Vec<_> = build(&i)
-            .rows
-            .into_iter()
-            .filter(|r| r.state == "idle")
-            .map(|r| (r.slot, r.pool))
-            .collect();
-        assert_eq!(
-            idle,
-            [
-                ("1-2".into(), String::new()),
-                ("3-4".into(), "macos".into())
-            ]
-        );
         // A runner read with two kinds at once is neither, so hash order never picks one.
         i.instant.get_mut("job_kind").unwrap().extend(series(vec![(
             json!({"runner": "razer-unity-pool-3", "kind": "unity"}),
@@ -1664,20 +1664,13 @@ mod tests {
                 state: "idle".into()
             }
         );
-        // A busy host after the free one, and a powered-off host last: the governor wakes it.
+        // A busy host after the free one, and an offline one not at all.
         assert_eq!(
-            wide.can[1],
-            Fit {
+            wide.can[1..],
+            [Fit {
                 host: "razer".into(),
                 state: "busy".into()
-            }
-        );
-        assert_eq!(
-            wide.can[2],
-            Fit {
-                host: "spot".into(),
-                state: "standby".into()
-            }
+            }]
         );
         assert_eq!(
             (ci.queued, ci.oldest),
@@ -1720,6 +1713,120 @@ mod tests {
         assert_eq!(soak.missing, ["unity-full", "lan"]);
     }
 
+    /// ar-5477: an ephemeral pool holds its labels with no pod running, and GitHub lists a busy
+    /// scale-set runner with none, so its jobs are never stuck. A pool serves its own forge, and a
+    /// repo-scoped one only its repo.
+    #[test]
+    fn a_pool_with_no_pod_holds_its_labels_for_its_forge_and_scope() {
+        let mut i = board();
+        let job = |job: &str, repo: &str, forge: &str, labels: &str| {
+            (
+                json!({"pool": "light", "repo": repo, "forge": forge, "stuck": "false",
+                    "job_name": job, "workflow": job, "labels": labels}),
+                "600",
+            )
+        };
+        i.instant.insert(
+            "waiting",
+            series(vec![
+                job("gate", ".dotfiles", "github", "self-hosted,linux,x64,light"),
+                job("Type Check", "platform", "github", "light"),
+                job("Integration", "platform", "github", "heavy"),
+                job("kustomize-builds", "home-config", "forgejo", "docker"),
+                job("compose", "platform", "github", "docker"),
+                job("private", "game", "github", "self-hosted,arc-repo-dotfiles"),
+            ]),
+        );
+        i.instant.insert(
+            "pools",
+            series(vec![
+                (json!({"name": "arc-org-light", "forge": "github", "scope": "org",
+                    "labels": "self-hosted,linux,x64,light,arc-org-light"}), "15"),
+                (json!({"name": "arc-repo-dotfiles", "forge": "github", "scope": "Kblack0610/.dotfiles",
+                    "labels": "self-hosted,linux,x64,light,arc-repo-dotfiles"}), "20"),
+                (json!({"name": "forgejo-runner", "forge": "forgejo", "scope": "org",
+                    "labels": "docker,linux-amd64,self-hosted,linux,x64,light"}), "7"),
+            ]),
+        );
+        let ci = build(&i);
+        let can = |job: &str| {
+            let q = ci.queue.iter().find(|q| q.job == job).unwrap();
+            (
+                q.stuck,
+                q.can
+                    .iter()
+                    .map(|f| format!("{} {}", f.host, f.state))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            can("gate"),
+            (
+                false,
+                vec!["arc-org-light pool".into(), "arc-repo-dotfiles pool".into()]
+            )
+        );
+        assert_eq!(
+            can("Type Check"),
+            (false, vec!["arc-org-light pool".into()])
+        );
+        assert_eq!(
+            can("kustomize-builds"),
+            (false, vec!["forgejo-runner pool".into()])
+        );
+        // No pool holds heavy; a Forgejo pool takes no GitHub job; a repo pool no other repo's.
+        assert_eq!(can("Integration"), (true, vec![]));
+        assert_eq!(can("compose"), (true, vec![]));
+        assert_eq!(can("private"), (true, vec![]));
+        let red = ci.red.join("\n");
+        assert!(!red.contains("holds light"), "{red}");
+        assert!(
+            red.contains("Integration (platform) needs [heavy]: no online runner holds heavy"),
+            "{red}"
+        );
+        assert!(
+            red.contains("compose (platform) needs [docker]: no online runner holds docker"),
+            "{red}"
+        );
+        assert!(!red.contains("kustomize-builds"), "{red}");
+        // Nor are a pool's jobs fleet-bench's "no runner matches" finding.
+        let m = pool_match(&i, 0);
+        assert_eq!(m.len(), 1);
+        assert_eq!(
+            m[0].labels,
+            "light/arc-repo-dotfiles,self-hosted | docker | heavy"
+        );
+    }
+
+    /// GitHub's own runners hold their label, not ours: a hosted job that waits is queued on
+    /// GitHub, never stuck (2026-11-25: `hub ci` flagged every .dotfiles check).
+    #[test]
+    fn a_github_hosted_job_waits_but_is_never_stuck() {
+        let mut i = board();
+        i.instant.insert(
+            "waiting",
+            series(vec![
+                (
+                    json!({"pool": "github-hosted", "repo": ".dotfiles", "job_name": "gate",
+                        "labels": "ubuntu-24.04", "stuck": "false"}),
+                    "300",
+                ),
+                waiting("Soak", "self-hosted,no-such-label", "10"),
+            ]),
+        );
+        let ci = build(&i);
+        let hosted = ci.queue.iter().find(|q| q.job == "gate").unwrap();
+        assert!(!hosted.stuck);
+        assert_eq!(ci.queued, 2);
+        let stuck: Vec<&str> = ci.problems().iter().map(|q| q.job.as_str()).collect();
+        assert_eq!(
+            stuck,
+            ["Soak"],
+            "an unheld label on our own pool still reads stuck"
+        );
+        assert!(ci.red.iter().all(|l| !l.contains("gate")), "{:?}", ci.red);
+    }
+
     #[test]
     fn each_label_held_but_never_together_says_so() {
         let mut i = board();
@@ -1737,85 +1844,6 @@ mod tests {
         assert!(q
             .problem()
             .contains("no one online runner holds all of them"));
-    }
-
-    #[test]
-    fn a_withheld_idle_runner_is_no_slot_and_takes_no_job() {
-        let mut i = board();
-        i.instant.insert(
-            "withheld",
-            series(vec![(json!({"name": "aws-unity-pool-1"}), "1")]),
-        );
-        let ci = build(&i);
-        let held: Vec<_> = ci.rows.iter().filter(|r| r.state == "withheld").collect();
-        assert_eq!((held.len(), held[0].slot.as_str()), (1, "1"));
-        assert_eq!(ci.slots, 5);
-        let idle = ci.rows.iter().find(|r| r.state == "idle").unwrap();
-        assert_eq!(idle.slot, "2-4");
-    }
-
-    #[test]
-    fn a_slot_lent_to_its_pair_reads_lent_and_one_held_for_load_still_withheld() {
-        let mut i = board();
-        i.instant.insert(
-            "withheld",
-            series(vec![
-                (json!({"name": "aws-unity-pool-1"}), "1"),
-                (json!({"name": "aws-unity-pool-2"}), "1"),
-            ]),
-        );
-        // A lent row for a runner that is not withheld (the governor a cycle behind) is ignored.
-        i.instant.insert(
-            "lent",
-            series(vec![
-                (json!({"name": "aws-unity-pool-1", "to": "tests"}), "1"),
-                (json!({"name": "aws-unity-pool-3", "to": "tests"}), "1"),
-            ]),
-        );
-        let ci = build(&i);
-        let row = |state: &str| ci.rows.iter().find(|r| r.state == state).unwrap();
-        assert_eq!(
-            (row("lent").slot.as_str(), row("lent").note.as_str()),
-            ("1", "cores lent to tests until a build waits")
-        );
-        assert_eq!(
-            (row("withheld").slot.as_str(), row("withheld").note.as_str()),
-            ("2", "the governor holds it back")
-        );
-        assert_eq!(row("idle").slot, "3-4");
-        assert_eq!(ci.slots, 4);
-    }
-
-    /// The human, 2026-11-19: the summary views say running and queued only. A held or lent slot
-    /// says nothing on its machine row; the runners table keeps its state.
-    #[test]
-    fn a_held_or_lent_slot_says_nothing_on_its_machine_row() {
-        let mut i = board();
-        i.instant.insert(
-            "withheld",
-            series(vec![
-                (json!({"name": "aws-unity-pool-1"}), "1"),
-                (json!({"name": "aws-unity-pool-2"}), "1"),
-                (json!({"name": "aws-unity-pool-3"}), "1"),
-            ]),
-        );
-        i.instant.insert(
-            "lent",
-            series(vec![(
-                json!({"name": "aws-unity-pool-1", "to": "tests"}),
-                "1",
-            )]),
-        );
-        assert!(
-            !running_by_host(&i).contains_key("aws"),
-            "a held or lent slot runs nothing"
-        );
-        let ci = build(&i);
-        let states: Vec<&str> = ci.rows.iter().map(|r| r.state.as_str()).collect();
-        assert!(
-            states.contains(&"lent") && states.contains(&"withheld"),
-            "{states:?}"
-        );
     }
 
     /// NEXT: an idle fitting slot starts it now; else the busy one that frees first by its usual
@@ -1933,16 +1961,11 @@ mod tests {
         assert_eq!(slot_of("razer-laptop-unity-pool-2", "razer-laptop"), "2");
         assert_eq!(slot_of("forgejo-runner/3", "forgejo"), "3");
         assert_eq!(slot_of("mac-mini-builder", "mac-mini"), "builder");
-        assert_eq!(
-            ranges(vec!["5".into(), "1".into(), "2".into(), "9".into()]),
-            "1-2,5,9"
-        );
-        assert_eq!(ranges(vec!["b".into(), "1".into()]), "1,b");
     }
 
     /// fleet-bench's `prom_match_rows` bats case, moved here with the join.
     #[test]
-    fn pool_match_counts_the_runners_that_fit_the_long_waiting_jobs_withheld_and_offline_out() {
+    fn pool_match_counts_the_runners_that_fit_the_long_waiting_jobs_offline_out() {
         let l = "self-hosted,linux,unity-full";
         let mut i = Infra::default();
         i.instant.insert(
@@ -1968,14 +1991,12 @@ mod tests {
                 r("cachy-1", "idle", "self-hosted,linux", json!({})),
             ]),
         );
-        i.instant
-            .insert("withheld", series(vec![(json!({"name": "razer-3"}), "1")]));
         let m = pool_match(&i, 3600);
         assert_eq!(
             m,
             [PoolMatch {
                 pool: "unity".into(),
-                slots: 2,
+                slots: 3,
                 busy: 1,
                 runners: 4,
                 labels: "unity/linux,self-hosted,unity-full".into()
@@ -2041,91 +2062,126 @@ mod tests {
         );
     }
 
-    /// The fleet with the governor's per-host units, gates and seats included: workstation (the governor's
-    /// cachyos-x8664-main) has 2 units of capacity, 1.6 busy, mac-mini 1 and 0, and a
-    /// host with no machine row that no total may count.
-    fn governed() -> Infra {
+    /// The fleet plus the cluster (`jobpods::tests::cluster`): two light pods running and a
+    /// forgejo job starting on ms-a2, tuf-b550 an idle CI node, one light pod with no room, and the exporter's row for
+    /// one of the ms-a2 pods under its scale set's owner, `arc-org`.
+    fn clustered() -> Infra {
         let mut i = crate::machines::tests::fleet();
-        fn unit(name: &str, host: &str, v: &'static str) -> (Value, &'static str) {
-            (json!({"__name__": name, "host": host}), v)
+        for (k, s) in crate::jobpods::tests::cluster() {
+            i.instant.insert(k, s);
         }
-        i.instant.entry("governor").or_default().extend(series(vec![
-            unit("ci_governor_capacity_units", "cachyos-x8664-main", "2"),
-            unit("ci_governor_busy_units", "cachyos-x8664-main", "1.6"),
-            unit("ci_governor_capacity_units", "mac-mini", "1"),
-            unit("ci_governor_busy_units", "mac-mini", "0"),
-            unit("ci_governor_capacity_units", "gone-host", "5"),
-            unit("ci_governor_busy_units", "gone-host", "5"),
-            (
-                json!({"__name__": "ci_governor_backlog_units", "kind": "slot"}),
-                "8",
-            ),
-            (
-                json!({"__name__": "ci_governor_backlog_units", "kind": "light"}),
-                "1.2",
-            ),
-            (json!({"__name__": "ci_governor_drain_seconds"}), "720"),
-        ]));
+        i.instant
+            .entry("runners")
+            .or_default()
+            .extend(series(vec![runner(
+                "arc-org",
+                "arc-org-light-runner-z5wfp",
+                "running",
+                "40",
+                "self-hosted,linux,light",
+                json!({"repo": "home-config", "job_name": "lint"}),
+            )]));
         i
     }
 
-    /// The human, 2026-11-19: a machine shows its fixed capacity, filled by what runs. Each row
-    /// is the governor's units plus its gate slots at 1 (workstation 0.6 + 1 gate of 1 + 1), a
-    /// row the governor does not govern is its slots at 1 each (mac-mini 0/1), the glance is
-    /// the rows' sum, and the head reads units, never runners.
+    /// ar-5304: a CI node's row is what its job pods book of its allocatable, every CI node has
+    /// one, an ARC runner is its pod on its node (no `arc-org` row, no slot, counted once), the
+    /// old Unity slot's job stays a job in its machine's row, and the pods with no room wait.
     #[test]
-    fn each_row_is_its_governor_units_plus_its_gates_and_the_glance_sums_the_rows() {
-        let mut i = governed();
+    fn each_ci_node_reads_what_its_job_pods_book_and_the_slots_jobs_share_the_rows() {
+        let mut i = clustered();
+        // Each CI node's cores and busy share: 32 x 0.25 + 32 x 0.05 = 9.6 busy cores.
+        let cc = |n: &str, h: &str, v: &'static str| (json!({"__name__": n, "host": h}), v);
+        i.instant.get_mut("cc").unwrap().extend(series(vec![
+            cc("cc:host_cores", "ms-a2", "32"),
+            cc("cc:host_cpu_busy_ratio", "ms-a2", "0.25"),
+            cc("cc:host_cores", "tuf-b550", "32"),
+            cc("cc:host_cpu_busy_ratio", "tuf-b550", "0.05"),
+        ]));
         i.derive();
         let g = &i.ci.glance;
-        let rows: Vec<(&str, Option<f64>, Option<f64>)> = g
+        let rows: Vec<(&str, u32, String, String)> = g
             .machines
             .iter()
-            .map(|h| (h.host.as_str(), h.units_busy, h.units))
+            .map(|h| {
+                let b = h.booked.map_or("-".into(), |b| b.cell());
+                (h.host.as_str(), h.busy, b, h.running.join(", "))
+            })
             .collect();
         assert_eq!(
             rows,
             [
-                ("workstation", Some(1.6), Some(2.0)),
-                ("mac-mini", Some(0.0), Some(1.0))
+                // The forgejo pod is placed and books its share, but starts: no job yet.
+                ("ms-a2", 2, "4.4/32 2.5G/92G".into(), "[starting] x2".into()),
+                ("tuf-b550", 0, "0.0/32 0B/63G".into(), String::new()),
+                ("workstation", 1, "-".into(), "[unity]".into()),
+                ("mac-mini", 0, "-".into(), String::new()),
             ]
         );
-        assert_eq!(g.units_line(), "1.6/3");
+        assert!(i.machines.iter().all(|m| m.host != "arc-org"));
+        let arc = i.ci.rows.iter().find(|r| r.job == "lint").unwrap();
+        assert_eq!((arc.host.as_str(), arc.pod), ("ms-a2", true));
+        assert_eq!(g.busy, 3);
+        let u = g.units.as_ref().unwrap();
+        assert_eq!((format!("{:.2}", u.taken), u.total), ("4.38".into(), 64.0));
+        // Real use sums each CI node's busy cores beside what its pods take.
         assert_eq!(
-            g.drain_line(|s| format!("{}m", s / 60)).as_deref(),
-            Some("~12m")
+            u.line,
+            "taken 4.4 of 64 (7%), free 59.6, real use 9.6 (15%)"
+        );
+        assert_eq!(
+            g.pending_line().as_deref(),
+            Some("waiting for room: arc-org-light (1.69 cpu 1.2G)")
         );
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
-            "1 running, 2 queued (oldest 15m), 9.2 queued ~12m, 3/3 runners up, 4 done 24h, 50% passed"
+            "3 running, 2 queued (oldest 15m), taken 4.4/64 units (7%), 4/4 runners up, 4 done 24h, 50% passed"
         );
     }
 
-    /// A host whose every runner is held back still has a row, `0/0`, so it stays on the bar and
-    /// the hover; a host the governor still reports but that has no runner (gone-host) has none.
+    /// ar-6008: the `ci-build-slot` pause pod requests the Unity build slot's CPU. Its units are a
+    /// TAKEN BY row of their own (ar-6359), never a running job, and a node that is down or
+    /// quarantined says so.
     #[test]
-    fn a_host_with_every_runner_held_keeps_its_row_and_a_gone_host_has_none() {
-        let mut i = governed();
-        i.instant
-            .entry("withheld")
-            .or_default()
-            .extend(series(vec![(json!({"name": "mini-1"}), "1")]));
+    fn a_reservation_pod_is_reserved_cpu_on_its_row_and_a_down_node_says_so() {
+        let mut i = clustered();
+        let (pods, req) = crate::jobpods::tests::reservations();
+        i.instant.get_mut("job_pods").unwrap().extend(pods);
+        i.instant.get_mut("job_requests").unwrap().extend(req);
+        i.instant.insert(
+            "node_state",
+            vec![
+                crate::jobpods::tests::node_state("tuf-b550", "NotReady"),
+                crate::jobpods::tests::node_state("tuf-b550", "cordoned"),
+            ],
+        );
         i.derive();
         let g = &i.ci.glance;
-        let rows: Vec<(&str, u32, u32)> = g
-            .machines
-            .iter()
-            .map(|h| (h.host.as_str(), h.busy, h.slots))
-            .collect();
-        assert_eq!(rows, [("workstation", 1, 1), ("mac-mini", 0, 0)]);
+        let row = |h: &str| g.machines.iter().find(|m| m.host == h).unwrap();
+        let (ms, tuf) = (row("ms-a2"), row("tuf-b550"));
+        assert_eq!(ms.running, ["[starting] x2"]);
+        assert_eq!(ms.busy, 2);
+        assert_eq!(ms.booked.unwrap().cell(), "11.7/32 23G/92G");
+        assert_eq!((tuf.busy, tuf.running.len()), (0, 0));
+        assert_eq!(tuf.booked.unwrap().cell(), "7.4/32 21G/63G");
+        assert_eq!(tuf.state, "NotReady, cordoned");
+        assert!(!ms.state.contains("NotReady"), "{}", ms.state);
+        assert_eq!(g.busy, 3, "the reservations are no running job");
+        assert!(
+            g.head(|s| format!("{}m", s / 60))
+                .contains("taken 19.1/64 units (30%)"),
+            "{}",
+            g.head(|s| format!("{}m", s / 60))
+        );
+        let u = g.units.as_ref().unwrap();
+        assert_eq!(u.rows[0][..4], ["ci-build-slot", "2", "7.36", "14.7"]);
         assert_eq!(
-            g.units_line(),
-            "1.6/3",
-            "the governor's units, whatever a runner is held"
+            g.pending_line().as_deref(),
+            Some("waiting for room: arc-org-light (1.69 cpu 1.2G)")
         );
     }
 
-    /// The CI alert is runner liveness alone: an offline Forgejo seat (lent by design) and a
+    /// The CI alert is runner liveness alone: an offline Forgejo registration (an ephemeral pod between jobs) and a
     /// tripped domain watch leave it ok, one GitHub runner down turns it red, and up plus down
     /// is the roster every time.
     #[test]
@@ -2187,25 +2243,68 @@ mod tests {
         assert_eq!(i.ci.glance.alert, Level::Nodata);
     }
 
-    /// ar-3326: the glance every surface renders counts each slot once, names what the slots
-    /// are doing, folds the stopped cloud host to one name, and lists no runner of it as down.
+    /// ar-6260: the 1h and 5h finished counts sum over the kinds that report them and sit
+    /// beside the 24h figure; a window no kind reports (the local gates never do) prints nothing.
     #[test]
-    fn the_glance_counts_each_slot_once_and_folds_a_stopped_cloud_host() {
+    fn the_head_shows_the_short_windows_beside_the_day_only_once_a_kind_reports_them() {
+        let mut i = crate::machines::tests::fleet();
+        i.derive();
+        let dur = |s: i64| format!("{}m", s / 60);
+        assert_eq!((i.ci.glance.done_1h, i.ci.glance.done_5h), (None, None));
+        assert!(!i.ci.glance.head(dur).contains("done 1h"));
+        let mut rows = i.get("cc").to_vec();
+        let cc = |n: &str, p: &str, v: &str| json!({"__name__": n, "pool": p, "v": v});
+        rows.extend(crate::machines::tests::series(vec![
+            cc("cc:pool_done_24h", "unity", "20"),
+            cc("cc:pool_done_1h", "unity", "2"),
+            cc("cc:pool_done_5h", "unity", "9"),
+            cc("cc:pool_done_1h", "macos", "0"),
+            cc("cc:pool_done_5h", "macos", "1"),
+        ]));
+        i.instant.insert("cc", rows);
+        i.derive();
+        let g = &i.ci.glance;
+        assert_eq!((g.done_1h, g.done_5h, g.done), (Some(2), Some(10), 24));
+        assert_eq!(
+            g.head(dur),
+            "1 running, 2 queued (oldest 15m), 3/3 runners up, 2 done 1h, 10 done 5h, 24 done 24h, 50% passed"
+        );
+        let unity = g.kinds.iter().find(|k| k.kind == "unity").unwrap();
+        assert_eq!((unity.done_1h, unity.done_5h), (Some(2.0), Some(9.0)));
+    }
+
+    /// The head line is served worded, so agent-web draws the TUI's own line (ar-3372).
+    #[test]
+    fn the_glance_serves_its_head_and_waiting_lines_as_strings() {
         let mut i = crate::machines::tests::fleet();
         i.derive();
         let g = &i.ci.glance;
-        // The fleet's withheld slot is no count: running and queued only.
-        assert_eq!((g.busy, g.slots, g.queued, g.done), (1, 2, 2, 4));
-        // No governor unit series yet: `-`, never a runner count standing in for units, so no
-        // row has units either.
+        assert_eq!(g.head, g.head(|s| crate::display::fmt::dur_secs(s as f64)));
+        assert!(
+            g.head.starts_with("1 running, 2 queued (oldest 15m)"),
+            "{}",
+            g.head
+        );
+        assert_eq!(g.pending_line, g.pending_line());
+        let json = serde_json::to_value(g).unwrap();
+        assert_eq!(json["head"], g.head.as_str());
+    }
+
+    /// ar-3326: the glance every surface renders counts each slot once and names what the slots
+    /// are doing.
+    #[test]
+    fn the_glance_counts_each_slot_once() {
+        let mut i = crate::machines::tests::fleet();
+        i.derive();
+        let g = &i.ci.glance;
+        // Running and queued only: an idle slot is no count.
+        assert_eq!((g.busy, g.queued, g.done), (1, 2, 4));
+        // No CI node read: nothing booked, and the head says nothing of it.
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
-            "1 running, 2 queued (oldest 15m), - queued -, 3/3 runners up, 4 done 24h, 50% passed"
+            "1 running, 2 queued (oldest 15m), 3/3 runners up, 4 done 24h, 50% passed"
         );
-        assert!(g
-            .machines
-            .iter()
-            .all(|h| h.units.is_none() && h.units_busy.is_none()));
+        assert!(g.units.is_none() && g.machines.iter().all(|h| h.booked.is_none()));
         let hosts: Vec<(&str, String)> = g
             .machines
             .iter()
@@ -2218,12 +2317,7 @@ mod tests {
                 ("mac-mini", String::new())
             ]
         );
-        assert_eq!(g.off, ["aws-burst-1"]);
-        // The Machines table folds it to that line; its page still finds it.
-        assert!(i.machine_rows().iter().all(|m| m.host != "aws-burst-1"));
-        assert!(i.machines.iter().any(|m| m.host == "aws-burst-1"));
         assert!(g.down.is_empty(), "{:?}", g.down);
-        // The stopped host's runners are neither up nor down, so every runner is up and CI is ok.
         assert_eq!((g.up, g.expected, g.alert), (3, 3, Level::Ok));
         let kinds: Vec<&str> = g.kinds.iter().map(|k| k.kind.as_str()).collect();
         assert_eq!(kinds, ["unity", "gates", "macos"]);
@@ -2235,69 +2329,51 @@ mod tests {
             keys(&v),
             [
                 "alert",
-                "backlog",
                 "busy",
                 "done",
+                "done_1h",
+                "done_5h",
                 "down",
-                "drain",
                 "expected",
                 "feed",
+                "head",
                 "kinds",
                 "level",
                 "long",
                 "machines",
                 "next",
-                "off",
                 "oldest",
                 "parts",
                 "pass",
+                "pending",
+                "pending_line",
                 "queued",
-                "slots",
                 "units",
-                "units_busy",
                 "up"
             ]
         );
         assert_eq!(
             keys(&v["kinds"][0]),
-            ["done", "kind", "oldest", "pass", "running", "waiting", "weight"]
+            [
+                "done", "done_1h", "done_5h", "kind", "oldest", "pass", "running", "usual",
+                "waiting"
+            ]
         );
         assert_eq!(
             keys(&v["machines"][0]),
-            [
-                "busy",
-                "host",
-                "load",
-                "next",
-                "running",
-                "slots",
-                "units",
-                "units_busy"
-            ]
+            ["booked", "busy", "cpu", "host", "load", "next", "running", "state"]
         );
         // No status series: the lowercase word the chip maps to "no data".
         assert_eq!(v["level"], "nodata");
-        // A cloud host that still holds a slot is not off.
+        // Load per core, for the chip's hot row; a host missing a reading has none.
         for m in i.machines.iter_mut() {
-            match m.host.as_str() {
-                "aws-burst-1" => m.slots = 1,
-                "workstation" => (m.load, m.cores) = (Some(36.0), Some(24.0)),
-                _ => {}
+            if m.host == "workstation" {
+                (m.load, m.cores) = (Some(36.0), Some(24.0));
             }
         }
         let g = glance(&i);
-        assert!(g.off.is_empty(), "{:?}", g.off);
-        // Load per core, for the chip's hot row; a host missing a reading has none.
         let load = |h: &str| g.machines.iter().find(|m| m.host == h).unwrap().load;
-        assert_eq!(
-            (load("workstation"), load("aws-burst-1")),
-            (Some(1.5), None)
-        );
-        let hosts: Vec<&str> = g.machines.iter().map(|h| h.host.as_str()).collect();
-        assert!(
-            hosts.contains(&"aws-burst-1") && hosts.contains(&"mac-mini"),
-            "{hosts:?}"
-        );
+        assert_eq!((load("workstation"), load("mac-mini")), (Some(1.5), None));
     }
 
     #[test]
@@ -2338,5 +2414,121 @@ mod tests {
             Day::default(),
             "nothing read is not a zero day"
         );
+    }
+
+    /// ar-6344: the shards of one workflow are one queue row, over the runs they belong to.
+    #[test]
+    fn the_shards_of_one_workflow_are_one_queue_row_with_their_runs() {
+        let mut i = board();
+        let shard = |job: &str, run: u32, id: u32, wait: &'static str| {
+            (
+                json!({"pool": "unity", "repo": "game", "branch": "main", "stuck": "false",
+                    "job_name": job, "workflow": "Tests", "labels": FULL,
+                    "url": format!("https://github.com/o/game/actions/runs/{run}/job/{id}")}),
+                wait,
+            )
+        };
+        i.instant.insert(
+            "waiting",
+            series(vec![
+                shard("Tests shard 1/3", 1, 11, "60"),
+                shard("Tests shard 2/3", 1, 12, "90"),
+                shard("Tests shard 1/3", 2, 21, "30"),
+                waiting("Soak", FULL, "10"),
+            ]),
+        );
+        let ci = build(&i);
+        assert_eq!(ci.queue.len(), 2);
+        let q = ci.queue.iter().find(|q| q.job == "Tests").unwrap();
+        assert_eq!((q.n, q.runs, q.wait), (3, 2, 90));
+        assert_eq!(q.branch, "main", "the branch every shard shares");
+        assert_eq!(q.reference(), "main");
+        let soak = ci.queue.iter().find(|q| q.job == "Soak").unwrap();
+        assert_eq!((soak.n, soak.runs), (1, 1));
+    }
+
+    /// ar-6344: an org-scoped pool takes no job of an owner that has repo-scoped pools of its own.
+    #[test]
+    fn an_org_pool_is_not_named_for_a_personal_owners_job() {
+        let mut i = board();
+        let job = |repo: &str, owner: &str| {
+            (
+                json!({"pool": "light", "repo": repo, "forge": "github", "stuck": "false",
+                    "job_name": repo, "workflow": repo, "labels": "self-hosted,linux,x64,light",
+                    "url": format!("https://github.com/{owner}/{repo}/actions/runs/1/job/2")}),
+                "60",
+            )
+        };
+        i.instant.insert(
+            "waiting",
+            series(vec![
+                job(".dotfiles", "Kblack0610"),
+                job("platform", "some-org"),
+            ]),
+        );
+        i.instant.insert(
+            "pools",
+            series(vec![
+                (json!({"name": "arc-org-light", "forge": "github", "scope": "org",
+                    "labels": "self-hosted,linux,x64,light,arc-org-light"}), "15"),
+                (json!({"name": "arc-repo-dotfiles", "forge": "github", "scope": "Kblack0610/.dotfiles",
+                    "labels": "self-hosted,linux,x64,light,arc-repo-dotfiles"}), "20"),
+            ]),
+        );
+        let ci = build(&i);
+        let can = |repo: &str| -> Vec<String> {
+            let q = ci.queue.iter().find(|q| q.repo == repo).unwrap();
+            q.can.iter().map(|f| f.host.clone()).collect()
+        };
+        assert_eq!(can(".dotfiles"), ["arc-repo-dotfiles"]);
+        assert_eq!(can("platform"), ["arc-org-light"]);
+    }
+
+    /// ar-6344: a scale-set runner GitHub still lists after its pod is gone has no row and no slot,
+    /// so no machine named `unknown` appears.
+    #[test]
+    fn a_listed_runner_whose_pod_is_gone_has_no_row_and_no_host() {
+        let mut i = clustered();
+        i.instant.entry("pools").or_default().extend(series(vec![(
+            json!({"name": "arc-org-light", "forge": "github", "scope": "org",
+                "labels": "self-hosted,linux,light,arc-org-light"}),
+            "15",
+        )]));
+        i.instant.entry("runners").or_default().extend(series(vec![
+            runner(
+                "unknown",
+                "arc-org-light-runner-gone1",
+                "running",
+                "40",
+                "self-hosted,linux,light",
+                json!({"repo": "home-config", "job_name": "lint"}),
+            ),
+            runner(
+                "unknown",
+                "arc-org-light-runner-gone2",
+                "idle",
+                "0",
+                "self-hosted,linux,light",
+                json!({}),
+            ),
+        ]));
+        i.derive();
+        let hosts: Vec<&str> =
+            i.ci.glance
+                .machines
+                .iter()
+                .map(|h| h.host.as_str())
+                .collect();
+        assert!(!hosts.contains(&"unknown"), "{hosts:?}");
+        assert!(
+            i.ci.rows.iter().all(|r| r.host != "unknown"),
+            "{:?}",
+            i.ci.rows
+        );
+        assert!(i
+            .ci
+            .rows
+            .iter()
+            .all(|r| r.job != "lint" || r.host == "ms-a2"));
     }
 }

@@ -139,21 +139,14 @@ pub const ROUTES: &[Route] = &[
         &[],
     ),
     own("POST", "/api/board", crate::board::audit_entry),
+    route("PUT", "/api/focus", |_| "note.saved".into(), &["t"], &[]),
     route(
         "POST",
-        "/api/inbox/ack",
-        |f| {
-            if f.get("ack") == Some(&Value::Bool(false)) {
-                "inbox.unacked"
-            } else {
-                "inbox.acked"
-            }
-            .into()
-        },
-        &["key"],
+        "/api/reports/read",
+        |_| "report.read".into(),
+        &["id"],
         &[],
     ),
-    route("PUT", "/api/focus", |_| "note.saved".into(), &["t"], &[]),
     route(
         "POST",
         "/api/projects/prio",
@@ -182,6 +175,20 @@ pub const ROUTES: &[Route] = &[
         |_| "queue.bumped".into(),
         &["slug"],
         &["priority"],
+    ),
+    route(
+        "POST",
+        "/api/pace/set",
+        |_| "pace.set".into(),
+        &["key"],
+        &["value", "from", "until"],
+    ),
+    route(
+        "POST",
+        "/api/pace/end",
+        |_| "pace.ended".into(),
+        &["key"],
+        &["from"],
     ),
     route("POST", SIGNIN_KEY, |_| "signin.started".into(), &[], &[]),
     route("POST", "/logout", |_| "signin.ended".into(), &[], &[]),

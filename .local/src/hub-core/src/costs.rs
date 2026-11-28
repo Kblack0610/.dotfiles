@@ -67,6 +67,9 @@ pub struct Eval {
     pub harness: String,
     pub done: u64,
     pub landed: u64,
+    /// What landed rate divides by: the items whose outcome was landed, no-pr or failed (an
+    /// unrated item, a cause outside the model or a check that cleared, is in done only).
+    pub landed_n: u64,
     pub redo: u64,
     pub reverts: u64,
     pub cost_usd: f64,
@@ -168,9 +171,9 @@ pub struct Snapshot {
 }
 
 /// Lazer use that went past the gateway, so the pool does not count it: the opencode sessions on
-/// provider `lazer` in this month's nightly days, each at its whole cost (a session from last month
-/// still running counts all of it). Nightly: whole days to the newest snapshot, never the live 24h,
-/// which overlaps that day (as the 7D and 30D tiles). The days are local, so the month edge is the
+/// provider `lazer` in this month's nightly days, each day at what the session spent that day (a
+/// session from last month still running counts its spend this month). Nightly: whole days to the
+/// newest snapshot, never the live 24h, which overlaps that day (as the 7D and 30D tiles). The days are local, so the month edge is the
 /// local 1st, up to the UTC offset off the pool's 00:00 UTC reset.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Direct {
@@ -192,34 +195,28 @@ fn month_first(now: i64) -> String {
     local_date(now, "%Y-%m-01")
 }
 
-/// `days` oldest first, as `spend_history::read` gives them. A session's row is its running total,
-/// so one seen on several days counts once, from its newest day: summing the days would count its
-/// early part again on every later day.
+/// `days` oldest first, as `spend_history::read` gives them. A nightly session row is what the
+/// session spent that day (`agent-usage-burn.py other_harnesses` books the day's delta), so the days
+/// sum as they are. A session unpriced on some day and priced on none is the unpriced count.
 pub fn direct(days: &[crate::spend_history::Day], now: i64) -> Direct {
     let first = month_first(now);
     let lazer = |s: &&crate::spend_history::Sess| s.provider.as_deref() == Some("lazer");
-    // a session's newest day: Some(usd) priced, None unpriced
-    let mut newest: BTreeMap<&str, Option<f64>> = BTreeMap::new();
+    let mut usd = 0.0;
+    let mut priced: BTreeSet<&str> = BTreeSet::new();
+    let mut unpriced: BTreeSet<&str> = BTreeSet::new();
     for d in days.iter().filter(|d| d.date >= first) {
         for s in d.sessions.iter().filter(lazer) {
-            newest.insert(&s.sid, Some(s.usd));
+            usd += s.usd;
+            priced.insert(&s.sid);
         }
-        for s in d.unpriced.iter().filter(lazer) {
-            newest.insert(&s.sid, None);
-        }
+        unpriced.extend(d.unpriced.iter().filter(lazer).map(|s| s.sid.as_str()));
     }
-    // a fold from 0.0, not `sum`: an empty f64 sum is -0.0, which prints as $-0.00
-    let init = Direct {
+    Direct {
+        // a fold from 0.0 above, not `sum`: an empty f64 sum is -0.0, which prints as $-0.00
+        usd,
+        unpriced: unpriced.difference(&priced).count(),
         note: DIRECT_NOTE,
-        ..Direct::default()
-    };
-    newest.into_values().fold(init, |mut d, usd| {
-        match usd {
-            Some(c) => d.usd += c,
-            None => d.unpriced += 1,
-        }
-        d
-    })
+    }
 }
 
 /// Everything one read gathered, over the longest window. `board` cuts it for a view.
@@ -248,6 +245,9 @@ pub struct Costs {
     pub live: Option<crate::spend_history::Day>,
     /// The Burn section: claude-acct's pace figures summed, and the dispatch drip.
     pub burn: Burn,
+    /// The Allowance and Pace config sections: `pace-conf`'s keys, the burn allowance in force and
+    /// its schedule (`pace_conf`).
+    pub pace: crate::pace_conf::View,
     /// The Consumers section's inputs: the gateway snapshot and the runners' confs.
     pub consumers: crate::gateway::Read,
     /// `fleet-bench sections --json`; empty when it failed (named in `errors`).
@@ -323,6 +323,15 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: i64) -> Costs {
         c.errors.push(format!("Prometheus: {e}"));
     }
     c.burn = read_burn(base.as_deref().ok(), paths, now, &mut c.errors);
+    // The allowance in force is named on the Burn headline, and the same read is the Limits
+    // sections', so one `pace-conf` run feeds both.
+    // A failed read is the view's own `error`, which the two sections show: it is not a read error
+    // of the page, so it neither joins `errors` nor keeps the kept read from being kept.
+    let conf = crate::pace_conf::read(runner);
+    if let Some(a) = conf.as_ref().ok().and_then(|c| c.named()) {
+        c.burn.set_allowance(a);
+    }
+    c.pace = crate::pace_conf::view(conf, &c.burn);
     c.consumers = crate::gateway::read(runner, &paths.gateway);
     c
 }
@@ -411,7 +420,7 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
     let v: serde_json::Value = serde_json::from_str(text).ok()?;
     Some(Snapshot {
         date: date.to_string(),
-        generated_at: v["generated_at"].as_str().and_then(epoch),
+        generated_at: v["generated_at"].as_str().and_then(crate::fleet::ts),
         tools: serde_json::from_value(v["by_tool"].clone()).unwrap_or_default(),
         unallocated_usd: v["by_tool_unallocated_usd"].as_f64(),
         parts: {
@@ -439,12 +448,6 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
             .next()
             .map(str::to_string),
     })
-}
-
-fn epoch(t: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(t)
-        .ok()
-        .map(|t| t.timestamp())
 }
 
 /// A model id as the table shows it: Claude's without its `claude-` prefix.
@@ -498,22 +501,15 @@ impl Row for Slice {
     const FACETS: &'static [&'static str] = &["harness", "model", "project", "kind"];
 
     fn val(&self, col: &str) -> Val {
-        let text = |s: &str| {
-            if s.is_empty() {
-                Val::None
-            } else {
-                Val::Text(s.to_string())
-            }
-        };
         match col {
-            "session" => text(&self.session),
-            "title" => text(&self.title),
-            "project" => text(&self.project),
-            "harness" => text(&self.harness),
-            "model" => text(&self.model),
-            "runner" => text(&self.runner),
-            "kind" => text(&self.kind),
-            "account" => text(&self.account),
+            "session" => Val::word(&self.session),
+            "title" => Val::word(&self.title),
+            "project" => Val::word(&self.project),
+            "harness" => Val::word(&self.harness),
+            "model" => Val::word(&self.model),
+            "runner" => Val::word(&self.runner),
+            "kind" => Val::word(&self.kind),
+            "account" => Val::word(&self.account),
             "cost" => Val::Num(self.cost),
             "tokens" => Val::Num(self.tokens),
             _ => Val::None,
@@ -621,7 +617,7 @@ pub struct Line {
     pub cost: f64,
     /// Of what the filtered table sums to, 0..1.
     pub share: f64,
-    /// fleet-bench's landed over done, 0..1.
+    /// fleet-bench's landed over landed_n, 0..1.
     pub landed: Option<f64>,
     pub redo: Option<u64>,
     pub reverts: Option<u64>,
@@ -755,9 +751,9 @@ fn evaluate(l: &mut Line, evals: &[&Eval]) {
         return;
     }
     let sum = |f: fn(&Eval) -> u64| evals.iter().map(|e| f(e)).sum::<u64>();
-    let (done, landed, priced) = (sum(|e| e.done), sum(|e| e.landed), sum(|e| e.priced));
+    let (rated, landed, priced) = (sum(|e| e.landed_n), sum(|e| e.landed), sum(|e| e.priced));
     let cost: f64 = evals.iter().map(|e| e.cost_usd).sum();
-    l.landed = (done > 0).then(|| landed as f64 / done as f64);
+    l.landed = (rated > 0).then(|| landed as f64 / rated as f64);
     l.redo = Some(sum(|e| e.redo));
     l.reverts = Some(sum(|e| e.reverts));
     l.per_pr = (priced > 0).then(|| cost / priced as f64);
@@ -1031,6 +1027,7 @@ pub struct Board {
     pub totals_note: &'static str,
     pub direct: Direct,
     pub burn: Burn,
+    pub pace: crate::pace_conf::View,
     /// The Consumers section in its own order; a surface re-sorts it with `gateway::build`.
     pub consumers: crate::gateway::Consumers,
     /// The sections that need a look (layout section ids), which an inner tab's label counts so
@@ -1223,6 +1220,7 @@ pub fn board(
         totals_note: TOTALS_NOTE,
         direct: direct(&c.spend_days, c.at),
         burn: c.burn.clone(),
+        pace: c.pace.clone(),
         amber: amber(c, &consumers),
         consumers,
         tokens: c.tokens.clone(),
@@ -1492,8 +1490,9 @@ mod tests {
             evals: vec![Eval {
                 model: "opus".into(),
                 harness: "claude".into(),
-                done: 10,
+                done: 12,
                 landed: 9,
+                landed_n: 10,
                 redo: 1,
                 reverts: 0,
                 cost_usd: 45.0,
@@ -2085,7 +2084,7 @@ mod tests {
         let f = &c.fleet_cost;
         assert_eq!(
             (f.why.clone(), f.usd.as_str(), f.as_of),
-            (None, "about $5.00", Some(NOW))
+            (None, "$5.00", Some(NOW))
         );
         let days: Vec<_> = c.history.rows.iter().filter(|r| r.kind == "day").collect();
         assert_eq!(
@@ -2124,7 +2123,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_lazer_counts_this_months_nightly_lazer_sessions_once_and_the_unpriced_ones() {
+    fn direct_lazer_sums_this_months_nightly_lazer_deltas_and_counts_the_unpriced_ones() {
         // NOW is 2027-01-15: this month's days are from 2027-01-01
         assert_eq!(month_first(NOW), "2027-01-01");
         let days = [
@@ -2135,10 +2134,10 @@ mod tests {
                 vec![oc("flip", "lazer", 0.0)],
             ),
             day("2027-01-13", vec![oc("flip", "lazer", 0.25)]),
-            // a's row is its running total: the 1.25 already holds the 0.5 of 01-12
+            // a's rows are per-day deltas: 0.5 on 01-12 and 0.75 on 01-14 are 1.25 spent
             day_with(
                 "2027-01-14",
-                vec![oc("a", "lazer", 1.25)],
+                vec![oc("a", "lazer", 0.75)],
                 vec![oc("b", "lazer", 0.0), oc("cx", "codex", 0.0)],
             ),
         ];

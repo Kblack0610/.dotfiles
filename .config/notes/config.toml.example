@@ -64,7 +64,7 @@ archive   = "journal/daily_archive"
 zettel    = "journal/permanent"
 meetings  = "journal/meetings"        # `notes meeting new` → structured meeting logs
 index     = "journal/index"
-inbox     = "inbox"                   # dated captures (/remember, `notes inbox add`)
+captures  = "captures"                # dated captures (/remember, `notes inbox add`)
 projects  = "lab/projects/current"   # `notes projects`; the daily note links the index from its footer
 # Work roster: render a ## Work section with one collapsed line per job - a link to the
 # job's latest note and its open-task count (`- AcmeCorp - [[..]] (7 open)`). The tasks
@@ -82,7 +82,7 @@ projects  = "lab/projects/current"   # `notes projects`; the daily note links th
 #
 # A JOB IS ONE LINE. Every path key below the root defaults to the org convention
 # (daily/, refs/, backlog.md, summaries/, daily_archive/, permanent/,
-# meetings/, index/, inbox/, projects/current), so restating them buys nothing and
+# meetings/, index/, captures/, projects/current), so restating them buys nothing and
 # drifts. Add a key only where this job genuinely differs. `personal` above is the
 # sole profile that overrides them all, because its root IS the vault.
 [profile.AcmeCorp]
@@ -94,11 +94,11 @@ footer_links = ["schedule"]
 # sweep, save sweep, doctor, triage or dispatch rewrites or reads its sheets.
 # automation = false
 
-# --- Lazer (edubot): client engagement ---------------------------------------
-# Same pattern, rooted in the client dir under jobs/lazer/.
-[profile.lazer]
-root = "~/.notes/employment/jobs/lazer/client"
-footer_links = ["schedule"]
+# --- Shared org and job profiles ----------------------------------------------
+# The real orgs and jobs (bnb, the work profiles) are not defined here: profiles.toml
+# beside this file holds them, a link notes-bootstrap makes to the private overlay's
+# .config/notes/profiles.toml, so every machine resolves the same roots and flags.
+# A profile defined both here and there is an error.
 
 # --- comms: multi-account email triage (`notes comms`) ------------------------
 # Global (spans profiles): each account names the profile whose daily note its

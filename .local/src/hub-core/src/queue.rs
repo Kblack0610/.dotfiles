@@ -14,11 +14,11 @@ use serde_json::Value;
 
 use crate::links::{Kind, Link};
 use crate::release_graph::pr_ref;
-use crate::session_actions::Runner;
+use crate::session_actions::{argv, Runner};
 use crate::text::{cap, headline, TITLE_MAX};
 
 /// A queue item's priorities, as `agent-queue` takes them. A board row's are `tasks::PRIORITIES`.
-pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
+pub const PRIORITIES: [&str; 4] = ["urgent", "high", "normal", "low"];
 
 /// The harness of an item, or a session, that names none.
 pub const HARNESS_DEFAULT: &str = "claude";
@@ -72,6 +72,95 @@ pub fn section_chip(section: &str) -> Option<&'static str> {
         .map(|(_, chip)| *chip)
 }
 
+/// The Queue tab's sections on agent-web, worst first (`hub_core::layout`'s `queue/<id>` page
+/// sizes): what waits on the human, what is stuck, then the states as the work moves. Finished
+/// work is not one: Log owns it, and the tab shows only its count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Section {
+    Needs,
+    Stuck,
+    Running,
+    Pr,
+    Next,
+}
+
+impl Section {
+    pub const ALL: [Section; 5] = [
+        Section::Needs,
+        Section::Stuck,
+        Section::Running,
+        Section::Pr,
+        Section::Next,
+    ];
+
+    /// The section id: the `#queue/<id>` word and the `layout` section.
+    pub fn id(self) -> &'static str {
+        match self {
+            Section::Needs => "needs",
+            Section::Stuck => "stuck",
+            Section::Running => "running",
+            Section::Pr => "pr",
+            Section::Next => "next",
+        }
+    }
+
+    /// The prefix of the section's view keys (`nxsort`, `nxdir`, `nxpg`) in the page URL and the
+    /// API: the shared `q` and `s` stay bare, each section sorts and pages on its own.
+    pub fn pre(self) -> &'static str {
+        match self {
+            Section::Needs => "nd",
+            Section::Stuck => "sk",
+            Section::Running => "rn",
+            Section::Pr => "pr",
+            Section::Next => "nx",
+        }
+    }
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Section::Needs => "Needs you",
+            Section::Stuck => "Stuck",
+            Section::Running => "Running",
+            Section::Pr => "On a PR",
+            Section::Next => "Up next",
+        }
+    }
+
+    /// The state chip the hub TUI's one table opens on for this section; Stuck has none (it is a
+    /// state word within running and on a PR), so it opens the page as it is.
+    pub fn chip(self) -> Option<&'static str> {
+        match self {
+            Section::Needs => Some("needs you"),
+            Section::Stuck => None,
+            Section::Running => Some("running"),
+            Section::Pr => Some("on a PR"),
+            Section::Next => Some("ready"),
+        }
+    }
+
+    /// The section a table state chip (`QueueRow::STATES`, a flow chip's target) lands on.
+    pub fn of_chip(chip: &str) -> Option<Section> {
+        match chip.trim().to_ascii_lowercase().as_str() {
+            "needs you" => Some(Section::Needs),
+            "running" => Some(Section::Running),
+            "on a pr" => Some(Section::Pr),
+            "ready" => Some(Section::Next),
+            _ => None,
+        }
+    }
+
+    /// The section a word names: its id, an old section id (`waiting`, `review`, `queued`) or a
+    /// state chip.
+    pub fn of_word(word: &str) -> Option<Section> {
+        let w = word.trim().to_ascii_lowercase();
+        Section::ALL
+            .into_iter()
+            .find(|s| s.id() == w)
+            .or_else(|| section_chip(&w).and_then(Section::of_chip))
+            .or_else(|| Section::of_chip(&w))
+    }
+}
+
 /// One item: its header keys as agent-queue prints them, plus `state` and `task`. A key this
 /// does not name is kept in `extra` (an old item's `hold` line too), so a caller that hands the
 /// item on as JSON loses nothing agent-queue said.
@@ -111,6 +200,10 @@ pub struct Item {
     /// `ok`, `failed` or `cancelled`, once done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// The landing verdict agent-queue stamps at close (`OUTCOME_JQ`): `landed`, `no-pr`,
+    /// `unrated`, `failed` or `cancelled`. Every reader of whether an item landed reads this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
     /// Who cancelled it: a session id, or the slug of the item the caller works; agent-queue's
     /// `cancel_stamp` writes it. None for a cancel from before it did, or one a human made at
     /// a terminal.
@@ -249,14 +342,17 @@ pub struct Step {
     pub sha: Option<String>,
 }
 
+/// The prefix of an opencode session id, which a trainee run appends to an item's `sessions`.
+pub const TRAINEE_SESSION_PREFIX: &str = "ses_";
+
 impl Item {
     pub fn tag_list(&self) -> impl Iterator<Item = &str> {
         self.tags.split_whitespace()
     }
 
-    /// The Claude session ids it ran in, oldest first (its `sessions:` header, space- or
-    /// comma-separated): an ask's `claude_session` names one, which ties the ask to this item
-    /// after that session ends.
+    /// The session ids it ran in, oldest first (its `sessions:` header, space- or comma-separated):
+    /// a Claude asker's `claude_session` ties the ask to this item after that session ends, and a
+    /// trainee run adds its opencode id (`TRAINEE_SESSION_PREFIX`), which is no asker.
     pub fn session_ids(&self) -> impl Iterator<Item = &str> {
         self.extra_str("sessions")
             .unwrap_or("")
@@ -264,9 +360,28 @@ impl Item {
             .filter(|s| !s.is_empty())
     }
 
-    /// The Claude session it ran in last: the one whose end left it waiting.
+    /// The Claude session it ran in last: the one whose end left it waiting. A trainee run's
+    /// session is skipped, so an ask filed by the Claude session before it still finds the item.
     pub fn last_session(&self) -> Option<&str> {
-        self.session_ids().last()
+        self.session_ids()
+            .filter(|s| !s.starts_with(TRAINEE_SESSION_PREFIX))
+            .last()
+    }
+
+    /// Whether it was started as a trainee run (its `trainee:` header, harness:model). The header
+    /// stays after a rejection, when Claude takes the item over.
+    pub fn is_trainee(&self) -> bool {
+        self.extra_str("trainee").is_some()
+    }
+
+    /// Whether a trainee run ended it: the header, and the last session it ran in is the trainee's.
+    /// The fleet answers that wait (the gate, then a Claude retry); a Claude retry's wait is its own.
+    pub fn ended_as_trainee(&self) -> bool {
+        self.is_trainee()
+            && self
+                .session_ids()
+                .last()
+                .is_some_and(|s| s.starts_with(TRAINEE_SESSION_PREFIX))
     }
 
     /// Whether it is held on ask `id` (an `ask:<id>` or `ask:<id>=<options>` tag, agent-queue's hold).
@@ -319,17 +434,22 @@ impl Item {
         said(&self.finished).and_then(stamp)
     }
 
-    /// What a finished item counts as: shipped when it closed ok with a merge, a check when it
-    /// closed ok with none (a watch or alert that cleared); failed, cancelled or unfinished is None.
+    /// What a finished ok item counts as: shipped when its outcome is landed, a check otherwise (a
+    /// watch or alert that cleared); failed, cancelled or unfinished is None.
     pub fn closed_as(&self) -> Option<Closed> {
         if self.state != State::Done || said(&self.status) != Some("ok") {
             return None;
         }
-        Some(if said(&self.merged).is_some() {
+        Some(if self.landed() {
             Closed::Shipped
         } else {
             Closed::Check
         })
+    }
+
+    /// Whether its outcome is landed: done ok with a PR, by agent-queue's one rule.
+    pub fn landed(&self) -> bool {
+        said(&self.outcome) == Some("landed")
     }
 
     /// Minutes it has been ready at `now`: from `ready` (its hold's release), else `queued`,
@@ -488,18 +608,7 @@ impl Item {
         if let Some((_, id)) = self.board_row() {
             add("row", id, Link::to(Kind::Row, id));
         }
-        for pr in self.pr_refs() {
-            if let Some((label, Some(url))) = pr_link_of(pr) {
-                add("pr", &label, Link::Url(url));
-            }
-            // A PR's CI runs are found by `owner/repo#N` (`builds::Run::pr_refs`); a bare number has none.
-            if let Some((Some(repo), n)) =
-                pr_ref(pr).filter(|(r, _)| r.as_deref().is_some_and(|r| r.contains('/')))
-            {
-                let r = format!("{repo}#{n}");
-                add("ci", &format!("CI runs of {r}"), Link::to(Kind::PrRuns, r));
-            }
-        }
+        out.extend(pr_links(self.pr_refs()));
         out
     }
 
@@ -578,14 +687,12 @@ impl Item {
         })
     }
 
-    /// A finished `ok` item that shows nothing for its work: no PR and no `report` (the url or
-    /// path of what it made instead of one). A canary item opens no PR by design.
+    /// A finished item that shows nothing for its work: outcome no-pr (ok with no PR on a kind
+    /// that exits with one) and no `report` (the url or path of what it made instead of one).
     pub fn unproven(&self) -> bool {
         self.state == State::Done
-            && self.status.as_deref().unwrap_or("ok") == "ok"
-            && self.pr_link().is_none()
+            && said(&self.outcome) == Some("no-pr")
             && self.extra_str("report").is_none()
-            && self.from.as_deref() != Some("canary")
     }
 
     /// The priority one step up (`up`) or down, or None at the end of the scale or for a
@@ -721,42 +828,16 @@ pub struct Recent {
 }
 
 impl Stats {
-    /// The window's line: what finished, with a PR, and how long items waited to start.
-    pub fn week(&self) -> String {
-        let n = |k: &str| self.done.get(k).copied().unwrap_or(0);
+    /// The window as one line, what the Pipeline head carries: how many finished since it began
+    /// and the typical wait and time to a PR.
+    pub fn line(&self) -> String {
         let done: u64 = self.done.values().sum();
-        let prs: u64 = self.by_project.values().map(|o| o.prs).sum();
         format!(
-            "since {}: {done} done ({} ok, {} failed, {} cancelled), {prs} with a PR, wait median {} p90 {} ({} started at once), to PR median {}",
+            "{done} done since {}, wait median {}, to PR median {}",
             self.since,
-            n("ok"),
-            n("failed"),
-            n("cancelled"),
             dur_min(self.wait_minutes_median),
-            dur_min(self.wait_minutes_p90),
-            self.started_at_once,
             dur_min(self.to_pr_minutes_median)
         )
-    }
-
-    /// What sits in the queue now, in plain words: how many could start and the oldest of them.
-    /// The item slug comes after the point.
-    pub fn sitting_line(&self) -> Option<String> {
-        let s = self.sitting.as_ref()?;
-        if s.queued == 0 {
-            return Some("Queue: nothing waiting.".into());
-        }
-        let out = match (s.runnable, s.oldest_runnable.first()) {
-            (0, _) => "Queue: nothing can start now.".to_string(),
-            (n, Some(o)) => format!(
-                "Queue: {n} can start now, the oldest waiting {} ({}), median {}.",
-                dur_min(Some(o.minutes)),
-                o.slug,
-                dur_min(s.runnable_age_minutes_median)
-            ),
-            (n, None) => format!("Queue: {n} can start now."),
-        };
-        Some(out)
     }
 }
 
@@ -882,21 +963,43 @@ pub fn done_days(items: &[Item]) -> BTreeMap<String, DayTotal> {
     by.into_iter().map(|(d, v)| (d, DayTotal::of(v))).collect()
 }
 
-fn argv(args: &[&str]) -> Vec<String> {
-    std::iter::once("agent-queue")
-        .chain(args.iter().copied())
-        .map(String::from)
-        .collect()
-}
+/// The CLI this module reads and writes through.
+const CLI: &str = "agent-queue";
 
 /// One record an item names and where it opens (`Item::links`); the web gets the link as its href.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ItemLink {
-    /// session, project, row, pr or ci.
+    /// session, project, row, item (a fix's queue item, `Red::links`), pr or ci.
     pub what: &'static str,
     pub text: String,
     #[serde(rename = "href")]
     pub link: Link,
+}
+
+/// Each PR a record names, then that PR's CI runs: the tail of `Item::links` and `Red::links`.
+pub fn pr_links<'a>(prs: impl Iterator<Item = &'a str>) -> Vec<ItemLink> {
+    let mut out = vec![];
+    for pr in prs {
+        if let Some((label, Some(url))) = pr_link_of(pr) {
+            out.push(ItemLink {
+                what: "pr",
+                text: label,
+                link: Link::Url(url),
+            });
+        }
+        // A PR's CI runs are found by `owner/repo#N` (`builds::Run::pr_refs`); a bare number has none.
+        if let Some((Some(repo), n)) =
+            pr_ref(pr).filter(|(r, _)| r.as_deref().is_some_and(|r| r.contains('/')))
+        {
+            let r = format!("{repo}#{n}");
+            out.push(ItemLink {
+                what: "ci",
+                text: format!("CI runs of {r}"),
+                link: Link::to(Kind::PrRuns, r),
+            });
+        }
+    }
+    out
 }
 
 /// One PR as the ledger writes it: the label a row prints and its page, when the repo is named.
@@ -946,7 +1049,7 @@ pub fn parse(jsonl: &str) -> Vec<Item> {
 
 /// One item by its slug, whatever its state.
 pub fn show(runner: &dyn Runner, slug: &str) -> Result<Item, String> {
-    parse(&runner.run(&argv(&["show", slug, "--json"]))?)
+    parse(&runner.run(&argv(&[CLI, "show", slug, "--json"]))?)
         .pop()
         .ok_or_else(|| format!("{slug}: agent-queue show printed no item"))
 }
@@ -955,7 +1058,9 @@ pub fn show(runner: &dyn Runner, slug: &str) -> Result<Item, String> {
 /// queued time. `all` is every active item plus today's finished ones.
 pub fn list(runner: &dyn Runner, state: &str) -> Result<Vec<Item>, String> {
     runner
-        .run(&argv(&["list", "--json", "--points", "--state", state]))
+        .run(&argv(&[
+            CLI, "list", "--json", "--points", "--state", state,
+        ]))
         .map(|out| parse(&out))
 }
 
@@ -966,7 +1071,7 @@ pub fn list_since(runner: &dyn Runner, state: &str, since: &str) -> Result<Vec<I
     }
     runner
         .run(&argv(&[
-            "list", "--json", "--points", "--state", state, "--since", since,
+            CLI, "list", "--json", "--points", "--state", state, "--since", since,
         ]))
         .map(|out| parse(&out))
 }
@@ -1015,7 +1120,7 @@ pub fn days_ago(days: i64) -> String {
 }
 
 pub fn stats(runner: &dyn Runner) -> Result<Stats, String> {
-    let out = runner.run(&argv(&["stats", "--json"]))?;
+    let out = runner.run(&argv(&[CLI, "stats", "--json"]))?;
     serde_json::from_str(&out).map_err(|e| format!("agent-queue stats: {e}"))
 }
 
@@ -1200,7 +1305,8 @@ pub enum Stuck {
     Stalled,
     /// No session of a fresh, full fleet pass works it, `NO_SESSION_GRACE_MIN` after it started.
     NoSession,
-    /// fleet-dispatch spent its fix-ci tries on the PR and handed it to the human (`fix_human`).
+    /// fleet-dispatch spent its fix-ci tries on the PR and filed an agent row (#red #escalate) for it
+    /// (`fix_human`, a name from when the row went to the human).
     PrRed,
     /// As `PrRed`, but the tries were a lander's (`pr_owner: land`): green, and not merging.
     PrGreen,
@@ -1211,8 +1317,8 @@ impl Stuck {
         match self {
             Stuck::Stalled => "stalled",
             Stuck::NoSession => "no session",
-            Stuck::PrRed => "PR red, yours",
-            Stuck::PrGreen => "PR green, yours",
+            Stuck::PrRed => "PR red, escalated",
+            Stuck::PrGreen => "PR green, escalated",
         }
     }
 }
@@ -1227,7 +1333,7 @@ pub fn stuck_on(item: &Item, session: Seen<'_>, timing: &Timing) -> Option<Stuck
             }
             _ => None,
         },
-        // `fix_human: <head> <owner>...` names the owners whose tries went to the human; one that
+        // `fix_human: <head> <owner>...` names the owners whose tries were escalated; one that
         // names others (fix-ci's row, then a green head's lander) is still dispatch's to work.
         State::Review => {
             let mut stamp = item
@@ -1325,6 +1431,19 @@ impl QueueRow<'_> {
             (Some(Stuck::PrRed | Stuck::PrGreen), _) => self.item.note.clone(),
             _ if self.item.cancelled() => Some(self.item.cancel_words()),
             _ => None,
+        }
+    }
+
+    /// The section the row sits in on agent-web, None for a finished item. A running or review
+    /// row that is stuck leaves its state for Stuck, so the exceptions read together.
+    pub fn section(&self) -> Option<Section> {
+        match self.item.state {
+            State::Waiting => Some(Section::Needs),
+            State::Running | State::Review if self.stuck() => Some(Section::Stuck),
+            State::Running => Some(Section::Running),
+            State::Review => Some(Section::Pr),
+            State::Queued => Some(Section::Next),
+            State::Done => None,
         }
     }
 
@@ -1441,9 +1560,10 @@ impl crate::table::Row for QueueRow<'_> {
             "priority" => match self.item.priority.trim() {
                 "urgent" => Val::Num(3.0),
                 "high" => Val::Num(2.0),
+                "normal" => Val::Num(1.0),
                 "" => Val::None,
                 "low" => Val::Num(0.0),
-                _ => Val::Num(1.0),
+                _ => Val::Num(0.5),
             },
             c => self.val(c),
         }
@@ -1509,7 +1629,7 @@ pub struct Candidate {
     pub text: String,
     pub stage: String,
     pub priority: String,
-    /// Why it ranks where it does, e.g. "focus project, due today, #high, beta".
+    /// Why it ranks where it does, e.g. "due today, #high, beta".
     pub why: String,
     /// A dispatch worker takes it.
     pub auto: bool,
@@ -1779,7 +1899,7 @@ pub fn cancel(runner: &dyn Runner, slug: &str) -> Result<String, String> {
     if !is_slug(slug) {
         return Err("bad slug".into());
     }
-    runner.run(&argv(&["cancel", slug]))
+    runner.run(&argv(&[CLI, "cancel", slug]))
 }
 
 /// `agent-queue bump <slug> <priority>`.
@@ -1788,9 +1908,9 @@ pub fn bump(runner: &dyn Runner, slug: &str, priority: &str) -> Result<String, S
         return Err("bad slug".into());
     }
     if !PRIORITIES.contains(&priority) {
-        return Err("priority is urgent, high or low".into());
+        return Err("priority is urgent, high, normal or low".into());
     }
-    runner.run(&argv(&["bump", slug, priority]))
+    runner.run(&argv(&[CLI, "bump", slug, priority]))
 }
 
 /// The modes `agent-queue add` takes.
@@ -1840,7 +1960,7 @@ pub fn add_argv(a: &Add) -> Result<Vec<String>, &'static str> {
         return Err("mode is oneshot or plan");
     }
     if !PRIORITIES.contains(&priority) {
-        return Err("priority is urgent, high or low");
+        return Err("priority is urgent, high, normal or low");
     }
     if !is_tags(&a.tags) {
         return Err("tags are words, or at:HH:MM");
@@ -1849,7 +1969,7 @@ pub fn add_argv(a: &Add) -> Result<Vec<String>, &'static str> {
     if task.is_empty() {
         return Err("type the task");
     }
-    let mut args = argv(&["add", "--from", "human", "--project", &a.project]);
+    let mut args = argv(&[CLI, "add", "--from", "human", "--project", &a.project]);
     args.extend(["--mode", mode, "--priority", priority].map(String::from));
     if !a.tags.trim().is_empty() {
         args.extend(["--tags".into(), a.tags.trim().into()]);
@@ -2245,26 +2365,8 @@ mod tests {
         assert_eq!(s.run_minutes_median, None);
         assert_eq!(s.by_project["game"].prs, 2);
         assert_eq!(
-            s.week(),
-            "since 2026-10-27: 3 done (3 ok, 0 failed, 0 cancelled), 2 with a PR, wait median 12m p90 2h10m (4 started at once), to PR median 1h35m"
-        );
-        assert_eq!(
-            s.sitting_line().as_deref(),
-            Some("Queue: 1 can start now, the oldest waiting 3h20m (q1), median 3h20m.")
-        );
-        assert_eq!(
-            Stats::default().sitting_line(),
-            None,
-            "an older agent-queue without `sitting` says nothing, never that the queue is empty"
-        );
-        let old: Stats = serde_json::from_str(
-            r#"{"sitting":{"queued":13,"runnable":0,"held":13,"held_by":{"after":12,"vacation":1},"runnable_age_minutes_median":null,"oldest_runnable":[]}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            old.sitting_line().as_deref(),
-            Some("Queue: nothing can start now."),
-            "nothing runnable says so plainly, and an older agent-queue's held counts say nothing"
+            s.line(),
+            "3 done since 2026-10-27, wait median 12m, to PR median 1h35m"
         );
 
         let q = Queue::read(&Fake::default());
@@ -2287,7 +2389,7 @@ mod tests {
     }
 
     const SUGGEST: &str = concat!(
-        r##"{"profile":"bnb","project":"shape-city","stage":"beta","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high #size/s <!-- id:bar-17 -->","repo":"/r","prio":1,"priority":"high","tier":2,"line":"f508","worker":"requested","wrank":0,"pprio":0,"due":0,"due_in":0,"age":5,"why":"focus project, due today, #high, beta","auto":true,"area":"","verdict":"dispatch","held":false}"##,
+        r##"{"profile":"bnb","project":"shape-city","stage":"beta","lane":"agent","key":"bar-17","text":"- [ ] fix the jump arc #high #size/s <!-- id:bar-17 -->","repo":"/r","prio":1,"priority":"high","tier":2,"line":"f508","worker":"requested","wrank":0,"due":0,"due_in":0,"age":5,"why":"due today, #high, beta","auto":true,"area":"","verdict":"dispatch","held":false}"##,
         "\n",
         "not json\n",
         r##"{"profile":"personal","project":"trader","stage":"alpha","lane":"human","key":"backtest report","text":"- [ ] backtest report","why":"#high, alpha, 9d old","auto":false,"verdict":"unjudged","held":true,"area":"unity"}"##,
@@ -2518,7 +2620,7 @@ mod tests {
     fn a_done_item_shows_its_pr_its_cost_and_whether_anything_proves_it() {
         let item = |j: &str| parse(j).remove(0);
         let landed = item(
-            r#"{"slug":"a","state":"done","status":"ok","pr":"Kblack0610/.dotfiles#1225","merged":"abc","cost_usd":"6.1","task":"t"}"#,
+            r#"{"slug":"a","state":"done","status":"ok","outcome":"landed","pr":"Kblack0610/.dotfiles#1225","merged":"abc","cost_usd":"6.1","task":"t"}"#,
         );
         assert_eq!(
             landed.pr_link(),
@@ -2527,10 +2629,12 @@ mod tests {
                 Some("https://github.com/Kblack0610/.dotfiles/pull/1225".into())
             ))
         );
-        assert!(landed.merged() && !landed.unproven());
+        assert!(landed.merged() && landed.landed() && !landed.unproven());
         assert_eq!(landed.cost(), Some(6.1));
         // An older item carries a bare number: a label, no link, and no merge recorded.
-        let bare = item(r#"{"slug":"b","state":"done","status":"ok","pr":"1796","task":"t"}"#);
+        let bare = item(
+            r#"{"slug":"b","state":"done","status":"ok","outcome":"landed","pr":"1796","task":"t"}"#,
+        );
         assert_eq!(bare.pr_link(), Some(("#1796".into(), None)));
         // One PR per repo: the first one's label and page, and how many more.
         let many = Item {
@@ -2572,16 +2676,23 @@ mod tests {
             odd("javascript:alert(1)"),
             Some(("#javascript:alert(1)".into(), None))
         );
-        // No PR and no report is flagged; a report, a canary or a failure is not.
-        let flagged = item(r#"{"slug":"c","state":"done","status":"ok","task":"t"}"#);
+        // Outcome no-pr with no report is flagged; a report, an unrated close (a canary, a check
+        // that cleared) or a failure is not.
+        let flagged =
+            item(r#"{"slug":"c","state":"done","status":"ok","outcome":"no-pr","task":"t"}"#);
         assert!(flagged.unproven());
-        let reported =
-            item(r#"{"slug":"c","state":"done","status":"ok","report":"https://x/y","task":"t"}"#);
+        let reported = item(
+            r#"{"slug":"c","state":"done","status":"ok","outcome":"no-pr","report":"https://x/y","task":"t"}"#,
+        );
         assert!(!reported.unproven());
-        let canary =
-            item(r#"{"slug":"c","state":"done","status":"ok","from":"canary","task":"t"}"#);
+        let canary = item(
+            r#"{"slug":"c","state":"done","status":"ok","outcome":"unrated","from":"canary","task":"t"}"#,
+        );
         assert!(!canary.unproven());
-        assert!(!item(r#"{"slug":"d","state":"done","status":"failed","task":"t"}"#).unproven());
+        assert!(!item(
+            r#"{"slug":"d","state":"done","status":"failed","outcome":"failed","task":"t"}"#
+        )
+        .unproven());
         assert!(!item(r#"{"slug":"e","state":"running","task":"t"}"#).unproven());
     }
 
@@ -2683,15 +2794,18 @@ mod tests {
             ..Item::default()
         };
         assert_eq!(i.bumped(true), Some("urgent"));
+        assert_eq!(i.bumped(false), Some("normal"));
+        i.priority = "normal".into();
+        assert_eq!(i.bumped(true), Some("high"));
         assert_eq!(i.bumped(false), Some("low"));
         i.priority = "urgent".into();
         assert_eq!(i.bumped(true), None);
         i.priority = "low".into();
         assert_eq!(i.bumped(false), None);
-        i.priority = "asap".into();
+        // NEGATIVE CONTROL: a word agent-queue does not take (the retired medium) does not step.
+        i.priority = "medium".into();
         assert_eq!(i.bumped(true), None);
-        // NEGATIVE CONTROL: normal is retired, so an old item carrying it does not step.
-        i.priority = "normal".into();
+        i.priority = "asap".into();
         assert_eq!(i.bumped(true), None);
     }
     fn at(s: &str) -> chrono::DateTime<chrono::Utc> {
@@ -2920,6 +3034,65 @@ mod tests {
     }
 
     #[test]
+    fn a_stuck_run_or_pr_leaves_its_state_for_stuck_and_a_finished_item_has_no_section() {
+        let q = stuck_queue();
+        let rows = q.rows(at("2026-11-06T12:00:00Z"));
+        let sec = |slug: &str| {
+            rows.iter()
+                .find(|r| r.item.slug == slug)
+                .unwrap()
+                .section()
+                .map(Section::id)
+        };
+        assert_eq!(sec("stuck"), Some("stuck"));
+        assert_eq!(sec("gone"), Some("stuck"));
+        assert_eq!(sec("red"), Some("stuck"));
+        // NEGATIVE CONTROLS: a working run, a plain PR and a run inside the grace stay put.
+        assert_eq!(sec("ok"), Some("running"));
+        assert_eq!(sec("fresh"), Some("running"));
+        assert_eq!(sec("plain"), Some("pr"));
+        let done = parse(r#"{"slug":"d","state":"done","task":"t"}"#);
+        let q = Queue {
+            items: done,
+            ..Queue::default()
+        };
+        assert_eq!(q.rows(chrono::Utc::now())[0].section(), None);
+    }
+
+    #[test]
+    fn a_section_word_is_its_id_an_old_section_id_or_a_state_chip() {
+        for (word, want) in [
+            ("needs", Some("needs")),
+            ("waiting", Some("needs")),
+            ("needs you", Some("needs")),
+            ("running", Some("running")),
+            ("review", Some("pr")),
+            ("On a PR", Some("pr")),
+            ("queued", Some("next")),
+            ("ready", Some("next")),
+            ("stuck", Some("stuck")),
+            ("done", None),
+            ("table", None),
+        ] {
+            assert_eq!(Section::of_word(word).map(Section::id), want, "{word}");
+        }
+    }
+
+    #[test]
+    fn the_stats_line_is_one_line_with_the_window_and_the_typical_times() {
+        let s = Stats {
+            since: "11-16".into(),
+            done: BTreeMap::from([("ok".to_string(), 3u64), ("failed".to_string(), 1)]),
+            wait_minutes_median: Some(5),
+            to_pr_minutes_median: Some(71),
+            ..Stats::default()
+        };
+        let l = s.line();
+        assert!(l.starts_with("4 done since 11-16"), "{l}");
+        assert!(!l.contains('\n'));
+    }
+
+    #[test]
     fn the_state_cell_says_a_run_is_stalled_or_sessionless_and_a_pr_is_handed_back() {
         let q = stuck_queue();
         let rows = q.rows(at("2026-11-06T12:00:00Z"));
@@ -2931,10 +3104,10 @@ mod tests {
         };
         assert_eq!(word("stuck"), "stalled");
         assert_eq!(word("gone"), "no session");
-        assert_eq!(word("red"), "PR red, yours");
-        assert_eq!(word("green"), "PR green, yours");
-        assert_eq!(word("handed"), "PR green, yours");
-        // a green head after fix-ci went to the human: its lander is dispatch's, not the human's
+        assert_eq!(word("red"), "PR red, escalated");
+        assert_eq!(word("green"), "PR green, escalated");
+        assert_eq!(word("handed"), "PR green, escalated");
+        // a green head after fix-ci was escalated: its lander is dispatch's own try
         assert_eq!(word("landing"), "on a PR");
         // NEGATIVE CONTROLS: a WORKING session, a run younger than the grace, a plain PR.
         assert_eq!(word("ok"), "running");

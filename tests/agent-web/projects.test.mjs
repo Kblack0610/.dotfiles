@@ -48,29 +48,29 @@ const card = (o) => ({
   progress: { open: 2, done: 1, open_weight: 3, done_weight: 1, closed_7d: 1, closed_weight_7d: 1 },
   window: { version: "v0.1.0", opened: "2026-11-15", due: "2026-11-22", committed: 4, delivered: 1, open: 3, dropped: 0, interrupted: 0, days_left: 4 }, window_says: "1/4 due 11-22", window_share: 25, window_cell: "1/4", due_cell: "4d",
   requested: 1, inbox: 2, running: [], waiting: 0, queued: 0, status: { headline: null, rows: [] }, status_date: "",
-  doing: 0, hot: 0, today: { shipped: 0, checks: 0 }, oldest: "-",
+  doing: 0, hot: 0, net7d_cell: "-", growing: false, today: { shipped: 0, checks: 0 }, oldest: "-",
   summary: "v0.1.0 window 1/4 rows, due 11-22 (4 days left), closed 1 in 7d, 1 in 28d", in_flight: false, pace: 0.3, ...o,
 });
 // The Summary hub_core::table sends beside the cards the view kept out of `total`.
 const listTable = (kept, total = kept.length, o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "in flight", n: kept.filter((c) => c.in_flight).length }, { name: "waiting", n: kept.filter((c) => c.waiting).length }],
-  columns: ["project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped", "oldest"]
+  columns: ["project", "state", "profile", "stage", "version", "prio", "open", "net7d", "doing", "hot", "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "shipped", "oldest"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, on: false, q: "stage:alpha" }] }], ...o,
+  facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, pct: 50, on: false, q: "stage:alpha" }] }], ...o,
 });
 const list = (cards = [card()], o = {}) => ({ cards, unlinked: [], errors: [], table: listTable(cards), ...o });
 const rows = [
-  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", label: "NEXT UP (1)", when: "", text: "fix(ui): fix the menu, so back returns", title: "fix the menu", summary: "so back returns", area: "ui", epic: "ui to standard", raw: "- [ ] fix(ui): fix the menu, so back returns", sheet: "a.md", tags: [] },
+  { profile: "bnb", project: "demo", lane: "agent", state: "open", priority: "high", section: "next", label: "NEXT UP (1)", when: "", text: "fix(ui): fix the menu, so back returns", title: "fix the menu", summary: "so back returns", type: "fix", area: "ui", points: 3, epic: "ui to standard", raw: "- [ ] fix(ui): fix the menu, so back returns", sheet: "a.md", tags: [] },
   { profile: "personal", project: "garden", lane: "human", state: "open", priority: "low", section: "backlog", label: "BACKLOG (1)", when: "queued  ~11-12", text: "water the beds", title: "water the beds", summary: "", raw: "- [ ] water the beds", sheet: "b.md", tags: [] },
 ];
 // The Summary hub_core::table sends beside the rows, for these rows.
 const tableOf = (q, total, kept) => ({
   q, state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "urgent", n: 0 }],
-  columns: ["section", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "tier", "since", "text", "profile", "tag"]
+  columns: ["section", "type", "area", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-  facets: [{ key: "lane", on: [], clear: "", values: [{ value: "agent", n: 1, on: false, q: "lane:agent" }] }],
+  facets: [{ key: "lane", on: [], clear: "", values: [{ value: "agent", n: 1, pct: 50, on: false, q: "lane:agent" }] }],
 });
 const projects = [{ profile: "bnb", project: "demo", inbox: 0 }, { profile: "personal", project: "garden", inbox: 0 }];
 const focus = [{ profile: "personal", open: 3 }, { profile: "bnb", open: 1 }];
@@ -112,7 +112,7 @@ function click(id, dataset, row) {
 
 test("the list is one table row per project with its counts, and the card's words stay on the card", () => {
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const { cards } = draw(list([card({ running, state: "at risk", state_level: "warn", queued: 2, waiting: 1, in_flight: true, prio: "focus", status: NOTE, status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, today: { shipped: 3, checks: 1 }, oldest: "30h" }), card({ profile: "personal", name: "garden", state: "parked", state_level: null, stage: "", version: null, window: null, window_share: null, window_says: "no window", window_cell: "no window", due_cell: "-", summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
+  const { cards } = draw(list([card({ running, state: "at risk", state_level: "warn", queued: 2, waiting: 1, in_flight: true, prio: "focus", net7d_cell: "+120", growing: true, status: NOTE, status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, today: { shipped: 3, checks: 1 }, oldest: "30h" }), card({ profile: "personal", name: "garden", state: "parked", state_level: null, stage: "", version: null, window: null, window_share: null, window_says: "no window", window_cell: "no window", due_cell: "-", summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
   assert.match(cards, /<h2 class="sec" id="sec-cards">Projects <span class="n">2<\/span><\/h2>/);
   assert.doesNotMatch(cards, /qstats|progress is the open version/, "the in-flight count is its state chip");
   assert.doesNotMatch(cards, /Board/, "every project's rows are the Board inner tab");
@@ -120,7 +120,7 @@ test("the list is one table row per project with its counts, and the card's word
   assert.match(cards, />IN FLIGHT<.*>WAITING</s);
   assert.doesNotMatch(cards, />ALL</, "no tile is every row");
   assert.match(cards, /data-tsort="project".*data-tsort="pace"[^>]*>pace\/wk<.*data-tsort="queued"/s);
-  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td><span class="cchip state warn">At risk<\/span><\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1\/4<\/td><td class="n">4d<\/td><td class="n">4\.3<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td><span class="cchip state warn">At risk<\/span><\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n warn">\+120<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1\/4<\/td><td class="n">4d<\/td><td class="n">4\.3<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
   assert.match(cards, /<tr class="jr" tabindex="0" data-open="personal\/garden"><td>garden<\/td><td><span class="cchip state">Parked<\/span><\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">no window<\/td><td class="n">-<\/td><td class="n">0\.3<\/td>.*<td class="n">0<\/td><td class="n">-<\/td><\/tr>/, "no hot row is not lit, and an empty oldest is a dash");
   for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested", "class=\"card qitem"]) {
     assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);
@@ -217,7 +217,7 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(head, /<div class="cline">checks: <a class="bad" href="#releases\/apps\/demo">Partial outage: api<\/a><\/div><div class="cline">alerts:/);
   assert.match(head, /<div class="cline warn">next stage: <a href="#" data-pgo="stage">beta  4 of 12 met, 1 failing/);
   // The strip: Overview open, its count what needs the human (1 verify, 2 plans, 2 checks), Stage's the failing checks.
-  assert.match(head, /role="tablist"><button role="tab" data-ptab="overview" class="on" aria-selected="true" tabindex="0">Overview <span class="pill warn">5<\/span><\/button><button role="tab" data-ptab="sprint"[^>]*>Sprint<\/button><button role="tab" data-ptab="rows" class="" aria-selected="false" tabindex="-1">Rows<\/button><button role="tab" data-ptab="deliverables"[^>]*>Deliverables<\/button><button role="tab" data-ptab="releases"[^>]*>Releases<\/button><button role="tab" data-ptab="stage"[^>]*>Stage <span class="pill warn">1<\/span><\/button><button role="tab" data-ptab="activity"[^>]*>Activity<\/button><\/div>$/);
+  assert.match(head, /role="tablist"><button role="tab" data-ptab="overview" class="on" aria-selected="true" tabindex="0">Overview <span class="pill warn">5<\/span><\/button><button role="tab" data-ptab="sprint"[^>]*>Sprint<\/button><button role="tab" data-ptab="rows" class="" aria-selected="false" tabindex="-1">Rows<\/button><button role="tab" data-ptab="deliverables"[^>]*>Deliverables<\/button><button role="tab" data-ptab="releases"[^>]*>Releases<\/button><button role="tab" data-ptab="stage"[^>]*>Stage <span class="pill warn">1<\/span><\/button><button role="tab" data-ptab="activity"[^>]*>Activity<\/button><button role="tab" data-ptab="knowledge"[^>]*>Knowledge<\/button><\/div>$/);
   const over = pinOf(pane, "overview");
   assert.match(over, /^<div data-pin="overview">/, "Overview shows");
   for (const id of ["rows", "releases", "stage", "activity"]) assert.match(pinOf(pane, id), new RegExp(`^<div data-pin="${id}" hidden>`), `${id} is hidden`);
@@ -250,6 +250,25 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   // The note is its headline over a key table; a cut line shows its uncut words on the opened card.
   assert.match(act, /id="sec-p-note">Agent note<\/h2><div class="card"><div class="pstat">landed it<\/div><dl><dt>Done<\/dt><dd>the arena \(#9\)\.<\/dd><dt>Needs you<\/dt><dd>cut at the cap and then the rest of the line<\/dd><\/dl><div class="cline muted"><b>written<\/b> 2026-11-05<\/div><\/div>/);
   assert.doesNotMatch(act, /cut at the cap\.\.\./, "the cap's cut is not drawn where the full text is");
+});
+
+test("Knowledge draws the project's docs, notes, asks and queue, says so for a part with nothing, and names a space that could not be read", () => {
+  const base = { status: { headline: shown("note", "beta next"), date: "2026-11-20" }, cadence: { target_days: 14, measured_days: 16, cuts: 8, due_on: "2026-12-02", due: true },
+    tracker: { system: "github", urls: ["https://example.test/demo"] }, lab: { core: [], docs: [{ path: "docs/briefs/a.md", title: shown("title", "A <brief>"), modified: "2026-11-01" }] },
+    repo: null, agent: { plans: [], sessions: [], outcomes: [], lessons: { path: null, count: 0 } }, knowledge: [],
+    asks: [{ id: "ask-1", title: "pick one" }], queue: [{ slug: "ar-1", state: "running" }], errors: ["agent-queue list: down"] };
+  const k = ctx.pKnowledge({ space: base });
+  assert.match(k, /id="sec-p-space-head">Status <span class="n">2026-11-20<\/span>/);
+  assert.match(k, /<b>cadence<\/b> every 14 days promised, 16 measured over 8 cuts, due 2026-12-02 <span class="warn">\(due now\)<\/span>/);
+  assert.match(k, /<td class="wrap">docs\/briefs\/a\.md<\/td><td class="wrap">A &lt;brief&gt;<\/td>/, "a title is escaped");
+  assert.match(k, /No repo cloned here\./);
+  assert.match(k, /No ADRs\.|No plans\./);
+  assert.match(k, /No knowledge note names this project\./);
+  assert.match(k, /<b>ask-1<\/b> pick one/);
+  assert.match(k, /<b>ar-1<\/b> <span class="muted">running<\/span> <\/div>/, "an untitled item is not 'undefined'");
+  assert.match(k, /<div class="panel down"><div>agent-queue list: down<\/div><\/div>/);
+  assert.doesNotMatch(k, /undefined/);
+  assert.match(ctx.pKnowledge({ space: null }), /could not be read/);
 });
 
 test("an inner tab is in the URL, a deep link opens on it, and a system opens Deliverables filtered to it", async () => {
@@ -297,10 +316,12 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"), "the server scopes the rows");
   assert.match(head, /^<nav class="crumb"[^>]*><a href="#projects" id="p-back">Projects<\/a> <span class="muted">&gt;<\/span> <b>demo<\/b><\/nav>.*v0\.1\.0 window 1\/4/s, "the breadcrumb, then the card");
   assert.match(shown, /1 of 1 rows; Today 1 \| Backlog 2 \| Epics 1 \| Epic backlog 0/, "the project's agent board, backlog and epics, the hub's words");
-  assert.match(shown, /data-tsort="section".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when"/s);
+  assert.match(shown, /data-tsort="section".*data-tsort="type".*data-tsort="area".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when".*data-tsort="id".*data-tsort="pts"/s);
   assert.doesNotMatch(shown, /data-tsort="(profile|tag|text|version|since)"/, "a query key or a field the opened row holds is not a column");
-  // The row leads with its area and title, the whole line under it, then the epic it serves.
-  assert.match(shown, /<tr class="jr" data-row="0"><td><b>NEXT UP \(1\)<\/b><\/td><td class="btitle"><div class="bt"><span class="qtag">ui<\/span> fix the menu<\/div><div class="bsum muted">so back returns<\/div><\/td><td class="bepic">ui to standard<\/td><td><span class="qprio high">high<\/span><\/td>/);
+  // The row leads with its type and area, each its own column, then its title, the whole line
+  // under it, then the epic it serves; its points close the line.
+  assert.match(shown, /<tr class="jr" data-row="0"><td><b>NEXT UP \(1\)<\/b><\/td><td>fix<\/td><td>ui<\/td><td class="btitle"><div class="bt">fix the menu<\/div><div class="bsum muted">so back returns<\/div><\/td><td class="bepic">ui to standard<\/td><td><span class="qprio high">high<\/span><\/td>/);
+  assert.match(shown, /<code>-<\/code><\/td><td class="n">3<\/td><\/tr>/, "the row's #pts is its own cell");
   assert.doesNotMatch(shown, /water the beds/, "another project's row is not sent");
   assert.doesNotMatch(shown, /href="#daily"/, "one project's rows have no Daily count");
   assert.match(read().rows, /id="board-tiles".*id="board-q"/s);
@@ -309,7 +330,7 @@ test("opening a card asks for its rows alone and draws them as the shared table"
 test("a row opens under itself with its actions, and a second click shuts it", async () => {
   await drawn(list(), "bnb/demo");
   click("b-root", {}, "0");
-  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="9">.*data-tag="0">Tags\.\.\./s);
+  assert.match(read().rows, /<tr class="jr sel" data-row="0">.*<tr class="bopen"><td colspan="12">.*data-tag="0">Tags\.\.\./s);
   click("b-root", {}, "0");
   assert.doesNotMatch(read().rows, /bopen/);
 });
@@ -394,11 +415,14 @@ test("a project's Sprint tab has its open window, the queued one, and the scored
 test("a sprint page's deep link splits off its version, and its By area rows narrow the rows below", () => {
   const sp = JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/sprint/v0.3.0"))`, ctx));
   assert.deepEqual(sp, { key: "bnb/demo", inner: "sprint", dept: "", sprint: "v0.3.0" });
-  const d = { page: { version: "v0.3.0", prev: "#projects/bnb%2Fdemo/sprint/v0.2.0", next: null, head: ["11-19 to 11-20", "delivered 2 of 3"], errors: [], by_area: [{ group: "Engine", rows: 2 }, { group: "Look and UI", rows: 1 }] }, area_heads: { group: "AREA", rows: "ROWS" }, table: { total: 3 }, rows: [] };
+  const d = { page: { version: "v0.3.0", prev: "#projects/bnb%2Fdemo/sprint/v0.2.0", next: null, head: ["11-19 to 11-20", "delivered 2 of 3"], errors: [], by_area: [{ group: "Engine", rows: 2 }, { group: "Look and UI", rows: 1 }] }, area_heads: { group: "AREA", rows: "ROWS", delivered: "DELIVERED", pending: "OPEN", dropped: "DROPPED", pts: "PTS" }, table: { total: 3 }, rows: [] };
   const html = vm.runInContext(`spgHead(${JSON.stringify(d)})`, ctx);
   assert.match(html, /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.2\.0">previous<\/a> <span class="muted">next<\/span>/, "prev and next are links where there is a neighbour");
   assert.match(html, /<tr class="jr" data-tqc="group:Engine"/);
   assert.match(html, /data-tqc="group:&quot;Look and UI&quot;"/, "a group with spaces is quoted into the query");
+  const head = html.match(/<tr><th.*?<\/tr>/)[0];
+  assert.equal((head.match(/data-role="lead"/g) || []).length, 1, "the By area header leads with the area");
+  assert.ok((head.match(/data-role="glance"/g) || []).length <= 3, "and glances at no more than 3");
   assert.match(html, /<div class="panel scroll" data-tbl="sp">/, "the rollup sits inside the table's own block, so the table's click handler hears it");
 });
 
@@ -468,7 +492,7 @@ test("the board draws the page the server sends with its pager, a write names th
   await onBoard();
   ctx.input = Array.from({ length: 5 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + (30 + i), text: "r" + (30 + i), title: "r" + (30 + i), summary: "" }));
   vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 35, total: 35, pager: { page: 2, pages: 2, per: 30 } } }; bst.render();`, ctx);
-  assert.match(read().rows, /<span class="qtag">ui<\/span> r34</);
+  assert.match(read().rows, /<td>ui<\/td><td class="btitle"><div class="bt">r34</);
   assert.match(read().rows, /<span class="muted" aria-live="polite">rows 31-35 of 35<\/span>/);
   assert.doesNotMatch(read().rows, /data-all|\+\d+ more/);
   ctx.sent = [];
@@ -477,6 +501,26 @@ test("the board draws the page the server sends with its pager, a write names th
   assert.ok(ctx.sent.some((s) => s.u === "/api/board" && JSON.parse(s.body).raw === "- [ ] r34"), "the action index is into the page sent");
   vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
   assert.match(read().rows, /No row matches\./);
+});
+
+test("the epics chip lists epics with their open and done rows as a link to those rows, and the task rows keep their epic cell", async () => {
+  await onBoard("s=epics");
+  const epic = { ...rows[0], lane: "human", priority: "high", section: "epics", label: "EPICS (1)", type: "epic", area: "menu", id: "demo-1", raw: "- [ ] epic(menu): the menu", text: "epic(menu): the menu", title: "the menu", summary: "", children: { open: 12, done: 4 } };
+  const cols = ["section", "type", "area", "title", "epic", "priority", "state", "when", "project", "lane", "id", "version", "size", "pts", "tier", "since", "text", "profile", "tag", "rows"];
+  ctx.input = { rows: [epic], table: { ...tableOf("", 1, [epic]), state: "epics", columns: cols.map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })), links: [{ rows: "#projects/all?q=tag:=of/demo-1" }] } };
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: input.rows, table: input.table }; bst.render();`, ctx);
+  const html = read().rows;
+  assert.match(html, /<a class="tl" href="#projects\/all\?q=tag:=of\/demo-1">12 open \/ 4 done<\/a>/, "the count opens the epic's rows");
+  assert.match(html, /<th[^>]*data-label="epic".*<th[^>]*data-label="rows".*<th[^>]*data-label="priority".*<th[^>]*data-label="project".*<th[^>]*data-label="id"/s, "the head runs epic, rows, priority, project, id");
+  assert.doesNotMatch(html, /data-label="(section|lane|when)"|no epic/, "an epic has no section, and is under none");
+  // The default chip draws tasks: a task under an epic links up to it, one under none says so.
+  const task = { ...rows[0], parent: "demo-1", epic: "the menu" };
+  ctx.input = { rows: [task, rows[1]], table: { ...tableOf("", 2, [task, rows[1]]), links: [{ epic: "#projects/all?q=id:=demo-1" }, {}] } };
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: input.rows, table: input.table }; bst.render();`, ctx);
+  const tasks = read().rows;
+  assert.match(tasks, /<a class="tl" href="#projects\/all\?q=id:=demo-1">the menu<\/a>/);
+  assert.match(tasks, /<span class="muted">no epic<\/span>/);
+  assert.doesNotMatch(tasks, /data-label="rows"/);
 });
 
 test("the strip is the list, Board and Deliverables; a count is a total once read, never amber", async () => {
@@ -599,7 +643,7 @@ const deliv = (o = {}) => {
       q: "", state: "", sort: "", dir: "desc", total: 2, shown: 2,
       states: [{ name: "all", n: 2 }, { name: "behind", n: 1 }, { name: "on track", n: 0 }, { name: "verify", n: 1 }],
       columns: ["project", "epic", "sys", "done", "eta", "track"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
-      facets: [{ key: "sys", on: [], clear: "", values: [{ value: "ui", n: 1, on: false, q: "sys:ui" }] }],
+      facets: [{ key: "sys", on: [], clear: "", values: [{ value: "ui", n: 1, pct: 50, on: false, q: "sys:ui" }] }],
     },
     ...o,
   };
@@ -766,7 +810,7 @@ test("a project's page has the work tabs, then one Departments tab with a chip p
   draw(list([card({ dept_tabs: ["analytics", "marketing", "legal", "support", "money"] })]), "bnb/demo");
   await settle(); await settle();
   const { head, pane } = read();
-  assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">7<\/span><\/button><button[^>]*data-ptab="sprint"[^>]*>Sprint<\/button><button[^>]*data-ptab="rows"[^>]*>Rows[^<]*(<span[^>]*>[^<]*<\/span>)?<\/button><button[^>]*data-ptab="deliverables".*data-ptab="stage".*data-ptab="activity"[^>]*>Activity<\/button><button[^>]*data-ptab="departments"[^>]*>Departments <span class="pill warn">2<\/span><\/button><\/div>$/, "Overview, the work tabs, then one Departments tab counting the departments' needs");
+  assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">7<\/span><\/button><button[^>]*data-ptab="sprint"[^>]*>Sprint<\/button><button[^>]*data-ptab="rows"[^>]*>Rows[^<]*(<span[^>]*>[^<]*<\/span>)?<\/button><button[^>]*data-ptab="deliverables".*data-ptab="stage".*data-ptab="activity"[^>]*>Activity<\/button><button[^>]*data-ptab="knowledge"[^>]*>Knowledge<\/button><button[^>]*data-ptab="departments"[^>]*>Departments <span class="pill warn">2<\/span><\/button><\/div>$/, "Overview, the work tabs, then one Departments tab counting the departments' needs");
   assert.doesNotMatch(head, /data-ptab="(product|engineering|ops|design|analytics|marketing|legal|support|money)"|isep/, "a department is a chip, not a tab");
   const over = pinOf(pane, "overview");
   assert.match(over, /id="sec-p-needs">Needs you <span class="n">7<\/span>/, "the page's 5 needs and the departments' 2");

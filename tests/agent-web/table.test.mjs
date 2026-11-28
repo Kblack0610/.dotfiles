@@ -186,13 +186,14 @@ test("a pfold is always open on a wide screen, and on a phone is a closed line u
 // opened run's job list, which app.css draws a job per block (.rdjobs).
 const KEEPS_COLUMNS = (h) => h.startsWith("<tr><th></th>") || h.includes("<th>job</th><th>class</th>");
 
-test("every literal hand-written table header names a lead, so a phone draws its rows", () => {
+test("every literal hand-written table header names a lead and at most 3 glance columns, so a phone draws its rows", () => {
   const files = readdirSync(dir).filter((f) => f.endsWith(".js"));
   let seen = 0;
   for (const f of files) for (const [h] of readFileSync(new URL(f, dir), "utf8").matchAll(/<tr><th.*?<\/tr>/g)) {
     if (KEEPS_COLUMNS(h)) continue;
     seen++;
     assert.match(h, /data-role="lead"/, `${f}: ${h}`);
+    assert.ok((h.match(/data-role="glance"/g) || []).length <= 3, `${f}: more than 3 glance columns: ${h}`);
   }
   // About two dozen literal headers today: far fewer means the pattern stopped matching, not that they went.
   assert.ok(seen >= 20, `the scan found only ${seen} headers: the pattern no longer matches how tables are written`);
@@ -201,11 +202,15 @@ test("every literal hand-written table header names a lead, so a phone draws its
 test("an open session's action buttons are one fold, and a confirm or a result stays outside it", () => {
   const acts = { hidden: true, innerHTML: "" }, real = doc.getElementById;
   doc.getElementById = (id) => (id === "acts" ? acts : real(id));
+  run(`st.opts = { actions: [{ name: "interrupt", label: "Interrupt", describe: "send Escape", danger: false }, { name: "stop", label: "Stop session", describe: "end it", danger: true }], accounts: [] }`);
   run(`st.sel = { target: "t1", account: "a", actions: ["interrupt"] }; st.act = { confirm: null, busy: false, msg: "done", err: false }; renderActs()`);
   assert.match(acts.innerHTML, /^<details class="pfold" data-pf="acts" open><summary>Actions<\/summary><div class="actrow"><button class="btn" data-act="interrupt"[^>]*>Interrupt<\/button><\/div><\/details><div class="msg">done<\/div>$/);
-  run(`st.opts = { describe: {}, accounts: [] }; st.act.confirm = { action: "interrupt", target: "t1" }; renderActs()`);
+  run(`st.act.confirm = { action: "interrupt", target: "t1" }; renderActs()`);
   assert.doesNotMatch(acts.innerHTML, /pfold/, "a confirm is never folded away");
   assert.match(acts.innerHTML, /data-go/);
+  assert.match(acts.innerHTML, /Interrupt\? This will send Escape\./, "the confirm's words come from the server's options");
+  run(`st.act.confirm = { action: "stop", target: "t1" }; renderActs()`);
+  assert.match(acts.innerHTML, /class="btn primary danger" data-go/, "a danger is the server's flag, not a list in the page");
   run(`st.sel = null; st.act = { confirm: null, busy: false, msg: "", err: false }`);
   doc.getElementById = real;
 });
@@ -283,8 +288,8 @@ test("a window click and a picked date each patch the control's one key; a blank
 // A facet as hub-core sends it: column a filtering on x and y, and a column the tab does not draw.
 const facetTable = () => ({ columns: [{ key: "a", sort: null, next_sort: "a", next_dir: "desc" }, { key: "b", sort: null, next_sort: "b", next_dir: "desc" }],
   facets: [
-    { key: "a", on: ["x", "y"], clear: "", values: [{ value: "x", n: 2, on: true, q: "a:y" }, { value: "y", n: 1, on: true, q: "a:x" }, { value: "<z>", n: 4, on: false, q: "a:x a:y a:<z>" }] },
-    { key: "repo", on: [], clear: "", values: [{ value: "r", n: 1, on: false, q: "repo:r" }] },
+    { key: "a", on: ["x", "y"], clear: "", values: [{ value: "x", n: 2, pct: 50, on: true, q: "a:y" }, { value: "y", n: 1, pct: 50, on: true, q: "a:x" }, { value: "<z>", n: 4, pct: 50, on: false, q: "a:x a:y a:<z>" }] },
+    { key: "repo", on: [], clear: "", values: [{ value: "r", n: 1, pct: 50, on: false, q: "repo:r" }] },
   ] });
 
 test("the filter row draws each facet under its column, and the bar draws only the rest", () => {
@@ -294,7 +299,7 @@ test("the filter row draws each facet under its column, and the bar draws only t
   assert.match(head, /<\/tr><tr class="tfilters" data-phone="filters"><th><details class="tfacet on" data-fkey="a"[^>]*><summary[^>]*>a: x \+1<\/summary>.*<\/details><\/th><td><\/td><\/tr>$/, "a cell per drawn column, the facet under its own");
   assert.match(head, /data-fv="x" value="a:y" checked>/);
   assert.match(head, /data-fv="y" value="a:x" checked>/);
-  assert.match(head, /data-fv="&lt;z&gt;" value="a:x a:y a:&lt;z&gt;"> <span>&lt;z&gt;<\/span> <span class="n">4<\/span>/, "an unticked value adds itself, escaped");
+  assert.match(head, /data-fv="&lt;z&gt;" value="a:x a:y a:&lt;z&gt;"> <span>&lt;z&gt;<\/span> <span class="n">4 \(50%\)<\/span>/, "an unticked value adds itself, escaped");
   assert.doesNotMatch(head, /data-fkey="repo"/);
   const bar = run("tblFacets(t)");
   assert.match(bar, /data-fkey="repo"/, "a facet whose column is not drawn stays in the bar");

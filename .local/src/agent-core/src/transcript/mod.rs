@@ -7,6 +7,7 @@ use std::path::Path;
 use serde_json::Value;
 
 mod ask;
+mod human;
 mod plan;
 mod prompt;
 mod read;
@@ -17,10 +18,19 @@ mod time_use;
 mod usage;
 
 pub use ask::{asks_human_at, open_dialog_at, open_plan_at, open_question_at, Question};
+pub use human::{human_said_at, HumanSaid};
 pub use read::{clip, iso_epoch, str_of, tool_input};
 pub use said::{said_around_at, Said};
 pub use time_use::{time_use_at, TimeUse};
 pub use usage::{context_window, uses, Uses};
+
+/// The lines of a compiled-in `.config/agent-panel/*.conf`, trimmed, past its comments and blank
+/// lines: the one parse every conf this module reads goes through.
+fn conf_lines(conf: &'static str) -> impl Iterator<Item = &'static str> {
+    conf.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+}
 
 use plan::{plan_file, plan_slug};
 use prompt::human_at;
@@ -59,7 +69,7 @@ pub struct FleetInfo {
     /// Epoch seconds of the newest entry `timestamp`, None when no entry carries one.
     /// The file's mtime is not this: it moves about hourly with no new lines.
     pub last_entry: Option<u64>,
-    /// Absolute paths the session changed through Edit, Write, MultiEdit or NotebookEdit,
+    /// Absolute paths the session changed through an edit tool (edit-tools.conf),
     /// in first-edit order. fleet-sessions counts only these as its dirt in a shared checkout.
     pub edited_files: Vec<String>,
     pub time_use: TimeUse,

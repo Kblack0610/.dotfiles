@@ -265,7 +265,9 @@ cmd_forges() {
              forge=none repo=-
            fi ;;
       esac
-      forge_canonical "$(git -C "$dir" rev-parse --show-toplevel)" && mirror=github
+      top="$(git -C "$dir" rev-parse --show-toplevel)"
+      if forge_canonical "$top"; then mirror=github
+      elif forge_marked "$top" && forge_failover_on "$top"; then mirror=failover; fi
       remotes=''
       for rn in $(git -C "$dir" remote); do
         r="$(url_host "$(git -C "$dir" remote get-url "$rn")")"

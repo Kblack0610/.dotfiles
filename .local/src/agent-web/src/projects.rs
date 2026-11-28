@@ -6,10 +6,11 @@
 //! `/api/projects/{name}/page` is one project's page (`hub_core::page`: its flow, what needs the
 //! human, epics by system, next stage and shipped versions), for a card to read when it is
 //! opened, never for every card. Its chain is the Deliverables' kept read (`crate::epics`).
-//! `POST /api/projects/prio {profile, name, prio, hours}` sets a project's prio through
-//! `projects::set_prio`, the one writer: a focus lasts `hours` (notes' default when absent).
+//! `POST /api/projects/prio {profile, name, prio, hours}` sets or clears a project's focus
+//! (`focus` or `normal`) through `projects::set_prio`, the one writer: a focus lasts `hours`
+//! (notes' default when absent).
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::Json;
 use hub_core::projects::{Card, Projects};
@@ -21,7 +22,7 @@ use serde_json::{json, Value};
 
 use crate::cache::{off, ReadCache};
 use crate::sessions::TableQuery;
-use crate::{bad, ApiResult, Shared};
+use crate::{bad, ApiResult};
 
 /// The one kept `projects::gather`, which the tab and Home's Projects card both read: a minute,
 /// Home's cadence, answered stale and refreshed behind like every kept read.
@@ -39,6 +40,7 @@ fn shown(p: &Projects, q: &TableQuery) -> Value {
         errors: p.errors.clone(),
         board_open: p.board_open,
         board_backlog: p.board_backlog,
+        board_7d: p.board_7d,
     });
     out["table"] = json!(table);
     out["focus"] = projects::focus_json(&p.cards);
@@ -63,16 +65,15 @@ pub struct PrioBody {
     hours: Option<u32>,
 }
 
-/// Set one project's prio. The cards and the queue's order both read it, so both reads are
-/// dropped and the page's next read shows the write.
-pub async fn set_prio(State(s): State<Shared>, Json(b): Json<PrioBody>) -> ApiResult<StatusCode> {
+/// Set or clear one project's focus. The cards read it, so their read is dropped and the
+/// page's next read shows the write.
+pub async fn set_prio(Json(b): Json<PrioBody>) -> ApiResult<StatusCode> {
     let r = crate::queue::act(move || {
         projects::set_prio(&System, &b.profile, &b.name, &b.prio, b.hours)
     })
     .await;
     if r.is_ok() {
         GATHERED.clear();
-        s.queue.clear();
     }
     r
 }
@@ -123,6 +124,7 @@ mod tests {
             errors: vec!["notes projects failed".into()],
             board_open: Some(7),
             board_backlog: Some(4),
+            board_7d: None,
         }
     }
 

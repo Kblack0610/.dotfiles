@@ -1,7 +1,12 @@
 #!/usr/bin/env bats
 # Tier 3: `agent-panel send`, the one way anything types into a Claude pane, against a real tmux
-# pane running a reader that behaves like Claude Code's input box: bracketed paste on, and an
-# Enter that lands within READER_DEAF_MS of a paste is dropped, leaving the text in the box.
+# pane running a reader that behaves like Claude Code's input box: bracketed paste on, a paste
+# drawn only once its input has gone idle, and an Enter that lands before that draw dropped,
+# leaving the text in the box. Whether an Enter is dropped is the reader's held state, not a
+# clock window on the Enter (the 300ms idle clock gates only the draw), so send's first Enter,
+# pressed once it sees the paste drawn, is taken on any load (2026-11-09: a busy run exited 3
+# when both Enters missed a 300ms window, ar-1251).
+# READER_DEAF=1 never takes an Enter.
 # READER_BUSY=1 draws it as a busy Claude pane does: a spinner whose timer redraws every 100ms
 # above a ruled box. 2026-10-30: a board answer sat unsent in a busy pane, because send judged
 # the whole screen and the spinner passed for both the paste drawn and the Enter taken.
@@ -16,41 +21,50 @@ setup() {
   sandbox_init basic
   require_tmux || return 1
   tmux_shim
+  # Built in this image (tests.yml ui job: tests/docker.sh --run cargo build ...).
   BIN="$REPO_ROOT/.local/src/agent-panel/target/debug/agent-panel"
   if [ ! -x "$BIN" ]; then
     [ -n "${CI:-}" ] && { echo "agent-panel is not built at $BIN" >&2; return 1; }
-    skip "build agent-panel first (cargo build in .local/src/agent-panel)"
+    skip "build agent-panel first (DOCKER_NETWORK=bridge tests/docker.sh --run cargo build --manifest-path .local/src/agent-panel/Cargo.toml)"
   fi
   LOG="$SANDBOX/submitted.log"
   READER="$SANDBOX/reader.sh"
   # The reader draws its input box as `> <text>` and appends each submitted line to $LOG.
   cat > "$READER" <<'SH'
 #!/usr/bin/env bash
-log="$1" deaf_us=$(( ${READER_DEAF_MS:-300} * 1000 )) busy="${READER_BUSY:-}" tick=0 wait=()
+# A paste is held (in buf, not drawn) until no input but dropped Enters has come for draw_us and
+# no paste is still arriving; ticks of the read timeout notice that. An Enter while held, or any
+# Enter with READER_DEAF, is dropped.
+log="$1" busy="${READER_BUSY:-}" deaf="${READER_DEAF:-}" draw_us=300000 tick=0
 stty -icanon -echo
 printf '\e[?2004h'
-buf="" pasting=0 pasted_at=0 seq=""
+buf="" shown="" pasting=0 held=0 last_at=0 seq=""
 draw() {
   if [ -n "$busy" ]; then
-    printf '\e[H* Working... (%s)\e[K\n\e[K\n────────\e[K\n> %s\e[K\n────────\e[K\n  esc to interrupt\e[K' "$tick" "$buf"
+    printf '\e[H* Working... (%s)\e[K\n\e[K\n────────\e[K\n> %s\e[K\n────────\e[K\n  esc to interrupt\e[K' "$tick" "$shown"
   else
-    printf '\r\e[K> %s' "$buf"
+    printf '\r\e[K> %s' "$shown"
   fi
 }
 now_us() { local t="${EPOCHREALTIME/./}"; printf '%s' "$t"; }
-[ -n "$busy" ] && wait=(-t 0.1)
 draw
 while :; do
+  wait=()
+  if [ -n "$busy" ] || [ "$held" = 1 ]; then wait=(-t 0.1); fi
   IFS= read -r -s -n1 -d '' "${wait[@]}" c; rc=$?
   # A read that times out still returns a byte that arrived as the timer fired (bash keeps
   # partial input on a timeout), so a timeout is a tick and that byte is still input.
-  if [ "$rc" -gt 128 ]; then tick=$((tick + 1)); draw; [ -n "$c" ] || continue
+  if [ "$rc" -gt 128 ]; then
+    tick=$((tick + 1))
+    if [ "$held" = 1 ] && [ "$pasting" = 0 ] && [ $(( $(now_us) - last_at )) -ge "$draw_us" ]; then held=0; shown="$buf"; fi
+    draw; [ -n "$c" ] || continue
   elif [ "$rc" != 0 ]; then break; fi
+  { [ "$held" = 1 ] && [ "$pasting" = 0 ] && [[ "$c" == $'\r' || "$c" == $'\n' ]]; } || last_at="$(now_us)"
   if [ -n "$seq" ] || [ "$c" = $'\e' ]; then
     seq+="$c"
     case "$seq" in
       $'\e[200~') pasting=1; seq="" ;;
-      $'\e[201~') pasting=0; pasted_at="$(now_us)"; seq=""; draw ;;
+      $'\e[201~') pasting=0; held=1; seq="" ;;
       $'\e'|$'\e['|$'\e[2'|$'\e[20'|$'\e[200'|$'\e[201') ;;
       *) seq="" ;;
     esac
@@ -59,9 +73,9 @@ while :; do
   if [ "$pasting" = 1 ]; then buf+="$c"; continue; fi
   case "$c" in
     $'\r'|$'\n')
-      [ $(( $(now_us) - pasted_at )) -lt "$deaf_us" ] && continue
-      printf '%s\n' "$buf" >> "$log"; buf=""; printf '\r\e[Ksent\n'; draw ;;
-    *) buf+="$c"; draw ;;
+      { [ "$held" = 1 ] || [ -n "$deaf" ]; } && continue
+      printf '%s\n' "$buf" >> "$log"; buf=""; shown=""; printf '\r\e[Ksent\n'; draw ;;
+    *) buf+="$c"; [ "$held" = 1 ] || shown="$buf"; draw ;;
   esac
 done
 SH
@@ -92,7 +106,7 @@ teardown() { ui_teardown; }
 
 @test "a pane that never takes the Enter is reported, not passed as sent" {
   tmux_stop
-  READER_DEAF_MS=600000 tmux_start env READER_DEAF_MS=600000 "$READER" "$LOG"
+  tmux_start env READER_DEAF=1 "$READER" "$LOG"
   PANE="x/$TM_TARGET"
   wait_until 'screen_has ">"'
   run "$BIN" send --pane "$PANE" 'never'
@@ -115,7 +129,7 @@ teardown() { ui_teardown; }
 
 @test "a busy pane that never takes the Enter is reported, though its spinner keeps moving" {
   tmux_stop
-  tmux_start env READER_BUSY=1 READER_DEAF_MS=600000 "$READER" "$LOG"
+  tmux_start env READER_BUSY=1 READER_DEAF=1 "$READER" "$LOG"
   PANE="x/$TM_TARGET"
   wait_until 'screen_has "esc to interrupt"'
   run "$BIN" send --pane "$PANE" 'never'

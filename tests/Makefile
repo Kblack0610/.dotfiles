@@ -6,7 +6,8 @@
 #   ui     driven through a real tmux server               ~1-2min  CONTAINER ONLY
 #
 # The first two tiers never start a tmux server, so they run anywhere -- they are CI's `fast`
-# job (an agent session runs none of this on the workstation). The ui tier starts real servers and sends real keys, so it runs ONLY
+# job (an agent session runs one named file of them at most on the workstation). The ui tier starts
+# real servers and sends real keys, so it runs ONLY
 # inside the disposable container (see Dockerfile for the full why: env-var isolation in
 # tmux fails silently, and a stray kill-server on a real machine takes out live sessions).
 # `make test-ui` therefore delegates to docker.sh rather than running bats directly.
@@ -24,11 +25,6 @@ BATS      := $(VENDOR)/bats-core/bin/bats
 # however the run ends.
 RUN_BATS  := $(HERE)run-bats.sh
 ARTIFACTS := $(HERE)artifacts
-
-# Pinned so a CI run and a laptop run agree.
-BATS_REF    := v1.12.0
-SUPPORT_REF := v0.3.0
-ASSERT_REF  := v2.1.0
 
 BATS_FLAGS ?= --print-output-on-failure --timing
 
@@ -53,7 +49,7 @@ help:
 	@echo ""
 	@echo "host-safe (no tmux server started):"
 	@echo "  make test-pr      the files the PR gate picks for this change (PR_BASE=<rev>, default the merge-base with origin/main)"
-	@echo "  make test-fast    unit + integ, every file (main and the nightly run it; CI shards it: shard.sh)"
+	@echo "  make test-fast    unit + integ, every file (a push to main and the Monday schedule run it; CI shards it: shard.sh)"
 	@echo "  make test-files   FILES=... only these (CI's shards call it)"
 	@echo "  make test-unit    sourced-function tests"
 	@echo "  make test-integ   --verb contract tests"
@@ -68,16 +64,9 @@ help:
 	@echo "  ./docker.sh --shell   interactive shell in the test image"
 
 bootstrap: $(BATS)
+# bootstrap.sh holds the pinned refs and needs no make, so CI and docker.sh call it directly.
 $(BATS):
-	@mkdir -p $(VENDOR)
-	@echo "==> vendoring bats-core $(BATS_REF) + helpers into tests/vendor"
-	@git clone --quiet --depth 1 --branch $(BATS_REF) \
-		https://github.com/bats-core/bats-core.git      $(VENDOR)/bats-core
-	@git clone --quiet --depth 1 --branch $(SUPPORT_REF) \
-		https://github.com/bats-core/bats-support.git   $(VENDOR)/bats-support
-	@git clone --quiet --depth 1 --branch $(ASSERT_REF) \
-		https://github.com/bats-core/bats-assert.git    $(VENDOR)/bats-assert
-	@echo "==> ok: $$($(BATS) --version)"
+	@$(HERE)bootstrap.sh
 
 test: test-fast test-ui
 
@@ -92,14 +81,11 @@ test-fast: test-unit test-integ
 # per-test path. Three wall-clock budgets (agent_ask, questions_panel, agentctl_report) run at
 # one job per core, so they share a core no more than serially. A test that shares a fixed
 # path, a port or setup_file state with another breaks that, and goes red here first.
-# Jobs are the cores free now, not every core: on 2026-11-07 three local gates at --jobs 24
-# each held a 24-core box at 54% sys and 8% idle, which shut the dispatcher's idle gate for
-# every other session (ar-885). Locally that number is `auto`, and run-bats.sh sizes it once
-# its slot is granted (unit-jobs.awk, UNIT_LOADAVG: ar-3403): sized here, at parse time, it was
-# read before the wait for the slot, and suites released together all forked that many workers.
-# On CI (CI set, as GitHub Actions does) the runner is the job's own machine and its load is its
-# own setup, which gave a 4-core runner 2 jobs: it gets nproc, and run-bats.sh takes no slot.
-UNIT_JOBS ?= $(if $(CI),$(shell nproc 2>/dev/null || echo 2),auto)
+# On CI (CI set) jobs are the CPUs the run may use, the job's own machine: cpus.sh is nproc held
+# down to the cgroup quota or the pod's CPU request, which nproc ignores (32 jobs in a 370m pod,
+# ar-5586). Off CI it is 2: a session runs one named file there, and several sessions at
+# --jobs nproc each held the box (ar-885, ar-3277).
+UNIT_JOBS ?= $(if $(CI),$(shell $(HERE)cpus.sh),2)
 FAST_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)
@@ -123,7 +109,7 @@ test-files: $(BATS)
 PR_BASE ?= $(shell git -C "$(HERE)" merge-base HEAD origin/main 2>/dev/null)
 test-pr: $(BATS)
 	@[ -n "$(PR_BASE)" ] || { echo "test-pr: no merge-base with origin/main: git fetch origin, or pass PR_BASE=<rev>" >&2; exit 2; }; \
-	diff=$$(git -C "$(HERE).." diff --name-only "$(PR_BASE)") || exit 2; \
+	diff=$$(git -C "$(HERE).." diff --no-renames --name-only "$(PR_BASE)") || exit 2; \
 	new=$$(git -C "$(HERE).." ls-files --others --exclude-standard) || exit 2; \
 	changed=$$(printf '%s\n%s\n' "$$diff" "$$new" | grep . | sort -u); \
 	[ -n "$$changed" ] || { echo "test-pr: no change against $(PR_BASE)"; exit 0; }; \
@@ -148,11 +134,12 @@ test-ui-inner: $(BATS)
 	  exit 1; \
 	fi
 	@mkdir -p $(ARTIFACTS)
+	@# The image keeps tmux and fzf in /opt/ui/bin, off the fast tiers' PATH (tests/Dockerfile).
 	@# Hard wall-clock cap. bats has no per-test timeout, and a ui test that reaches an
 	@# attaching code path (`tmux attach` with no terminal) blocks FOREVER rather than
 	@# failing - one such test wedged a run for 10 minutes before it was caught. Without
 	@# this a hung test burns the whole CI job and reports nothing useful.
-	@$(call junit_mk,ui) timeout --foreground $(UI_TIMEOUT) $(BATS) $(BATS_FLAGS) $(call junit,ui) $(HERE)ui \
+	@$(call junit_mk,ui) PATH=/opt/ui/bin:$$PATH timeout --foreground $(UI_TIMEOUT) $(BATS) $(BATS_FLAGS) $(call junit,ui) $(HERE)ui \
 	  || { rc=$$?; [ $$rc -eq 124 ] && { echo "ui tier TIMED OUT after $(UI_TIMEOUT)s (a test is probably blocked on an attach)" >&2; \
 	       $(if $(junit_on),printf '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites><testsuite name="timeout" tests="1" failures="1" errors="0" skipped="0"><testcase classname="ui" name="ui tier timed out after $(UI_TIMEOUT)s"><failure message="timed out; a test is probably blocked on an attach"/></testcase></testsuite></testsuites>\n' >$(call junit_dir,ui)/report.xml;) }; exit $$rc; }
 
@@ -167,10 +154,9 @@ lint:
 # The Rust crates (notes-cli, agent-panel, agent-web, timebox). Same shape as `lint`: one
 # implementation in rust.sh, shared with CI; its header says which gates block where.
 #
-# Deliberately NOT part of test-fast. test-fast is the Stop-hook gate and is measured in
-# seconds; a cold cargo build is ~20s and would tax every single turn. It is also
-# deliberately not part of test-container -- the test image has no Rust toolchain, and
-# rust.sh skips cleanly when cargo is absent rather than going red on that.
+# Deliberately NOT part of test-fast or test-container: a cold cargo build is minutes, and the
+# rust job runs it beside the bats tiers, in the same image (`tests/docker.sh test-rust`, with
+# DOCKER_NETWORK=bridge for the crates). rust.sh skips cleanly where cargo is absent.
 test-rust:
 	@$(HERE)rust.sh $(CRATES)
 

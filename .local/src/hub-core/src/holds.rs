@@ -2,7 +2,8 @@
 //! (`~/.agent/holds`, `AGENT_HOLD_DIR`), for Alerts (one red row each) and Home's Needs you (the
 //! ones the human set). A standing hold is a resource hold, or any hold `by: human`, set
 //! `STANDING_SECS` ago or longer; a load hold (the shepherd lifts it) and a claim (it ends with its
-//! skill) never stand. The rule is `agent-hold aged`'s, whose `hold-age` watch pages the same holds
+//! skill) never stand, and nor does a hold with an `until:` (every hold by: human has one since
+//! ar-6059): it ends on its own, so it never waits on the human. The rule is `agent-hold aged`'s, whose `hold-age` watch pages the same holds
 //! (ar-4645). A hold forgotten for days kept its resource from every session and nobody saw it.
 
 use std::path::{Path, PathBuf};
@@ -25,6 +26,9 @@ pub struct Hold {
     pub by: String,
     /// When it was set, epoch seconds; none when its `since:` does not read.
     pub since: Option<i64>,
+    /// It has an `until:` (`agent-hold set --until`), so it ends on its own; read or not, since
+    /// agent-hold reads an until no date reads as passed.
+    pub ends: bool,
     pub reason: String,
 }
 
@@ -48,6 +52,7 @@ impl Hold {
             kind,
             by: field("by"),
             since: crate::fleet::ts(&field("since")),
+            ends: !field("until").is_empty(),
             reason: field("reason"),
         }
     }
@@ -57,11 +62,12 @@ impl Hold {
         self.by == HUMAN
     }
 
-    /// True when only the human ends it and it has stood `STANDING_SECS`. A since that does not
-    /// read stands: it is as old as anything, as `agent-hold aged` reads it.
+    /// True when only the human ends it, it has no until, and it has stood `STANDING_SECS` since
+    /// it was set. A since that does not read stands: it is as old as anything, as `agent-hold
+    /// aged` reads it.
     pub fn standing(&self, now: i64) -> bool {
         let theirs = self.kind == "resource" || (self.kind != "claim" && self.human());
-        theirs && self.since.is_none_or(|s| now - s >= STANDING_SECS)
+        theirs && !self.ends && self.since.is_none_or(|t| now - t >= STANDING_SECS)
     }
 
     /// Whole days since it was set, none when its since does not read.
@@ -144,8 +150,32 @@ mod tests {
             kind: kind.into(),
             by: by.into(),
             since: Some(NOW - age),
+            ends: false,
             reason: "why".into(),
         }
+    }
+
+    #[test]
+    fn a_hold_with_an_until_never_stands_since_it_ends_on_its_own() {
+        // The human's 4-day-old lockdown with an until: it ends by itself, so it waits on nobody.
+        let ends = Hold {
+            ends: true,
+            ..hold("resource", HUMAN, 4 * 86400)
+        };
+        assert!(!ends.standing(NOW));
+        // Negative control: the same hold with no until stands.
+        assert!(hold("resource", HUMAN, 4 * 86400).standing(NOW));
+        let parse = |t: &str| {
+            Hold::parse(
+                "critical",
+                &format!("kind: resource\nby: human\nsince: 2026-11-20T16:10:54-0800\n{t}"),
+            )
+        };
+        assert!(parse("until: 2026-11-21T10:00:00-0800\n").ends);
+        // An until no date reads still ends it, as agent-hold reads it passed.
+        assert!(parse("until: soon\n").ends);
+        assert!(!parse("").ends);
+        assert!(!parse("until: \n").ends);
     }
 
     #[test]

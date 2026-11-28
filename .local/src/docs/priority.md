@@ -23,11 +23,10 @@ Why: nine scales grew apart, so "high" meant a page on one, a default on another
 
 | Scale | Where | Levels | Maps to the four | Set by | Reader and effect |
 | --- | --- | --- | --- | --- | --- |
-| Queue item priority | `priority:` in an `agent-queue` item (`~/.config/agentctl/QUEUE.md`) | urgent, high, low; default high | urgent, high, low; no normal word, so default work reads high | `agent-queue add --priority`, `bump`; a session names its own | `agent-queue` order (`ORDER` in `.local/bin/agent-queue`): red, urgent, sprint, project `#prio`, then high before low; urgent runs now past the cap and the pace |
-| Board row tag | `#urgent`, `#high`, `#normal` or `#low` on a row, exactly one (`notes-cli` README, "Row format") | urgent, high, normal, low; untagged is untriaged and ranks as normal | identical | the writer of the row; `agentctl-inbox-triage --backlog --priority` tags the rest | `notes-cli/src/rank.rs`: the one order rows are worked in, after a row due soon and before `#requested` |
+| Queue item priority | `priority:` in an `agent-queue` item (`~/.config/agentctl/QUEUE.md`) | urgent, high, normal, low; default high for the human's add by hand | identical | `agent-queue add --priority`, `bump`; a session names its own; dispatch's promote takes the row's (an untagged row gives normal) | `agent-queue` order (`ORDER` in `.local/bin/agent-queue`): red, urgent, sprint, then high, normal, low; urgent runs now past the cap and the pace; urgent and high start at add, normal and low wait for a dispatch pass |
+| Board row tag | `#urgent`, `#high`, `#normal` or `#low` on a row, exactly one, none on an epic row, which ranks as its most urgent open row (`epics::Index::epic_priority`), or shows as `empty` and ranks as low with none (`notes-cli` README, "Row format") | urgent, high, normal, low; untagged is untriaged and ranks as normal | identical | the writer of the row; `agentctl-inbox-triage --backlog --priority` tags the rest by the rubric `.config/inbox-triage/rules/priority.md`, and `--retag <word>` re-judges the open rows carrying one word (a started row is never asked: its tag ranks the live item) | `notes-cli/src/rank.rs`: the one order rows are worked in, after a row due soon and before `#requested` |
 | Retired row words | `#medium`, `#p0`..`#p3` | none | none | nobody: every `ptask` edit refuses to write one | no reader: a row carrying one ranks as untagged (`RETIRED_PRIORITIES` in `projects.rs`), and `notes doctor --projects` names it |
-| Epic row | the same row tag on an epic row | as the board row | as the board row | as the board row | as the board row; no separate epic field exists |
-| Project `#prio` | `#prio/<word>` on a project's `Version:` line | focus, high, normal (no tag), low | not a level of work: an ordering key for projects, so it maps to none | the human, `notes projects --prio <name> --set` | `agent-queue` order: ranks above an item's high or low, below red, urgent and sprint (focus, high, normal, low); `low` names the projects the fleet share cap holds to `DISPATCH_FLEET_SHARE` of starts (`fleet-dispatch`), past which only a red or the human's own work (urgent `from: human`, `#requested`, their floors) starts; a board row's `#urgent` waits |
+| Project `#prio/focus` | `#prio/focus` on a project's `Version:` line, with its `Focus until:` | focus, or no tag | not a level of work: the sprint switch, so it maps to none and orders nothing | the human, `notes projects --prio <name> --set focus\|normal` | `window::runs_sprints`: only a focus project's release windows run as sprints (`stages.md`). Which projects a share cap holds, and to what share of starts, is the dispatch conf's `DISPATCH_PROJECT_SHARE` table, never a project tag; past its cap only a red or the human's own work (urgent `from: human`, `#requested`, their floors) starts, and a board row's `#urgent` waits |
 | Runner `PRIORITY` | `PRIORITY=` in a runner conf (`~/.config/agentctl/README.md`) | must, low; required on a conf with a `ROLE`, refused on one without (no model, no reader); a runner is off by `ENABLED=no` | must is high, low is low | the runner's author | the Costs tab's Consumers (hub-core `gateway.rs`) lists each runner that has one, calls a must runner on a low team, key or source a MISMATCH and reads a stopped must runner as bad; nothing throttles on it (a consumer with its own gateway key declares `metadata.priority` on the key instead, where `off` stays a key level) |
 | Runner `CRITICAL` | `CRITICAL=yes` in a runner conf | yes, no | a boolean flag only | the runner's author | the runner starts while `agentctl pause` is on (a reaper whose disk or RAM cannot wait) |
 | Sentinel watch severity | `severity:` in `~/.agent/watches/<name>.yaml` (`SENTINEL.md`, "Paging") | low, normal, high, urgent; `sentinel-manifest validate` refuses any other word | identical | the watch's author | high and urgent buzz the phone and reach the shepherd as a due line; `notify_priority:` overrides the page level, and a command probe's `page: <word>` line overrides both for that trip; the red-watch item floor waits `TRIAGE_WATCH_HIGH_AFTER` at high or urgent |
@@ -38,7 +37,7 @@ Why: nine scales grew apart, so "high" meant a page on one, a default on another
 
 Which scale to read for a question:
 
-- What starts next: the `agent-queue` order, red, urgent, sprint, project `#prio`, then item priority.
+- What starts next: the `agent-queue` order, red, urgent, sprint, then the item's priority (its row's, while it has one). No project rank.
 - What the phone does: page priority; a watch's severity sets it unless `notify_priority:` says otherwise.
 - What the judge answers alone: ask impact, never a priority.
 - CI and release have no scale of their own. They take the four words through the table below: a red on main is urgent, a release-blocking check is high.
@@ -54,7 +53,7 @@ DRAFT. The rows are proposed from the watches and routes that exist today, keyed
 | deploy | a prod deploy failed or rolled back | a release run red before its promised date | deploy drift |
 | telemetry | a prod health signal down (an API or a payout path returns errors) | an error or crash rate past its budget | a missing dashboard |
 | docs | never | a doc that sends a release step wrong | stale wording |
-| security | a leaked secret or a prod credential exposed | a critical CVE in a running image | an advisory in a dev dependency |
+| security | a leaked secret or a prod credential exposed; a hole below that is live in prod | a critical CVE in a running image; an auth check missing or trusted from the client; private data (PHI, PII, secrets) readable by the wrong person; a private service reachable from the internet | an advisory in a dev dependency |
 | auth | prod sign-in broken | a role or session bug blocking a feature | none |
 | data | data loss, or a data invariant broken in prod | a stale backup; a migration blocking a release | retention tuning |
 | payments | a payout wrong or failing | a purchase flow blocking a release | none |
@@ -63,6 +62,10 @@ DRAFT. The rows are proposed from the watches and routes that exist today, keyed
 | save | player data lost or corrupted on update | a save migration blocking a release | none |
 | netcode | the dedicated server down during a live playtest | a sync bug blocking a playtest date | none |
 | gameplay, ui, input, audio, look, onboarding, perf | never | blocks a focus-project epic or a playtest date | everything else |
+| dispatch | nothing starts on any lane, or a landing merges a red head or loses work | a fault that happens now or recurs and starts the wrong item, strands an item, a worktree or a PR, or holds a landing | a runner conf tidy-up; a queue label nobody acts on |
+| sessions | every session stuck (one stuck session is the sessions plane row below) | a session read in the wrong state, a false nudge or page, or an ask or answer lost | wind-down wording |
+| views | never | the hub, agent-web, waybar or the wall shows a wrong state or number the human acts on | layout, colour or wording |
+| notes | a board, note or memory write lost or corrupted | a row or tag dropped or filed to the wrong board, or a count the board, pace or forecast reads that is wrong | stale skill or rule wording; a missing doctor check |
 
 Fleet planes, by the same four words:
 
@@ -70,8 +73,21 @@ Fleet planes, by the same four words:
 | --- | --- | --- | --- |
 | queue | the human asked for it today, or a red on main | blocks a focus-project epic or another agent | upkeep; a plan phase an agent wrote is high at most |
 | sessions and shepherd | a session holding a prod fix is stuck | a session another is waiting on is stuck | a session closing its own housekeeping |
-| pages | prod down, overnight tests red | only the human can unblock it and waiting costs within the hour | recoveries and all-clears |
+| pages | prod down, overnight tests red, the workstation at 3x its cores over 5 minutes (`fleet-thermal`) | only the human can unblock it and waiting costs within the hour | recoveries and all-clears |
 | asks | a human-stop ask on prod, money, data or secrets | a fleet-level rule change | a self-level choice the judge answers |
+
+The dispatch, sessions, views and notes rows are agent-runtime's own systems (its `systems` in `project-map.json`). Their high cell, and a fault in the runtime's own telemetry or CI gates that recurs or gives a wrong state, a false page or lost work, hold until the human ends their ask of 2026-11-24, runtime stability first (its switch was agent-runtime's `#prio/high`, retired in ar-5207); then such a fault is normal. Its telemetry, ci and tests otherwise take the base rows above.
+
+A fault or a feature with a named benefit is normal at least, under a "to standard" epic too; only the faults these tables list as low stay low (on 2026-11-24, 579 fix and 609 feat rows sat at low, filed so by their sessions). `project-stage-check --file` files its gap rows untagged for that rubric to judge, no longer `#low` by origin.
+
+## The reason on every row
+
+A board row carries a priority word and a `#why/<slug>` from `.config/inbox-triage/rules/priority-reasons.tsv`, each slug naming one priority. A row with no reason, or no priority, is a default: `fleet-bench prio-defaults` counts them by the filer that wrote the row.
+
+- Backfill: `agentctl-inbox-triage --backlog --priority --reasons --retag high`, run from the deployed script on PATH (a worktree copy is refused: its rendered prompt is not one of the agent's PROMPT files). It stops at `MAX_CALLS_HOUR` (120 calls, about 2,100 rows an hour) with "stopped at its budget". Never raise the cap for it.
+- A resume asks again every open or started row still without a reason, the said mismatches included, and with `--retag high` every open high row of both lanes, at 40 rows a call, before it reaches a row the last run never asked.
+- It keeps the priority a row has. When the model's reason belongs to another priority, the pass says so and writes nothing, so the row stays a default until `--retag` names its priority or the human changes the word. `--retag high` re-judges the open high rows and can lower an agent-lane one; a human row is never lowered (the pass says the lowering and the human decides).
+- The count after each run is `fleet-bench prio-defaults`; each run's figures are in the P4 Results of `~/.agent/plans/_live/priority-reasons-default-count.md`. A re-run can lower it, as the model may answer a mismatched row with a reason of its own priority the next time (2026-11-24: 946 -> 812 on the second run). Stop when a run that did not stop at its budget leaves it flat; the rest is then mismatches for `--retag` or the human.
 
 ## Where the scales fall short today
 

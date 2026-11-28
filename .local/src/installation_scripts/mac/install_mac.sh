@@ -12,6 +12,7 @@ source "$BASE_DIR/base_functions.sh"
 
 # Load configuration
 load_config
+PKG_INSTALL=install_brew_package PKG_OS=mac
 
 # macOS-specific variables
 BREWFILE_PATH="$HOME/.dotfiles/.config/brewfile/Brewfile"
@@ -141,25 +142,14 @@ install_basics() {
         # associative arrays) plus the GNU userland, for shell-script portability.
         # Keep this list in sync with the "GNU userland" block in the Brewfile, which
         # is what the primary path above actually installs.
-        install_package_list install_brew_package mac \
-            $PACKAGES_BASIC $PACKAGES_BASIC_MAC \
-            bash coreutils findutils gnu-sed
+        install_catalog BASIC bash coreutils findutils gnu-sed
     fi
-}
-
-# Override: Install development tools (catalog-driven; idempotent against Brewfile)
-install_tools() {
-    log_section "Installing development tools"
-    install_package_list install_brew_package mac \
-        $PACKAGES_DEV $PACKAGES_DEV_MAC
 }
 
 # Override: Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
-    install_package_list install_brew_package mac \
-        $PACKAGES_TERMINAL $PACKAGES_TERMINAL_MAC \
-        starship zoxide
+    install_catalog TERMINAL starship zoxide
 }
 
 # Override: Install GUI applications
@@ -195,13 +185,6 @@ install_runtime() {
         log_info "Installing Python..."
         brew install python@3.12 &>/dev/null
         brew install uv &>/dev/null
-    fi
-    
-    # Rust
-    if ! command -v cargo &>/dev/null; then
-        log_info "Installing Rust..."
-        brew install rustup &>/dev/null
-        rustup-init -y &>/dev/null
     fi
 }
 
@@ -367,13 +350,6 @@ install_moonlight() {
     fi
 }
 
-# macOS-specific: Dump current state to Brewfile
-dump_brewfile() {
-    log_info "Dumping current Homebrew state..."
-    brew bundle dump --force --file="$BREWFILE_PATH"
-    log_info "Brewfile updated at $BREWFILE_PATH"
-}
-
 # macOS-specific: Configure system defaults
 configure_macos_defaults() {
     log_section "Configuring macOS system defaults"
@@ -384,33 +360,6 @@ configure_macos_defaults() {
     else
         log_warning "macos_defaults.sh not found or not executable"
     fi
-}
-
-# Render theme-switch's generated output. sketchybar's colors.sh, kitty's theme,
-# nvim's kennethblack/theme.lua, starship.toml and lazygit's config.yml are NOT tracked
-# -- they are rendered from the tracked palette and templates, and tracking them meant the
-# theme timers dirtied the repo twice a day. sketchybarrc hard-`source`s it, so
-# on macOS a fresh clone without this step leaves sketchybar unable to start.
-#
-# --only the generated targets: termux is the one TRACKED render (the phone
-# reads it over git), it already ships correct, and re-rendering it here would
-# leave a fresh install with a dirty tree before first login.
-setup_theme() {
-    log_section "Rendering theme (generated config)"
-
-    local theme_switch="$HOME/.local/bin/theme-switch"
-    if [[ ! -x "$theme_switch" ]]; then
-        log_warning "theme-switch not found at $theme_switch — skipping"
-        log_info "Render later with:  theme-switch <theme> --only kitty,sketchybar,nvim,starship,lazygit"
-        return 0
-    fi
-
-    local state="$HOME/.config/theme/current"
-    local theme="batman"
-    [[ -r "$state" ]] && theme="$(<"$state")"
-
-    log_info "Rendering generated theme files for: $theme"
-    "$theme_switch" "$theme" --only kitty,sketchybar,nvim,starship,lazygit
 }
 
 # Firefox profile files, policies (Tab Keeper, Karakeep) and autoconfig. On a
@@ -447,6 +396,7 @@ install_all() {
     step dev        install_tmux
     step dev        install_lazygit
     step dev        install_kitty
+    step dev        install_rust
 
     # Kubernetes & Containers
     step containers install_kubernetes

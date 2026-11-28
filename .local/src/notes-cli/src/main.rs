@@ -20,9 +20,9 @@ mod find;
 mod focus;
 mod focus_move;
 mod focus_sweep;
+mod gate;
 mod improve;
 mod inbox;
-mod inbox_ack;
 mod index;
 mod ingest;
 mod knowledge;
@@ -34,17 +34,21 @@ mod knowledge_registry;
 mod knowledge_repo;
 mod knowledge_retired;
 mod lab_refresh;
+mod live_plans;
 mod logging;
 mod md;
 mod meeting;
 mod migrate_rows;
 mod outbox;
 mod playtest;
+mod project_space;
 mod project_sweep;
 mod project_tasks;
 mod projects;
 mod propose;
 mod rank;
+mod reasons;
+mod report;
 mod sheet;
 mod shipped;
 mod show;
@@ -94,7 +98,7 @@ enum Cmd {
         all: bool,
     },
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | archive | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
+    /// target: daily (default) | daily-dir | archive | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | captures | captures-today | inbox
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -115,9 +119,16 @@ enum Cmd {
         #[arg(long, value_name = "BASE")]
         base: String,
     },
-    /// Link today's ref files into today's note's `## Refs` section
+    /// Rebuild today's refs index and point today's note's `## Refs` at it
     LinkRefs,
-    /// Summarize a day's note into the continuous monthly log (dedup-safe)
+    /// Agent reports for the human, one per file in `inbox/<date>/`: add (or revise), list
+    /// across days, mark read, archive past days
+    Report {
+        #[command(subcommand)]
+        sub: report::Cmd,
+    },
+    /// Summarize a day's note into the continuous monthly log (dedup-safe), then archive past
+    /// report days (`notes report archive`)
     Summarize {
         /// Date to summarize (YYYY-MM-DD); defaults to yesterday
         #[arg(long)]
@@ -222,9 +233,14 @@ enum Cmd {
         /// the row it was folded into. READ-ONLY
         #[arg(long = "id", value_name = "ID", requires = "json", conflicts_with_all = ["agent", "version", "done_days"])]
         ids: Vec<String>,
+        /// Read `git grep` lines of agent sheets on stdin (`[<rev>:]<path>/agent/README.md:<line>`)
+        /// and print one JSON object per task row with an id: project, id, state (open, done,
+        /// dropped) and weight by the rule every rollup uses. READ-ONLY: day-log weighs the board
+        /// at a past notes commit through this, so the points rule has one home
+        #[arg(long, conflicts_with_all = ["json", "agent", "version", "done_days"])]
+        weigh: bool,
     },
-    /// Triage the dated-capture inbox (list / add / archive), and mark inbox page rows
-    /// reviewed (ack). No subcommand = list.
+    /// Triage the dated-capture inbox (list / add / archive). No subcommand = list.
     Inbox {
         #[command(subcommand)]
         sub: Option<InboxCmd>,
@@ -419,7 +435,7 @@ enum Cmd {
         /// is the rows aimed at a later release, agent is the agent board's)
         #[arg(long)]
         stats: bool,
-        /// With --stats, --roadmap or --sprints: one JSON array instead. For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
+        /// With --stats, --roadmap or --sprints: one JSON array instead; with a project NAME alone: its page, one object (README "The project page"). For --stats it adds each project's dir, done count, progress, epics, size weights, STATUS line and date, and summary path
         #[arg(long)]
         json: bool,
         /// Print a project's maturity stage; with --set, declare it (a move up runs project-stage-check first).
@@ -430,16 +446,21 @@ enum Cmd {
         /// the vocabulary from here instead of keeping a copy
         #[arg(long)]
         stages: bool,
+        /// Print the file the project in DIR declares its stage and priority on: its working
+        /// sheet, else, for a game its parent versions, its README, else its summary.md. The
+        /// shell's head-tag readers (lab-feed.sh `lab_front_page`) take the path from here
+        #[arg(long, value_name = "DIR")]
+        front_page: Option<std::path::PathBuf>,
         /// Print a project's index group; with --set, declare it. Unset means the
         /// project's own profile (bnb, personal); `tooling` is the tooling lane.
         #[arg(long, value_name = "NAME")]
         group: Option<String>,
-        /// Print a project's priority; with --set, declare it. One of: focus, high, low,
-        /// normal (clears it). fleet-dispatch and agent-queue rank the project's work by it,
-        /// focus first; a lower tier starts only when no higher one can, and nothing is held back
+        /// Print `focus` while a project is on focus; with --set focus, put it on focus (its
+        /// release windows run as sprints), --set normal takes it off. It ranks nothing: a row's
+        /// own priority orders work. The retired high and low are refused
         #[arg(long, value_name = "NAME")]
         prio: Option<String>,
-        /// Every profile's projects that declare a priority, as `name<TAB>prio`
+        /// Every profile's projects on a live focus, as `name<TAB>focus`
         #[arg(long)]
         prios: bool,
         /// Print the version a project promises and its day (`vX.Y.Z YYYY-MM-DD`, the sheet's
@@ -457,7 +478,7 @@ enum Cmd {
         /// earlier snapshot with the rows that fit that many hours of the agent lane's shipped
         /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head).
         /// With --prio --set focus: how long the focus lasts (default 4, at most 24); past its
-        /// end the project reads as high
+        /// end the project is off focus
         #[arg(long, value_name = "H", requires = "hours_with")]
         hours: Option<f64>,
         /// With --commit --hours: queue a sprint behind the open one while it runs: the patch after
@@ -546,10 +567,13 @@ enum Cmd {
         #[arg(long)]
         item: Option<String>,
         /// The whole record replayed into the chain's steps, inbox to done: per step what it
-        /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes
+        /// holds, its oldest, in and out over 1h and 24h, and dwell p50/p90 in minutes. An intake
+        /// line is keyed by its words without tags, so a line filed with other tags still closes;
+        /// inbox open also counts a worker's outbox lines whose add event reached this record, which
+        /// `fleet-bench chain` sets against the live inbox as chain_inbox_drift
         #[arg(long, conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item"])]
         steps: bool,
-        /// One line's whole path, from the record's 30 days: the events whose words hold WORDS
+        /// One line's whole path, from the record's week: the events whose words hold WORDS
         /// (or whose row is the id WORDS), then every event of the rows it was filed as and of
         /// the queue items they became, to the merge. For "where did my line go?"
         #[arg(long, value_name = "WORDS", conflicts_with_all = ["day", "days", "project", "id", "action", "by", "item", "steps"])]
@@ -657,6 +681,23 @@ enum FocusCmd {
     Sweep,
 }
 
+/// The arguments of `ptask tag`.
+#[derive(clap::Args)]
+struct TagArgs {
+    /// A tag to add (`#` optional). Repeatable
+    #[arg(long, value_name = "TAG")]
+    add: Vec<String>,
+    /// A tag to take off (`#` optional). Repeatable
+    #[arg(long, value_name = "TAG")]
+    remove: Vec<String>,
+    /// Why the row has its priority: a slug of `priority-reasons.tsv`. It writes `#why/<slug>`
+    /// (replacing the row's reason) and the reason's priority, unless `--add` names one
+    #[arg(long, value_name = "SLUG")]
+    why: Option<String>,
+    #[arg(required = true, num_args = 1..)]
+    query: Vec<String>,
+}
+
 /// `notes ptask <name> ...` verbs - the project analog of `FocusCmd`, on the sheet's `## Tasks`.
 #[derive(clap::Subcommand)]
 enum PtaskCmd {
@@ -700,6 +741,14 @@ enum PtaskCmd {
         /// repeated). Its add exits 5 with the shortlist until every id shown is named here
         #[arg(long, value_name = "IDS", value_delimiter = ',')]
         checked: Vec<String>,
+        /// Why the row has its priority: a slug of `priority-reasons.tsv`. It writes `#why/<slug>`
+        /// and, when the text names no priority, the reason's own
+        #[arg(long, value_name = "SLUG")]
+        why: Option<String>,
+        /// The title prefix the filer keys this row by and dedupes on itself (fleet-bench's
+        /// board_upsert): a near twin is then only a row under the same key
+        #[arg(long, value_name = "PREFIX")]
+        key: Option<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -729,6 +778,10 @@ enum PtaskCmd {
         /// day its PR merged). Never a future day
         #[arg(long, value_name = "DAY")]
         on: Option<String>,
+        /// What happens to its open children: `drop` closes each with this row's stamp, an id
+        /// (like ar-142) moves them under that row. Without it, open children refuse the close
+        #[arg(long, value_name = "drop|ID", value_parser = project_tasks::Children::parse)]
+        children: Option<project_tasks::Children>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -748,7 +801,7 @@ enum PtaskCmd {
     /// off the marker. A row already archived moves back onto its sheet. The id finds the row in
     /// either lane, so `--agent` is not needed
     Reopen {
-        /// What made the close false (the log keeps it)
+        /// What made the close false: `notes log --id <id>` shows it on the `reopened` event (the record keeps a week); the row keeps no trace of it
         #[arg(long, value_name = "WHY")]
         why: String,
         /// The row's id, as `ar-142`
@@ -756,16 +809,7 @@ enum PtaskCmd {
     },
     /// Add or take hashtags off the first matching open task (before its marker). A release
     /// tag is refused: move, promote and demote own it
-    Tag {
-        /// A tag to add (`#` optional). Repeatable
-        #[arg(long, value_name = "TAG")]
-        add: Vec<String>,
-        /// A tag to take off (`#` optional). Repeatable
-        #[arg(long, value_name = "TAG")]
-        remove: Vec<String>,
-        #[arg(required = true, num_args = 1..)]
-        query: Vec<String>,
-    },
+    Tag(TagArgs),
     /// Mark the matching task in progress (`[ ]` -> `[/]`); a started row is left as it is
     Start {
         #[arg(required = true, num_args = 1..)]
@@ -785,12 +829,17 @@ enum PtaskCmd {
     /// Close the first matching open task undelivered: the row stays, ticked, with the
     /// reason in its marker. Needs --why or --dup
     Drop {
-        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md")
+        /// Why it will not be delivered: stale, superseded, or where it moved ("moved: ideas.md").
+        /// Each open row gated #after/ on it is named on stderr, with the command that frees it
         #[arg(long, value_name = "WHY")]
         why: Option<String>,
-        /// It duplicates this row (its id, like ar-142)
+        /// It duplicates this row (its id, like ar-142); its open children move under that row
         #[arg(long, value_name = "ID")]
         dup: Option<String>,
+        /// What happens to its open children: `drop` closes each with this row's stamp, an id
+        /// (like ar-142) moves them under that row. Without it, open children refuse the close
+        #[arg(long, value_name = "drop|ID", value_parser = project_tasks::Children::parse)]
+        children: Option<project_tasks::Children>,
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
@@ -873,19 +922,10 @@ enum PtaskCmd {
         #[arg(long)]
         json: bool,
     },
-    /// The open rows closest to a text, best first (TSV `id<TAB>percent<TAB>text`), by the
-    /// scoring a near-duplicate is refused by. Reads only. The triager's shortlist of the rows
-    /// a line may repeat
-    Similar {
-        /// How many rows at most
-        #[arg(long, default_value_t = 10)]
-        top: usize,
-        /// One JSON array of `{id, percent, text}` instead
-        #[arg(long)]
-        json: bool,
-        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
-        text: Vec<String>,
-    },
+    /// The open rows closest to a text, best first (TSV `id<TAB>percent<TAB>text`, with
+    /// `--epic` `id<TAB>percent<TAB>lane<TAB>text`), by the scoring a near-duplicate is refused
+    /// by. Reads only. The triager's shortlist of the rows a line may repeat
+    Similar(project_tasks::SimilarArgs),
     /// Take the first inbox line matching the query off `## Inbox` and onto the board as
     /// typed rows (`--as`, repeatable to split a pile), or into an open row it duplicates
     /// (`--dup`). The human's words stay as a `was:` detail line. The triager's write path
@@ -971,7 +1011,7 @@ enum OutboxCmd {
         raw: Vec<String>,
     },
     /// Take the `#ask` or `#investigate` line that is RAW byte for byte out of the outbox and write
-    /// it, with the answer on stdin, to today's `inbox/<date>.md` (the sweep's write path for a look)
+    /// it, with the answer on stdin, to today's `captures/<date>.md` (the sweep's write path for a look)
     Answer {
         #[arg(required = true, num_args = 1..)]
         raw: Vec<String>,
@@ -1001,8 +1041,103 @@ enum IngestCmd {
     /// made (agent-queue's `item-*`, fleet-dispatch's `started`, `reaped`, `settled`,
     /// agent-land's `merged`, claude-acct's `parked` and `unparked`). An empty flag value is no value.
     Record(Box<RecordArgs>),
+    /// Append the queue-item events of a fleet worker's record (JSONL on stdin) this record lacks,
+    /// word for word once, then print the newest instant the input carried (fleet-dispatch's
+    /// next read of that worker starts there)
+    Import,
     /// Publish the inbox status page from the record and the outbox (the sweep runs it)
     Page,
+    /// The daily intake cap (`intake_daily_cap`, QUEUE.md "Admission"): per local day and project
+    /// (every gated board, and any other the cap touched), the new agent rows admitted and the rows
+    /// the cap refused, oldest first and today last
+    /// (`--json`: one `{date, project, cap, admitted, refused}` object a line), the one reader
+    /// fleet-bench's churn KPIs use
+    Cap {
+        /// How many local days, today included
+        #[arg(long, default_value_t = 7)]
+        days: i64,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// `notes ingest record`: one chain event a shell writer made, appended to the record.
+fn ingest_record(prof: &config::Profile, r: RecordArgs) -> i32 {
+    let RecordArgs {
+        action,
+        from,
+        to,
+        stage,
+        why,
+        id,
+        item,
+        by,
+        pr,
+        sha,
+        near,
+        text,
+    } = r;
+    let set = |v: Option<String>| ingest::set(v.as_deref());
+    let mut ev = ingest::Event::new(&action, &from, to.as_deref().unwrap_or(""), &text.join(" "));
+    ev.stage = Some(stage);
+    ev.why = set(why);
+    ev.id = set(id);
+    ev.item = set(item).or(ev.item);
+    if let Some(b) = set(by) {
+        ev.by = b;
+    }
+    ev.pr = set(pr);
+    ev.sha = set(sha);
+    ev.near = set(near);
+    ingest::record(prof, &ev);
+    0
+}
+
+/// `notes ingest <sub>`: the record, import, page and cap commands.
+fn ingest_sub(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    sub: IngestCmd,
+) -> anyhow::Result<i32> {
+    Ok(match sub {
+        IngestCmd::Record(r) => ingest_record(prof, *r),
+        IngestCmd::Import => ingest_import(prof)?,
+        IngestCmd::Page => daily::publish_inbox_page(prof, log)?,
+        IngestCmd::Cap { days, json } => ingest_cap(prof, days, json)?,
+    })
+}
+
+/// `notes ingest cap`: the cap's admitted and refused rows a day ([`gate::cap_days`]).
+fn ingest_cap(prof: &config::Profile, days: i64, json: bool) -> anyhow::Result<i32> {
+    if days < 1 {
+        anyhow::bail!("--days is a whole number of days, at least 1");
+    }
+    for d in gate::cap_days(prof, days) {
+        if json {
+            println!("{}", serde_json::to_string(&d)?);
+        } else {
+            let cap = if d.cap == 0 {
+                "no cap".to_string()
+            } else {
+                format!("cap {}", d.cap)
+            };
+            println!(
+                "{} {}: {} admitted, {} refused ({cap})",
+                d.date, d.project, d.admitted, d.refused
+            );
+        }
+    }
+    Ok(0)
+}
+
+/// `notes ingest import`: a worker's record on stdin; prints where its next read starts.
+fn ingest_import(prof: &config::Profile) -> anyhow::Result<i32> {
+    let mut input = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut input)?;
+    let (n, next) = ingest::import(prof, &input)?;
+    eprintln!("ingest import: {n} line(s) taken");
+    println!("{}", next.unwrap_or_default());
+    Ok(0)
 }
 
 /// `notes ingest record`: boxed, so the enum stays small.
@@ -1048,13 +1183,13 @@ struct RecordArgs {
 enum InboxCmd {
     /// List pending captures, oldest-first (the triage view); this is the default
     List,
-    /// Quick-capture: append a timestamped line to today's `inbox/<date>.md`
+    /// Quick-capture: append a timestamped line to today's `captures/<date>.md`
     Add {
         /// Capture text (free-form)
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
-    /// Drain triaged captures into `inbox/_archive/` (pick one selector)
+    /// Drain triaged captures into `captures/_archive/` (pick one selector)
     Archive {
         /// A specific capture filename (or path) to archive
         target: Option<String>,
@@ -1064,14 +1199,6 @@ enum InboxCmd {
         /// Archive every dated capture before YYYY-MM-DD
         #[arg(long)]
         before: Option<String>,
-    },
-    /// Mark a Handled-today row of the inbox page reviewed (it folds into `+N reviewed`), or
-    /// take the mark back with --undo; republishes the page
-    Ack {
-        /// The row's key: the `ts` of its ingest event, as the page's `<!-- ack:... -->` holds it
-        key: String,
-        #[arg(long)]
-        undo: bool,
     },
 }
 
@@ -1221,6 +1348,14 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
+/// `--game` and `--pr` belong to the playtest sheet's add; anywhere else they are refused.
+fn refuse_playtest_flags(game: Option<&String>, pr: Option<&u64>) -> Result<()> {
+    if game.is_some() || pr.is_some() {
+        bail!("--game and --pr only apply with --playtest");
+    }
+    Ok(())
+}
+
 /// The five verbs `ptask --playtest` takes. Everything else acts on releases, which playtest.md
 /// does not have, so it is refused rather than run against the sheet.
 fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
@@ -1238,12 +1373,20 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             want: None,
             origin: None,
             checked,
+            why: None,
+            key: None,
             text,
         }) if detail.is_empty() && checked.is_empty() => playtest::Op::Add {
             game,
             pr,
             text: text.join(" "),
         },
+        Some(PtaskCmd::Done {
+            children: Some(_), ..
+        })
+        | Some(PtaskCmd::Drop {
+            children: Some(_), ..
+        }) => bail!("--playtest rows have no children: drop --children"),
         Some(PtaskCmd::Done { on: Some(_), .. }) => {
             bail!("--playtest done takes no --on: a playtest row closes today")
         }
@@ -1257,7 +1400,9 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             unverified,
             pick: Pick::new(&query.join(" "), exact)?,
         },
-        Some(PtaskCmd::Drop { why, dup, query }) => playtest::Op::Drop {
+        Some(PtaskCmd::Drop {
+            why, dup, query, ..
+        }) => playtest::Op::Drop {
             stamp: project_tasks::drop_stamp(why.as_deref(), dup.as_deref())?,
             pick: Pick::new(&query.join(" "), exact)?,
         },
@@ -1270,6 +1415,17 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
 
 /// `notes row parse|types`. Parse reads bytes, so one line that is not UTF-8 still gets its
 /// own output line instead of failing the rest.
+/// The commands that need no profile, run before one is resolved: the row grammar (agent-queue
+/// and the triage prompts call it where none may resolve) and weighing rows from stdin (day-log
+/// runs it over the notes history).
+fn profile_free(cmd: &Cmd) -> Option<Result<()>> {
+    match cmd {
+        Cmd::Row { sub } => Some(row_cmd(sub)),
+        Cmd::Board { weigh: true, .. } => Some(read_stdin().and_then(|s| board::print_weigh(&s))),
+        _ => None,
+    }
+}
+
 fn row_cmd(sub: &RowCmd) -> Result<()> {
     use std::io::{BufRead, Write};
     let mut out = std::io::stdout().lock();
@@ -1395,7 +1551,106 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
     })
 }
 
+/// `ptask done` and `ptask drop`: close the row the query names, settling its open children
+/// (`--children`, and a dup's children move under the row it duplicates).
+fn ptask_close(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    name: &str,
+    pick: &dyn Fn(&[String]) -> Result<Pick>,
+    cmd: PtaskCmd,
+    lane: Lane,
+) -> Result<i32> {
+    match cmd {
+        PtaskCmd::Done {
+            proof,
+            unverified,
+            on,
+            children,
+            query,
+        } => project_tasks::done(
+            prof,
+            log,
+            name,
+            &pick(&query)?,
+            proof.as_deref(),
+            unverified.as_deref(),
+            on.as_deref(),
+            lane,
+            children.as_ref(),
+        ),
+        PtaskCmd::Drop {
+            why,
+            dup,
+            children,
+            query,
+        } => project_tasks::drop(
+            prof,
+            log,
+            name,
+            &pick(&query)?,
+            why.as_deref(),
+            dup.as_deref(),
+            lane,
+            children.as_ref(),
+        ),
+        _ => bail!("ptask_close takes done and drop only"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+/// `ptask tag`: its `--add` tags plus `--why`'s reason and priority, then the retag.
+fn ptask_tag(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    name: &str,
+    pick: &Pick,
+    t: TagArgs,
+    lane: Lane,
+    writer: &project_tasks::Writer,
+) -> Result<i32> {
+    let add = reasons::tag_adds(t.add, t.why.as_deref())?;
+    project_tasks::tag(prof, log, name, pick, &add, &t.remove, lane, writer)
+}
+
 /// All of stdin as text, for the commands that take their body there.
+/// `notes ptask <name> add ...`: the row as its flags give it, written by this process's writer.
+fn ptask_add(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    name: &str,
+    lane: Lane,
+    add: PtaskCmd,
+) -> Result<i32> {
+    let PtaskCmd::Add {
+        to,
+        game,
+        pr,
+        detail,
+        want,
+        origin,
+        checked,
+        why,
+        key,
+        text,
+    } = add
+    else {
+        unreachable!("ptask_add takes the add verb only");
+    };
+    refuse_playtest_flags(game.as_ref(), pr.as_ref())?;
+    project_tasks::add(
+        prof,
+        log,
+        name,
+        &reasons::add_text(&text, why.as_deref())?,
+        &detail,
+        to.as_deref(),
+        want.as_deref(),
+        lane,
+        &project_tasks::Writer::from_env(origin.as_deref(), checked).keyed(key),
+    )
+}
+
 /// `notes ptask <name> move <query> (--to vX.Y.Z | --project <dest> [--to vX.Y.Z])`.
 #[allow(clippy::too_many_arguments)]
 fn ptask_move(
@@ -1437,13 +1692,25 @@ fn read_stdin() -> Result<String> {
     Ok(text)
 }
 
+/// The nightly `notes summarize`: the day's summary, then the report archive (no new timer).
+/// Both run, so a day with no note to summarize still archives.
+fn summarize_nightly(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    date: Option<&str>,
+    force: bool,
+) -> Result<()> {
+    let summarized = summarize::run(prof, log, date, force);
+    let archived = report::archive_today(prof, log, false);
+    summarized?;
+    archived.map(|_| ())
+}
+
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
-    // The grammar needs no profile, and its callers (agent-queue, the triage prompts) run where
-    // none may resolve.
-    if let Cmd::Row { sub } = &cli.cmd {
-        return row_cmd(sub);
+    if let Some(done) = profile_free(&cli.cmd) {
+        return done;
     }
     let prof = config::resolve(cli.profile.as_deref())?;
     let log = logging::Logger::new(prof.log_file.clone(), cli.verbose);
@@ -1479,7 +1746,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, archive, index, projects, inbox, inbox-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, archive, index, projects, captures, captures-today, inbox)"
                 );
                 2
             }
@@ -1488,8 +1755,9 @@ fn main() -> Result<()> {
             daily::link_refs(&prof, &log)?;
             0
         }
+        Cmd::Report { sub } => report::run(&prof, &log, sub)?,
         Cmd::Summarize { date, force } => {
-            summarize::run(&prof, &log, date.as_deref(), force)?;
+            summarize_nightly(&prof, &log, date.as_deref(), force)?;
             0
         }
         Cmd::Archive {
@@ -1597,31 +1865,7 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::List { version, all }) => {
                     project_tasks::list(&prof, &name, version.as_deref(), all, lane)?
                 }
-                Some(PtaskCmd::Add {
-                    to,
-                    game,
-                    pr,
-                    detail,
-                    want,
-                    origin,
-                    checked,
-                    text,
-                }) => {
-                    if game.is_some() || pr.is_some() {
-                        bail!("--game and --pr only apply with --playtest");
-                    }
-                    project_tasks::add(
-                        &prof,
-                        &log,
-                        &name,
-                        &text.join(" "),
-                        &detail,
-                        to.as_deref(),
-                        want.as_deref(),
-                        lane,
-                        &project_tasks::Writer::from_env(origin.as_deref(), checked),
-                    )?
-                }
+                Some(add @ PtaskCmd::Add { .. }) => ptask_add(&prof, &log, &name, lane, add)?,
                 Some(PtaskCmd::Move { to, project, query }) => ptask_move(
                     &prof,
                     &log,
@@ -1632,21 +1876,9 @@ fn main() -> Result<()> {
                     lane,
                     &writer,
                 )?,
-                Some(PtaskCmd::Done {
-                    proof,
-                    unverified,
-                    on,
-                    query,
-                }) => project_tasks::done(
-                    &prof,
-                    &log,
-                    &name,
-                    &pick(&query)?,
-                    proof.as_deref(),
-                    unverified.as_deref(),
-                    on.as_deref(),
-                    lane,
-                )?,
+                Some(cmd @ (PtaskCmd::Done { .. } | PtaskCmd::Drop { .. })) => {
+                    ptask_close(&prof, &log, &name, &pick, cmd, lane)?
+                }
                 Some(PtaskCmd::Redate { on, dry_run, id }) => {
                     project_tasks::redate(&prof, &log, &name, &id, &on, dry_run, lane)?
                 }
@@ -1668,9 +1900,7 @@ fn main() -> Result<()> {
                     println!("{}", propose::proposed_row(&text.join(" "), &name));
                     0
                 }
-                Some(PtaskCmd::Similar { top, json, text }) => {
-                    project_tasks::similar_rows(&prof, &name, &text.join(" "), top, json, lane)?
-                }
+                Some(PtaskCmd::Similar(a)) => project_tasks::similar_rows(&prof, &name, &a, lane)?,
                 Some(PtaskCmd::File {
                     rows,
                     dup,
@@ -1711,19 +1941,9 @@ fn main() -> Result<()> {
                     };
                     project_tasks::file(&prof, &log, &name, &pick, &how, lane)?
                 }
-                Some(PtaskCmd::Tag { add, remove, query }) => {
-                    let q = pick(&query)?;
-                    project_tasks::tag(&prof, &log, &name, &q, &add, &remove, lane, &writer)?
+                Some(PtaskCmd::Tag(t)) => {
+                    ptask_tag(&prof, &log, &name, &pick(&t.query)?, t, lane, &writer)?
                 }
-                Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
-                    &prof,
-                    &log,
-                    &name,
-                    &pick(&query)?,
-                    why.as_deref(),
-                    dup.as_deref(),
-                    lane,
-                )?,
                 Some(PtaskCmd::Pass { .. }) => bail!("pass applies only with --playtest"),
                 Some(PtaskCmd::Edit {
                     text,
@@ -1772,6 +1992,7 @@ fn main() -> Result<()> {
             version,
             projects,
             ids,
+            weigh: _,
         } => {
             if let Some(v) = version {
                 board::print_version(&v, &projects, json)?
@@ -1826,44 +2047,7 @@ fn main() -> Result<()> {
             ingest::log(&prof, day.as_deref(), days, &filter, json)?
         }
         Cmd::Improve(a) => improve::run(&prof, &log, a)?,
-        Cmd::Ingest { sub } => match sub {
-            IngestCmd::Record(r) => {
-                let RecordArgs {
-                    action,
-                    from,
-                    to,
-                    stage,
-                    why,
-                    id,
-                    item,
-                    by,
-                    pr,
-                    sha,
-                    near,
-                    text,
-                } = *r;
-                let set = |v: Option<String>| ingest::set(v.as_deref());
-                let mut ev = ingest::Event::new(
-                    &action,
-                    &from,
-                    to.as_deref().unwrap_or(""),
-                    &text.join(" "),
-                );
-                ev.stage = Some(stage);
-                ev.why = set(why);
-                ev.id = set(id);
-                ev.item = set(item).or(ev.item);
-                if let Some(b) = set(by) {
-                    ev.by = b;
-                }
-                ev.pr = set(pr);
-                ev.sha = set(sha);
-                ev.near = set(near);
-                ingest::record(&prof, &ev);
-                0
-            }
-            IngestCmd::Page => daily::publish_inbox_page(&prof, &log)?,
-        },
+        Cmd::Ingest { sub } => ingest_sub(&prof, &log, sub)?,
         Cmd::Inbox { sub } => {
             match sub {
                 None | Some(InboxCmd::List) => inbox::list(&prof, &log)?,
@@ -1873,10 +2057,6 @@ fn main() -> Result<()> {
                     stale,
                     before,
                 }) => inbox::archive(&prof, &log, target.as_deref(), stale, before.as_deref())?,
-                Some(InboxCmd::Ack { key, undo }) => {
-                    inbox_ack::mark(&prof, &key, !undo)?;
-                    daily::publish_inbox_page(&prof, &log)?;
-                }
             }
             0
         }
@@ -1952,6 +2132,7 @@ fn main() -> Result<()> {
             version,
             stage,
             stages,
+            front_page,
             group,
             prio,
             prios,
@@ -2000,8 +2181,7 @@ fn main() -> Result<()> {
             }
             // Handled before the match below because both take a VALUE (`--set`), which the
             // name-keyed tuple has no room for.
-            if stages {
-                projects::stages();
+            if projects::ladder_read(stages, front_page.as_deref())? {
                 std::process::exit(0);
             }
             if let Some(n) = stage {
@@ -2048,7 +2228,7 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if json && !stats && roadmap.is_none() && sprints.is_none() {
-                anyhow::bail!("--json goes with --stats, --roadmap or --sprints");
+                return project_space::print_or_bail(&prof, name.as_deref());
             }
             if projects::print_view(&prof, stats, sprints.as_deref(), version.as_deref(), json)? {
                 std::process::exit(0);
