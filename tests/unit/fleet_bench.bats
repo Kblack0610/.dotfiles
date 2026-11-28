@@ -1463,11 +1463,11 @@ asks_order() { bash -c '. "$1"; ask_rows | jq -r "map(.id) | join(\" \")"' _ "$S
   assert_failure 2
 }
 
-# ask_row <id> <status> <created epoch> <answered epoch|""> <answered_by> <closed epoch|""> [TZ] [closed_reason] [answer_note] [judge_level] [kind]: one agent-ask list --all line
+# ask_row <id> <status> <created epoch> <answered epoch|""> <answered_by> <closed epoch|""> [TZ] [closed_reason] [answer_note] [judge_level] [kind] [audit_of]: one agent-ask list --all line
 ask_row() {
   local st; st() { [ -n "$1" ] && TZ="${2:-UTC}" date -d "@$1" +%Y-%m-%dT%H:%M:%S%z; }
-  printf '%s\tgame\tdefault\t%s\t%s\tq?\ta|b\t\t%s\t\ta\t%s\ts\t%s\t%s\t\t\t%s\t\t\t\t\t\t%s\t\t\t\t\t\t\t\t\t\t%s\n' \
-    "$1" "$2" "${11:-choice}" "$(st "$4" "$7")" "$(st "$3" "$7")" "$(st "$6" "$7")" "${8:-}" "$5" "${9:-}" "${10:-}" >> "$ASKSALL"
+  printf '%s\tgame\tdefault\t%s\t%s\tq?\ta|b\t\t%s\t\ta\t%s\ts\t%s\t%s\t\t\t%s\t\t\t\t\t\t%s\t\t\t\t\t\t\t\t\t%s\t%s\n' \
+    "$1" "$2" "${11:-choice}" "$(st "$4" "$7")" "$(st "$3" "$7")" "$(st "$6" "$7")" "${8:-}" "$5" "${9:-}" "${12:-}" "${10:-}" >> "$ASKSALL"
 }
 
 @test "kpi: ask load counts the human's touches, in-session replies too, on asks the daily batch does not carry; ask wait counts pending age; improve names the one past its threshold" {
@@ -1481,6 +1481,7 @@ ask_row() {
   ask_row h5 answered $((T0 - 4*d)) $((T0 - 4*d + 1200)) human ""       # answered outside the asking chat
   ask_row r1 cancelled $((T0 - 2*d)) "" "" $((T0 - d)) UTC "replied in session"   # a reply in the asking chat closed it, dated by closed_at
   ask_row b2 answered $((T0 - 3*d)) $((T0 - 3*d + 600)) human "" UTC "" "" fleet approval   # an approval is never batched
+  ask_row a1 answered $((T0 - 10*d)) $((T0 - 2*d)) human "" UTC "" "" self choice j1   # nor is an audit; posted before the 7d window, so its wait is 28d only
   ask_row j1 answered $((T0 - 3*d)) $((T0 - 3*d + 60)) judge ""
   ask_row c1 cancelled $((T0 - 5*d)) "" "" "$T0"                       # waited 7200 min, then cancelled
   ask_row o1 answered $((T0 - 20*d)) $((T0 - 20*d + 1800)) human ""     # 28d window only
@@ -1491,11 +1492,11 @@ ask_row() {
   run "$SUBJECT" kpi --json
   assert_success
   run jq -c '[.human_answered_per_day["7d"], .human_answered_per_day["28d"], .ask_wait_p90_min["7d"], .ask_wait_p90_min["28d"], .human_answered_per_day.status]' <<<"$output"
-  assert_output '[1,0.3,8640,60,"past"]'   # 28d: ten waits, so the pending one is past its nearest rank
+  assert_output '[1.1,0.3,8640,8640,"past"]'
   # negative control: without the pending ask the p90 is the human hour; the cancelled asks and the judge's answer are not in either number
   grep -v '^p1' "$ASKSALL" > "$ASKSALL.new" && mv "$ASKSALL.new" "$ASKSALL"
   run "$SUBJECT" kpi
-  assert_line '| human_answered_per_day | 1 | 0.3 | max 0.2 | past |'
+  assert_line '| human_answered_per_day | 1.1 | 0.3 | max 0.2 | past |'
   assert_line '| ask_wait_p90_min | 60 | 60 | max 10000 | ok |'
   run "$SUBJECT" improve --json
   assert_success

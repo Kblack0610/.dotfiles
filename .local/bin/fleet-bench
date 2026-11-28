@@ -3585,7 +3585,7 @@ owners_kpi() { timeout 60 $BENCH_OWNERS_CMD count --json 2>/dev/null | jq -ce 'o
 # time: answered by the human, or answered in the asking session (answer_note "in session: ", closed_reason
 # "replied in session", or no answered_by, an in-session capture from before the field existed), dated by
 # answered_at, else closed_at. One at a time is what agent-ask cmd_batch leaves out of the daily Decisions
-# batch: judge_level critical or unscored, or an approval (plan lively-penguin P5, ar-4078; it replaced the
+# batch: judge_level critical or unscored, an approval, or an audit (audit_of; plan lively-penguin P5, ar-4078; it replaced the
 # count of answers outside the asking chat, Go78lB, 2026-11-10).
 # ask_wait_p90_min: p90 minutes from post to answer or close over the asks posted in the window, a
 # pending one counted to now, so an ask nobody answers raises it (this replaced asks_stale).
@@ -3598,7 +3598,7 @@ ask_kpi() {
     [$a | split("\n")[] | select(length > 0) | split("\t")
      | {status: .[3], by: (.[17] // ""), c: (.[11] // ""), a: (.[8] // ""), x: (.[13] // ""),
         chat: (((.[23] // "") | startswith("in session")) or ((.[14] // "") | test("replied in session"))),
-        batched: (.[4] != "approval" and ((.[33] // "") | IN("self", "repo", "fleet")))}
+        batched: (.[4] != "approval" and (.[32] // "") == "" and ((.[33] // "") | IN("self", "repo", "fleet")))}
      | select(.c != "")
      | .c |= ask_epoch | .a |= (if . == "" then null else ask_epoch end)
      | .x |= (if . == "" then null else ask_epoch end)] as $r
