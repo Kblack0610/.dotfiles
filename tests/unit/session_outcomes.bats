@@ -576,7 +576,7 @@ activity_of() {
 {"type":"assistant","message":{"id":"m3","usage":{"output_tokens":7},"content":[{"type":"tool_use","id":"d","name":"Bash","input":{"command":"gh pr checks 5 --watch"}},{"type":"tool_use","id":"e","name":"Write","input":{"file_path":"/home/u/.agent/lessons/p.md"}}]}}
 EOF
   run activity_of "$TR/act.jsonl"
-  assert_output '{"tool_calls":5,"test_runs":1,"ci_polls":1,"api_messages":3,"tokens":123,"tokens_after_last_edit":7,"compactions":{"auto":0,"manual":0}}'
+  assert_output '{"tool_calls":5,"edit_calls":2,"test_runs":1,"ci_polls":1,"api_messages":3,"tokens":123,"tokens_after_last_edit":7,"compactions":{"auto":0,"manual":0}}'
 }
 
 @test "plan_gate: counts every ExitPlanMode and only the gate's own denials" {
@@ -683,6 +683,21 @@ EOF
 EOF
   run activity_of "$TR/act.jsonl"
   assert_output --partial '"tokens_after_last_edit":7'
+}
+
+@test "activity: edit_calls counts edit tool calls only, not lines or Bash that name an edit tool" {
+  cat > "$TR/act.jsonl" <<'EOF'
+{"type":"system","subtype":"api-request-shape","tools":[{"name":"Edit"},{"name":"Write"},{"name":"MultiEdit"},{"name":"NotebookEdit"}]}
+{"type":"user","message":{"content":"use the Edit and Write tools"}}
+{"type":"assistant","message":{"id":"m1","usage":{"output_tokens":9},"content":[{"type":"text","text":"Edit Write"},{"type":"tool_use","id":"a","name":"Bash","input":{"command":"echo Edit Write"}}]}}
+EOF
+  run activity_of "$TR/act.jsonl"
+  assert_output --partial '"edit_calls":0'
+  cat >> "$TR/act.jsonl" <<'EOF'
+{"type":"assistant","message":{"id":"m2","usage":{"output_tokens":1},"content":[{"type":"tool_use","id":"b","name":"Edit","input":{"file_path":"/r/a.sh"}},{"type":"tool_use","id":"c","name":"MultiEdit","input":{"file_path":"/r/b.sh"}}]}}
+EOF
+  run activity_of "$TR/act.jsonl"
+  assert_output --partial '"edit_calls":2'
 }
 
 @test "uses: agents by subagent_type, Skill calls and typed /commands; quoted or tool-result tags do not count" {
