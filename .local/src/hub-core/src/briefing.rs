@@ -63,6 +63,8 @@ pub const LANDED_SHOWN: usize = 8;
 pub const OVERNIGHT_EACH: usize = 3;
 /// Builds and releases names at most this many changes, then one line for the rest.
 pub const BUILDS_SHOWN: usize = 12;
+/// Projects names at most this many projects, then one line for the rest.
+pub const PROJECTS_SHOWN: usize = 8;
 /// The day-log area (`.config/areas/groups`, `@<repo> <area>`) that is the fleet's own tooling.
 const FLEET_AREA: &str = "Fleet tooling";
 /// The queue projects that are the fleet's own, so a failed item there is the agent briefing's.
@@ -108,6 +110,9 @@ pub struct Briefing {
     pub needs: Vec<String>,
     /// Overview sections, one markdown bullet body per line.
     pub landed: Vec<String>,
+    /// One line per project that merged, went red or shipped (`by_project`, not `projects`: the
+    /// page guard reads a field by its name, and other pages carry a `projects` of their own).
+    pub by_project: Vec<String>,
     pub builds: Vec<String>,
     pub overnight: Vec<String>,
     pub money: Vec<String>,
@@ -141,6 +146,9 @@ pub struct Inputs {
     /// Queue items finished since the start of yesterday: the priority and type each landed PR
     /// is ranked by.
     pub landed_items: Option<Vec<Item>>,
+    /// Each project's drill-down, ready to append to its Projects line: its lab summary when it
+    /// has one, else its anchor (`drill_links`).
+    pub drill: BTreeMap<String, String>,
     /// `release-state show --json`: what is deployed where, and what deployed.
     pub releases: Option<Vec<Release>>,
     /// claude-acct's source rows (the Costs tab's Burn rows); None when unread or stale.
@@ -794,6 +802,7 @@ fn is_fix(title: &str) -> bool {
 struct Change<'a> {
     title: &'a str,
     area: &'a str,
+    project: &'a str,
     rank: u8,
     fix: bool,
 }
@@ -824,6 +833,7 @@ fn changes<'a>(i: &'a Inputs, rec: &'a Value) -> Vec<Change<'a>> {
             Change {
                 title: plain_title(title),
                 area: r["area"].as_str().unwrap_or_default(),
+                project: r["project"].as_str().unwrap_or_default(),
                 rank,
                 fix,
             }
@@ -890,6 +900,136 @@ fn landed(i: &Inputs) -> (Vec<String>, Option<String>) {
     (lines, Some(summary))
 }
 
+/// One product nightly workflow of a day-log record's CI block that ran.
+struct Nightly<'a> {
+    repo: &'a str,
+    wf: &'a str,
+    green: u64,
+    runs: u64,
+}
+
+/// The record's nightly workflows that ran, the fleet's own repo (`.dotfiles*`) left out: Builds
+/// and Projects both read them from here.
+fn nightlies(rec: &Value) -> Vec<Nightly<'_>> {
+    let mut out = vec![];
+    for (repo, v) in rec["ci"]["repos"].as_object().into_iter().flatten() {
+        let name = repo.rsplit('/').next().unwrap_or(repo);
+        if name.starts_with(".dotfiles") {
+            continue;
+        }
+        for (wf, n) in v["cost"]["nightly"].as_object().into_iter().flatten() {
+            let runs = n["runs"].as_u64().unwrap_or(0);
+            if runs > 0 {
+                out.push(Nightly {
+                    repo: name,
+                    wf,
+                    green: n["green"].as_u64().unwrap_or(0),
+                    runs,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// What one project did in the window: the numbers its Projects line says.
+#[derive(Default)]
+struct Moved<'a> {
+    merged: usize,
+    fixes: usize,
+    red: Vec<&'a str>,
+    deploys: Vec<String>,
+}
+
+/// Projects: one line per project that merged product changes yesterday, has a red nightly, or
+/// deployed in the window, red first, then by merges; the fleet's own tooling is the agents
+/// briefing's. Each line ends with the project's drill-down when it has one. Built from the
+/// data Landed, Builds and Overnight already read; nothing is stored.
+fn projects(i: &Inputs) -> Vec<String> {
+    let Some((rec, _)) = yesterday_and_avg(i, merged) else {
+        return vec![Reading::NotRead("no day-log record for yesterday.".into()).sentence("")];
+    };
+    let mut by: BTreeMap<&str, Moved> = BTreeMap::new();
+    for c in changes(i, rec).iter().filter(|c| c.area != FLEET_AREA) {
+        let m = by.entry(c.project).or_default();
+        m.merged += 1;
+        m.fixes += usize::from(c.fix);
+    }
+    // The CI block keys a repo, the merge record names its project: join them through the merges.
+    fn project_of<'a>(rec: &'a Value, repo: &'a str) -> &'a str {
+        rec["merged"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|r| {
+                r["repo"]
+                    .as_str()
+                    .map(|n| n.rsplit('/').next().unwrap_or(n))
+                    == Some(repo)
+            })
+            .and_then(|r| r["project"].as_str())
+            .unwrap_or(repo)
+    }
+    for n in nightlies(rec).iter().filter(|n| n.green < n.runs) {
+        by.entry(project_of(rec, n.repo))
+            .or_default()
+            .red
+            .push(n.wf);
+    }
+    for r in i.releases.iter().flatten() {
+        if let Some(d) = r.deploys.last.as_ref().filter(|d| d.at >= i.since) {
+            let what = match d.state.as_str() {
+                "ok" => "deployed",
+                "fail" => "failed to deploy",
+                other => other,
+            };
+            by.entry(r.project.as_str())
+                .or_default()
+                .deploys
+                .push(format!("{} {} {what}", d.version, r.channel));
+        }
+    }
+    let mut rows: Vec<(&str, Moved)> = by.into_iter().collect();
+    rows.sort_by_key(|(name, m)| (m.red.is_empty(), std::cmp::Reverse(m.merged), *name));
+    let mut lines: Vec<String> = rows
+        .iter()
+        .take(PROJECTS_SHOWN)
+        .map(|(name, m)| {
+            let mut parts = vec![];
+            if m.merged > 0 {
+                parts.push(match m.fixes {
+                    0 => format!("{} merged", m.merged),
+                    f => format!("{} merged ({})", m.merged, plural(f, "fix", "fixes")),
+                });
+            }
+            if !m.red.is_empty() {
+                let wfs: Vec<String> = m.red.iter().map(|w| w.to_string()).collect();
+                parts.push(format!("nightly {} red", names(&wfs, 3)));
+            }
+            parts.extend(m.deploys.iter().cloned());
+            let link = i
+                .drill
+                .get(*name)
+                .map_or(String::new(), |l| format!(" {l}"));
+            let room = ITEM_MAX.saturating_sub(link.chars().count());
+            format!(
+                "{}{link}",
+                cap(&format!("{name}: {}.", parts.join(", ")), room)
+            )
+        })
+        .collect();
+    if rows.len() > PROJECTS_SHOWN {
+        lines.push(format!(
+            "and {} more projects: see the shipped list.",
+            rows.len() - PROJECTS_SHOWN
+        ));
+    }
+    if lines.is_empty() {
+        lines.push("No project merged, went red or shipped.".into());
+    }
+    lines
+}
+
 /// Builds and releases: channels whose newest deployment is in the window, channels whose live
 /// version is not what is pinned, and yesterday's product nightlies by name.
 fn builds(i: &Inputs) -> Vec<String> {
@@ -933,26 +1073,14 @@ fn builds(i: &Inputs) -> Vec<String> {
     let mut green = vec![];
     let mut reds = vec![];
     if let Some((rec, _)) = yesterday_and_avg(i, merged) {
-        if let Some(repos) = rec["ci"]["repos"].as_object() {
-            for (repo, v) in repos {
-                let name = repo.rsplit('/').next().unwrap_or(repo);
-                if name.starts_with(".dotfiles") {
-                    continue;
-                }
-                for (wf, n) in v["cost"]["nightly"].as_object().into_iter().flatten() {
-                    let (g, runs) = (
-                        n["green"].as_u64().unwrap_or(0),
-                        n["runs"].as_u64().unwrap_or(0),
-                    );
-                    if runs == 0 {
-                        continue;
-                    }
-                    if g < runs {
-                        reds.push(format!("{name} nightly {wf} is red ({g} of {runs} green)."));
-                    } else {
-                        green.push(format!("{name} {wf}"));
-                    }
-                }
+        for n in nightlies(rec) {
+            if n.green < n.runs {
+                reds.push(format!(
+                    "{} nightly {} is red ({} of {} green).",
+                    n.repo, n.wf, n.green, n.runs
+                ));
+            } else {
+                green.push(format!("{} {}", n.repo, n.wf));
             }
         }
     }
@@ -1290,6 +1418,7 @@ pub fn build(i: &Inputs) -> Briefing {
         },
         needs,
         landed,
+        by_project: projects(i),
         builds: builds(i),
         overnight: overnight(i),
         money: money_lines(i),
@@ -1325,13 +1454,14 @@ impl Briefing {
     }
 
     /// The file `agentctl-briefing` writes as `briefing.md`: headline, Needs you, Landed
-    /// yesterday, Builds and releases, Overnight, Money, then one line to the agent briefing.
+    /// yesterday, Projects, Builds and releases, Overnight, Money, then one line to the agent briefing.
     /// notes-cli's Morning block reads the `As of ` line and the `- ` items under Needs you.
     pub fn markdown(&self) -> String {
         let mut s = self.top("Briefing", &self.overview, "the agents briefing");
         s += &self.needs_md();
         for (title, lines) in [
             ("Landed yesterday", &self.landed),
+            ("Projects", &self.by_project),
             ("Builds and releases", &self.builds),
             ("Overnight", &self.overnight),
             ("Money", &self.money),
@@ -1533,6 +1663,35 @@ fn unread(sources: &[crate::money::Source]) -> impl Iterator<Item = String> + '_
         .filter_map(|s| s.error.as_ref().map(|e| format!("{}: {e}", s.name)))
 }
 
+/// Each project's drill-down as the Projects line ends it: a wiki link to its lab summary
+/// (`lab-status`; the personal root, then the BNB one), else a pointer to its anchor
+/// (`project-index`, outside the vault, so a plain path). Read from the directories' listings.
+fn drill_links(home: &Path) -> BTreeMap<String, String> {
+    let list = |dir: PathBuf| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect()
+    };
+    let notes = home.join(".notes");
+    let mut out = BTreeMap::new();
+    for name in list(home.join(".agent/anchors")) {
+        if let Some(p) = name.strip_suffix(".md") {
+            out.insert(p.to_string(), format!("(anchor: ~/.agent/anchors/{name})"));
+        }
+    }
+    for root in ["lab/bnb/projects/current", "lab/projects/current"] {
+        for p in list(notes.join(root)) {
+            if notes.join(root).join(&p).join("summary.md").is_file() {
+                out.insert(p.clone(), format!("[[{root}/{p}/summary]]"));
+            }
+        }
+    }
+    out
+}
+
 /// Every input, read now for the window from `since`.
 pub fn gather(since: i64, now: i64) -> Inputs {
     // Only the briefing reads the stores (Home's "Since last night" renders no Money section),
@@ -1682,6 +1841,7 @@ fn gather_from(since: i64, now: i64, home: impl FnOnce() -> (Value, Queue, Home)
         done,
         landed_items,
         releases,
+        drill: drill_links(&home_dir),
         sources,
         mail_stats: std::fs::read_to_string(comms.join("stats-summary.txt"))
             .ok()
@@ -2429,6 +2589,109 @@ mod tests {
         );
     }
 
+    fn project_pr(project: &str, repo: &str, title: &str, area: &str) -> Value {
+        json!({"title": title, "area": area, "project": project, "repo": repo, "by": null})
+    }
+
+    #[test]
+    fn projects_has_one_line_per_project_red_first_with_its_drill_down_link() {
+        let mut i = with_merged(vec![
+            project_pr("orbit", "orbit", "feat(a): one (o-1)", "Apps"),
+            project_pr(
+                "unity-core-playground",
+                "unity-core-playground",
+                "feat(b): two (u-1)",
+                "Games",
+            ),
+            project_pr(
+                "unity-core-playground",
+                "unity-core-playground",
+                "fix(b): three (u-2)",
+                "Games",
+            ),
+            project_pr(
+                "dotfiles",
+                ".dotfiles",
+                "feat(x): fleet (ar-1)",
+                "Fleet tooling",
+            ),
+        ]);
+        let at = i.days.len() - 1;
+        i.days[at].1["ci"] = json!({"repos": {
+            "Acme/unity-core-playground": {"cost": {"nightly": {"Tests": {"green": 0, "runs": 1}, "Multi": {"green": 0, "runs": 1}}}},
+        }});
+        i.releases = Some(vec![release(
+            "shape-city",
+            "beta",
+            Some(("v0.5.0", "ok", NOW - 3600)),
+        )]);
+        i.drill = [
+            (
+                "unity-core-playground",
+                "[[lab/projects/current/unity-core-playground/summary]]",
+            ),
+            ("orbit", "(anchor: ~/.agent/anchors/orbit.md)"),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let p = build(&i).by_project;
+        assert_eq!(
+            p,
+            [
+                "unity-core-playground: 2 merged (1 fix), nightly Multi, Tests red. [[lab/projects/current/unity-core-playground/summary]]",
+                "orbit: 1 merged. (anchor: ~/.agent/anchors/orbit.md)",
+                "shape-city: v0.5.0 beta deployed.",
+            ],
+            "{p:#?}"
+        );
+        // the fleet's own repo has no line, and a project with no page ends without a link
+        assert!(!p.iter().any(|l| l.starts_with("dotfiles")), "{p:?}");
+    }
+
+    #[test]
+    fn projects_names_eight_then_counts_the_rest() {
+        let prs = (0..11)
+            .map(|k| project_pr(&format!("proj-{k:02}"), "r", "feat(x): y (x-1)", "Games"))
+            .collect();
+        let p = build(&with_merged(prs)).by_project;
+        assert_eq!(p.len(), PROJECTS_SHOWN + 1, "{p:?}");
+        assert_eq!(
+            p[PROJECTS_SHOWN],
+            "and 3 more projects: see the shipped list."
+        );
+    }
+
+    #[test]
+    fn a_project_line_is_cut_before_its_link_never_through_it() {
+        let mut i = with_merged(vec![project_pr("p", "p", "feat(x): y (x-1)", "Games")]);
+        let at = i.days.len() - 1;
+        let wfs: serde_json::Map<String, Value> = (0..30)
+            .map(|k| (format!("Workflow{k}"), json!({"green": 0, "runs": 1})))
+            .collect();
+        i.days[at].1["ci"] = json!({"repos": {"Acme/p": {"cost": {"nightly": wfs}}}});
+        let link = "[[lab/projects/current/p/summary]]";
+        i.drill.insert("p".into(), link.into());
+        let line = &build(&i).by_project[0];
+        assert!(
+            line.ends_with(link) && line.chars().count() <= ITEM_MAX,
+            "{line}"
+        );
+    }
+
+    #[test]
+    fn projects_say_when_nothing_moved_and_never_read_a_missing_record_as_quiet() {
+        let b = build(&with_merged(vec![]));
+        assert_eq!(b.by_project, ["No project merged, went red or shipped."]);
+        // negative control: no day-log record is "not read", not an empty day
+        let mut i = green();
+        i.days.clear();
+        assert_eq!(
+            build(&i).by_project,
+            ["Not read: no day-log record for yesterday."]
+        );
+    }
+
     #[test]
     fn overnight_names_critical_mail_failed_product_work_and_a_red_product_watch() {
         let mut i = green();
@@ -2473,6 +2736,7 @@ mod tests {
             "As of ",
             "## Needs you",
             "## Landed yesterday",
+            "## Projects",
             "## Builds and releases",
             "## Overnight",
             "## Money",
