@@ -230,6 +230,10 @@ allowed() { assert_success; assert_output ""; }
   allowed
   run run_guard 'gh run cancel 9 -R o/other # own: #1' /x/unity-core-playground
   allowed
+  run run_guard 'gh workflow run cancel.yml --ref x' /x/unity-core-playground
+  allowed
+  run run_guard 'gh run view 1 --json status' /x/unity-core-playground
+  allowed
 }
 
 @test "unless lets a named exception through" {

@@ -202,11 +202,15 @@ test("every literal hand-written table header names a lead and at most 3 glance 
 test("an open session's action buttons are one fold, and a confirm or a result stays outside it", () => {
   const acts = { hidden: true, innerHTML: "" }, real = doc.getElementById;
   doc.getElementById = (id) => (id === "acts" ? acts : real(id));
+  run(`st.opts = { actions: [{ name: "interrupt", label: "Interrupt", describe: "send Escape", danger: false }, { name: "stop", label: "Stop session", describe: "end it", danger: true }], accounts: [] }`);
   run(`st.sel = { target: "t1", account: "a", actions: ["interrupt"] }; st.act = { confirm: null, busy: false, msg: "done", err: false }; renderActs()`);
   assert.match(acts.innerHTML, /^<details class="pfold" data-pf="acts" open><summary>Actions<\/summary><div class="actrow"><button class="btn" data-act="interrupt"[^>]*>Interrupt<\/button><\/div><\/details><div class="msg">done<\/div>$/);
-  run(`st.opts = { describe: {}, accounts: [] }; st.act.confirm = { action: "interrupt", target: "t1" }; renderActs()`);
+  run(`st.act.confirm = { action: "interrupt", target: "t1" }; renderActs()`);
   assert.doesNotMatch(acts.innerHTML, /pfold/, "a confirm is never folded away");
   assert.match(acts.innerHTML, /data-go/);
+  assert.match(acts.innerHTML, /Interrupt\? This will send Escape\./, "the confirm's words come from the server's options");
+  run(`st.act.confirm = { action: "stop", target: "t1" }; renderActs()`);
+  assert.match(acts.innerHTML, /class="btn primary danger" data-go/, "a danger is the server's flag, not a list in the page");
   run(`st.sel = null; st.act = { confirm: null, busy: false, msg: "", err: false }`);
   doc.getElementById = real;
 });
