@@ -18,11 +18,34 @@ use crate::links::{Kind, Link};
 use crate::prom::Series;
 use crate::reading::NO_DATA;
 use crate::table::{Row, Val};
+use crate::vocab::{pass_level, Level};
 
 /// The job kind a machine's local Unity gates count under.
 pub const LOCAL_POOL: &str = "gates";
 /// Its name before 2026-11-18, still accepted by the pool page.
 pub const LOCAL_POOL_OLD: &str = "unity-local";
+
+/// Where a reading turns amber (red for the disk's last tenth): the one judgement both surfaces
+/// draw, so a cell is the same hue in `hub` and in agent-web. A disk under `DISK_LOW` free is the
+/// NodeDiskLow alert's line and under `DISK_CRIT` NodeDiskCritical's (home-config).
+pub const CPU_HOT: f64 = 0.9;
+pub const MEM_HIGH: f64 = 0.9;
+pub const DISK_LOW: f64 = 0.2;
+pub const DISK_CRIT: f64 = 0.1;
+/// Load past this many times its cores.
+pub const LOAD_PER_CORE: f64 = 1.5;
+
+/// The hue of each judged cell of a machine row (`Machine::levels`). `Ok` is plain, `Neutral` a
+/// reading nobody takes (muted), `Warn` amber and `Bad` red.
+#[derive(Serialize, Default, Clone, Copy, Debug, PartialEq)]
+pub struct Levels {
+    pub cpu: Level,
+    pub mem: Level,
+    pub load: Level,
+    pub temp: Level,
+    pub disk: Level,
+    pub booked: Level,
+}
 
 /// One machine: anything Prometheus has readings for, or a CI runner or gate names.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
@@ -73,9 +96,47 @@ pub struct Machine {
     pub split: Vec<String>,
     /// When it last booted, unix seconds.
     pub boot: Option<f64>,
+    /// The hue of each cell, judged once (`levels`, set by `build`).
+    pub level: Levels,
 }
 
 impl Machine {
+    /// The hue of each cell. Disk is red under `DISK_CRIT` free, amber under `DISK_LOW`; a cloud
+    /// machine with no disk reading is amber, since the AWS hosts are never scraped and nothing
+    /// alerts on their disks, and any other with none is muted.
+    pub fn levels(&self) -> Levels {
+        let over = |v: Option<f64>, line: f64| match v.is_some_and(|v| v > line) {
+            true => Level::Warn,
+            false => Level::Ok,
+        };
+        Levels {
+            cpu: over(self.cpu, CPU_HOT),
+            mem: match self.mem.is_some_and(|m| m >= MEM_HIGH) {
+                true => Level::Warn,
+                false => Level::Ok,
+            },
+            load: match (self.load, self.cores) {
+                (Some(l), Some(c)) if l > c * LOAD_PER_CORE => Level::Warn,
+                _ => Level::Ok,
+            },
+            temp: match self.temp.is_some_and(|t| t >= crate::host_now::HOT_C) {
+                true => Level::Warn,
+                false => Level::Ok,
+            },
+            disk: match self.disk {
+                None if self.place == "cloud" => Level::Warn,
+                None => Level::Neutral,
+                Some(f) if f < DISK_CRIT => Level::Bad,
+                Some(f) if f < DISK_LOW => Level::Warn,
+                Some(_) => Level::Ok,
+            },
+            booked: match self.off > 0 || self.booked.is_some_and(|b| b.share() >= 1.0) {
+                true => Level::Warn,
+                false => Level::Ok,
+            },
+        }
+    }
+
     /// It is a CI node, has a fixed slot, or runs a job.
     pub fn carries_ci(&self) -> bool {
         self.booked.is_some() || self.slots > 0 || !self.running.is_empty()
@@ -131,6 +192,8 @@ pub struct Pool {
     /// workflow (`cc:pool_run_seconds_24h`). None for the local gates and before it reports.
     pub usual: Option<f64>,
     pub pass: Option<f64>,
+    /// Its pass rate's hue (`vocab::pass_level`), set by `pools`.
+    pub pass_level: Level,
     /// The machines with a runner that takes its cap, the most online slots first.
     pub machines: Vec<Seat>,
 }
@@ -393,6 +456,7 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
                 }
                 None => NO_DATA.into(),
             };
+            mm.level = mm.levels();
             mm
         })
         .collect();
@@ -441,6 +505,7 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             done: get("cc:pool_done_24h", &p),
             usual: get("cc:pool_run_seconds_24h", &p),
             pass: get("cc:pool_pass_ratio_24h", &p),
+            pass_level: Level::Neutral,
             machines: seats(
                 hosts
                     .get(p.as_str())
@@ -488,6 +553,9 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             machines: seats(local.iter().map(|h| (h, 1))),
             ..Default::default()
         });
+    }
+    for p in &mut out {
+        p.pass_level = pass_level(p.pass);
     }
     // `other` is the exporter's bucket for a job no kind's label names: a kind only while
     // something waits there, since its few finished jobs say nothing to act on.
@@ -801,6 +869,58 @@ pub(crate) mod tests {
         );
         assert_eq!(m(None, None, Some(482.0 * g)).space(), "482G free");
         assert_eq!(m(None, None, None).space(), NO_DATA);
+    }
+
+    #[test]
+    fn a_machine_row_judges_each_cell_once() {
+        let calm = Machine {
+            cpu: Some(0.5),
+            mem: Some(0.5),
+            load: Some(3.0),
+            cores: Some(4.0),
+            temp: Some(60.0),
+            disk: Some(0.5),
+            ..Machine::default()
+        };
+        assert_eq!(calm.levels(), Levels::default());
+        let hot = Machine {
+            cpu: Some(0.95),
+            mem: Some(0.9),
+            load: Some(6.1),
+            temp: Some(85.0),
+            disk: Some(0.15),
+            off: 1,
+            ..calm.clone()
+        };
+        let l = hot.levels();
+        assert_eq!(
+            [l.cpu, l.mem, l.load, l.temp, l.disk, l.booked],
+            [Level::Warn; 6]
+        );
+        let full = Machine {
+            disk: Some(0.09),
+            ..calm.clone()
+        };
+        assert_eq!(full.levels().disk, Level::Bad);
+        // No disk reading: amber for a cloud host nothing scrapes, muted for any other.
+        let none = Machine {
+            disk: None,
+            ..calm.clone()
+        };
+        assert_eq!(none.levels().disk, Level::Neutral);
+        let cloud = Machine {
+            place: "cloud".into(),
+            ..none
+        };
+        assert_eq!(cloud.levels().disk, Level::Warn);
+    }
+
+    #[test]
+    fn a_built_row_carries_its_levels_and_a_pool_its_pass_hue() {
+        let mut i = fleet();
+        i.derive();
+        assert!(i.machines.iter().all(|m| m.level == m.levels()));
+        assert!(i.pools.iter().all(|p| p.pass_level == pass_level(p.pass)));
     }
 
     #[test]
