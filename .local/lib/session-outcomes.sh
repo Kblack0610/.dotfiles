@@ -196,7 +196,7 @@ so_transcript_metrics() {
       { pr_ids: {}, lesson_ids: {}, done_ids: {}, prs: [], linked: [], looked: {}, entrypoint: null,
         interrupts: 0, lessons_written: 0, proof: 0, unverified: 0,
         api_error: 0, denied: 0, tool_errors: 0,
-        tool_calls: 0, test_runs: 0, ci_polls: 0, wrap: {}, messages: {}, since_edit: {},
+        tool_calls: 0, edit_calls: 0, test_runs: 0, ci_polls: 0, wrap: {}, messages: {}, since_edit: {},
         plan_exits: 0, plan_denied: 0, guards: {}, lesson_hits: {},
         compactions: { auto: 0, manual: 0 },
         uses: { subagents: {}, skills: {}, slash: {} } };
@@ -217,6 +217,7 @@ so_transcript_metrics() {
                elif $u.name == "Skill" and ($u.input.skill | type) == "string" then
                  .uses.skills[$u.input.skill] += 1
                else . end)
+            | (if (edit_tools | index($u.name)) != null then .edit_calls += 1 else . end)
             | (if (edit_tools | index($u.name)) != null
                   and (($u.input.file_path // $u.input.notebook_path // "") | test("/\\.agent/|/\\.claude/(plans|projects)/") | not) then
                  .since_edit = {}
@@ -293,7 +294,7 @@ so_transcript_metrics() {
         hard_errors: { api_error, denied, tool_errors },
         plan_gate: { exits: .plan_exits, denied: .plan_denied },
         guards, lesson_hits,
-        activity: { tool_calls, test_runs, ci_polls, api_messages: (.messages | length),
+        activity: { tool_calls, edit_calls, test_runs, ci_polls, api_messages: (.messages | length),
                     tokens: (.messages | add // 0), tokens_after_last_edit: (.since_edit | add // 0),
                     compactions },
         uses, wrap }
