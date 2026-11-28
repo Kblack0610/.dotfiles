@@ -111,8 +111,8 @@
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
 # Holds: `after <slug>...` (until every slug named closed ok), and the tags at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
-# pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until the scheduled runs of that repo on its at: date, else today,
-# have finished; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until that agent-ask is answered, by the human, the judge or an agent,
+# pr:<owner>/<repo>#<N> (until that PR merges; closed unmerged, it says it never releases) and nightly:<repo> (until that repo's night set, the night and wide workflows of its
+# config/ci/nightly.json, has finished its full runs on its at: date, else its newest ones; never a cron; see nightly_pending) and ask:<id>[=<option>[+<option>]] (until that agent-ask is answered, by the human, the judge or an agent,
 # with one of those options when named, or in free text; see ask_pending) and hold:<resource> (while agent-hold holds it; see
 # hold_pending) and rbw:<folder>/<name> (until rbw lists that entry; see rbw_pending). A start on a later day is the dated form, never a held session.
 # A queued item whose body's last Blocked heading has no Unblocked one after it holds too (ITEM_JQ).
@@ -151,7 +151,7 @@ PROJECT_MAP_FILE="$AQ_MAP"
 # A `pr:<owner>/<repo>#<N>` item waits for that PR to merge; its state is cached here.
 AQ_PR_CACHE="${AGENT_QUEUE_PR_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/agent-queue/pr}"
 AQ_PR_TTL="${AGENT_QUEUE_PR_TTL:-120}"
-# A `nightly:<repo>` item waits on the scheduled-run facts schedules-sync writes, through its `pending` verb.
+# A `nightly:<repo>` item waits on the night set's runs schedules-sync records, through its `pending` verb.
 AQ_SCHEDULES="$AQ_BIN/schedules-sync"
 # An `ask:<id>[=<option>]` item waits on that agent-ask's answer, read from its file here.
 # shellcheck source=../lib/ask-store.sh
@@ -914,7 +914,7 @@ hold_for() {
   [ -n "$stamp" ] || printf -v stamp '%(%Y-%m-%dT%H:%M)T' -1
   [[ "$stamp" == *T* ]] || { printf -v now '%(%Y-%m-%d)T' -1; stamp="${now}T$stamp"; }
   now="${stamp#*T}"
-  # A nightly: hold judges the night of the item's at: date (nightly_pending), else today's.
+  # A nightly: hold judges the night of the item's at: date (nightly_pending), else the newest night.
   nday=""
   for tag in $tags; do [[ "$tag" =~ ^at:([0-9]{4}-[0-9]{2}-[0-9]{2})T ]] && nday="${BASH_REMATCH[1]}"; done
   for tag in $tags; do
@@ -1382,10 +1382,11 @@ ask_options() {
   sed -n '/^options: */{s///p;q;}' "$f" | tr '|' '\n'
 }
 
-# nightly_pending <repo> <local stamp> [<day>] -> what that day's scheduled runs of that repo still wait
-# for (day: the item's at: date, else the stamp's), or nothing when every one has finished or passed its
-# slot plus timeout (a missing run is the triage's red). A missing or stale state file, or schedules-sync
-# failing, holds. The day is the at: date so a finished night stays released after midnight.
+# nightly_pending <repo> <local stamp> [<day>] -> what that repo's night set (config/ci/nightly.json night
+# and wide, never a cron) still waits for: the full runs created on <day> (the item's at: date), else each
+# member's newest; nothing when they finished (a night with no run releases once its day is over: the
+# nightly watch's red). A missing or stale state file, no night set, or schedules-sync failing, holds.
+# The day is the at: date so a finished night stays released after midnight.
 nightly_pending() {
   local out
   out="$(SCHEDULES_NOW="$(date -d "${2/T/ }" +%s)" "$AQ_SCHEDULES" pending "$1" ${3:+--day "$3"} 2>/dev/null)" && return 0
