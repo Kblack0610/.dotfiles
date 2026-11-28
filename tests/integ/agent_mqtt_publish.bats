@@ -471,6 +471,21 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
 }
 
 
+# A probe's `page:` level (alertmanager-fleet: warning-only alerts page normal) is the trip's level,
+# so the rollup reads it, not the manifest's fixed fallback, while the watch is TRIP.
+@test "a tripped watch carries its trip's level over the manifest severity; a stale level file is ignored" {
+  seed_watch paged-one TRIP
+  printf 'severity: high\n' >> "$WATCH_DIR/paged-one.yaml"
+  printf 'normal' > "$WATCH_STATE_DIR/paged-one.level"
+  seed_watch ok-one OK
+  printf 'severity: high\n' >> "$WATCH_DIR/ok-one.yaml"
+  printf 'low' > "$WATCH_STATE_DIR/ok-one.level"
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/paged_one)")" '["normal",2]'
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/ok_one)")" '["high",3]'
+}
+
 # A quarantine (watch-companion-loop quarantine) demotes a red to a warning in the rollup:
 # true only while UNTIL is ahead and the watch is still red, so a lapsed or OK one never hides.
 @test "a watch is quarantined only while its quarantine is in force and it is still red" {
