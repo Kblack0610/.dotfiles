@@ -4135,14 +4135,26 @@ mark_row() {
 # fleet-dispatch close_row when its session died first). Its sessions read the move as closing the
 # row, and a row left started reads as an orphan. A row already closed (a doc kind closes its own
 # with doc: proof) is left as it is; a close that fails warns unless the board shows the row closed.
+# A row another active item names closes with the last of them, as agent-land's row_worker and
+# fleet-dispatch's close_row leave it (ar-1793). Why: two after-merge applies shared hc-1258, the first
+# closed it under the second, and its #after/hc-1258 rows started before the apply ran (ar-6417).
 # Before pull_after, which pulls the rows waiting on this one. cmd_move let the lock go before either.
 close_row_on_item() {
-  local slug=$1 row prof lane pr flag=() out key board
+  local slug=$1 row prof lane pr flag=() out key board other
   IFS=$'\x1f' read -r row prof lane pr < <(item_json "$2" |
     jq -r '[.row // "", .profile // "", .lane // "", .pr // ""] | join("\u001f")')
   [ -n "$row" ] && [ -z "$pr" ] || return 0
   case "$lane" in '' | agent) flag=(--agent) ;; esac
   key="${row#*:}"
+  # The item is in done/ by now, so every active item naming the row is another one, a --repeat rerun under
+  # the same slug included (fleet-dispatch close_row tells that by file).
+  other="$(collect_rows $ACTIVE | jq -r --arg r "${row,,}" \
+    'first(.[] | select((.row // "" | ascii_downcase) == $r) | .slug) // empty')" ||
+    { echo "agent-queue: $slug is done, but the queue could not be read, so its board row $key on ${row%%:*} is left open: notes ${prof:+--profile $prof }ptask ${row%%:*} ${flag[*]} done $key --proof item:$slug" >&2; return 0; }
+  if [ -n "$other" ]; then
+    echo "$slug: board row $key left open, $other still works it"
+    return 0
+  fi
   if out="$(notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" done "$key" --proof "item:$slug" 2>&1)"; then
     echo "$slug: board row $key closed"
     return 0
