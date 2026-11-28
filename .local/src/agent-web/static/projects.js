@@ -315,7 +315,7 @@ function pActivity(c, pg) {
 }
 
 // The Sprint inner tab: the project's open window, the ones queued behind it (the rest of a shrunk
-// or locked sprint), then its scored past, each in its own section (sprints.js draws the tables);
+// or locked sprint), its scored past, then By area across sprints, each in its own section (sprints.js draws the tables);
 // a version opens its page in their place (`pst.sprint`).
 function pSprint(c, pg) {
   if (pst.sprint) return `<div id="p-spg"></div>`;
@@ -326,7 +326,8 @@ function pSprint(c, pg) {
   const past = pg ? pg.sprint_past : null;
   return secHead("p-sprint", "Sprint", open.length) + (open.length ? sprTable(d, open) : none("No window is open.")) +
     secHead("p-sprint-queued", "Queued", queued.length) + (queued.length ? sprTable(d, queued) : none("No window is queued.")) +
-    secHead("p-sprint-past", "Past", past ? past.length : null) + (past ? sprPast(past) : `<div class="muted">Reading the page...</div>`);
+    secHead("p-sprint-past", "Past", past ? past.length : null) + (past ? sprPast(past) : `<div class="muted">Reading the page...</div>`) +
+    secHead("p-sprint-across", "By area across sprints", sprAcrossData() ? sprAcrossData().lines.length : null) + sprAcross(sprAcrossData());
 }
 
 // Departments: one chip per department the project's type gets (the count on a chip is its

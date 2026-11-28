@@ -43,6 +43,22 @@ teardown() { ui_teardown; }
   screen_has 'enter jump to it in the pane | ctrl-r read from here | esc back'
 }
 
+@test "typing in the prompts window matches each word as a substring, not scattered letters" {
+  # "hug my agent now, she then exits" holds every letter of "human sheet" in order, so
+  # fzf's fuzzy match keeps it; matching each word as a substring drops it. The capital and
+  # the reversed order hold the hit only when words match case-insensitively in any order.
+  printf '%s\n' '{"type":"user","timestamp":"2026-11-20T09:13:00.000Z","message":{"role":"user","content":"put this on the human sheet"}}' \
+    '{"type":"user","timestamp":"2026-11-20T09:14:00.000Z","message":{"role":"user","content":"hug my agent now, she then exits"}}' >> "$T"
+  TM_WIDTH=130 TM_HEIGHT=24 tmux_start "$REPO_ROOT/.local/bin/sessions" search
+  wait_until 'screen_has "$TITLE"'
+  tmux_keys C-t
+  wait_until 'screen_has "hug my agent now"'
+  tmux_type 'Sheet human'
+  wait_until 'screen_lacks "hug my agent now"'
+  wait_until 'screen_has "put this on the human sheet"'
+  screen_lacks 'move the agent chips left'
+}
+
 @test "at a narrow width the title wraps instead of being cut" {
   TM_WIDTH=70 TM_HEIGHT=20 tmux_start "$REPO_ROOT/.local/bin/sessions" search
   wait_until 'screen_has "Waybar"'

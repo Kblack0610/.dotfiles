@@ -13,6 +13,7 @@
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--restart] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own; --restart takes a started row no live item holds (row_restart)
 #   fleet-dispatch pull-after [--queue-only] ID  promote, and start unless normal, low or --queue-only, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok, and a pass runs it --queue-only for a row closed with no item (pull_closed_after)
+#   fleet-dispatch row-tries P LANE KEY [ITEM]  the failed runs row KEY has left before its failures hold it (in_force), ITEM's own records left out
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate was answered another way is held or dropped, one on a cancelled ask closes on its done item's merged PR, follows the ask it joined, or is asked again
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
@@ -2026,6 +2027,23 @@ IN_FORCE_JQ='def in_force($tries):
       else ([$f[] | .key] | max // -1) as $lf
         | [$e[] | select(.key > $lf and .value.verdict != "failed" and .value.verdict != "cleared") | .value]
       end;'
+
+# cmd_row_tries <project> <lane> <key> [<item>] -> the failed runs one row has left before its failures hold
+# it (in_force): DISPATCH_FIX_TRIES less the `failed` records since its last `cleared`, 0 once one with
+# hold: true is among them. The records <item> left (settle_row's "queue item <item> ended") are not
+# counted, so the caller counts that item's failure itself whether reap has recorded it yet or not.
+# agent-queue settle-after reads it to tell a failed phase that runs again from one that asks (ar-6144).
+cmd_row_tries() {
+  [ $# -ge 3 ] || { say "usage: fleet-dispatch row-tries <project> <lane> <key> [<item>]"; return 2; }
+  [ -f "$VERDICTS" ] || { echo "$DISPATCH_FIX_TRIES"; return 0; }
+  jq -rRn --arg p "$1" --arg l "$2" --arg k "$3" --arg it "${4:-}" --argjson tries "$DISPATCH_FIX_TRIES" '
+    [inputs | fromjson? | objects | select(.project == $p and .lane == $l and .key == $k)
+      | select(.verdict == "failed" or .verdict == "cleared")]
+    | ([to_entries[] | select(.value.verdict == "cleared") | .key] | max // -1) as $c
+    | [to_entries[] | select(.key > $c and .value.verdict == "failed") | .value
+      | select($it == "" or ((.reason // "") | startswith("queue item \($it) ended") | not))] as $n
+    | if any($n[]; .hold == true) then 0 else ([$tries - ($n | length), 0] | max) end' "$VERDICTS"
+}
 
 # judged_keys -> "<project>\t<lane>\t<key>\t<line sig>\t<details sig>" for each verdict in force
 # (in_force): made under the current policy, or a dispatch or skip whose rule the policy still has
@@ -8614,6 +8632,12 @@ reap_once() {
       jq -r 'select((.row // "") != "" and .status != "ok") | .slug' 2>/dev/null |
       while IFS= read -r s; do settle_row "$s"; done
   done
+  # The guard for queued items a failed close left waiting on it for good (ar-6144): agent-queue move
+  # settles them as it closes the item, so this finds only a close from before that, or a settle that
+  # did not finish. Idempotent: an item already returned or asked about is left as it is.
+  local settled
+  settled=$(agent-queue settle-after --all </dev/null 2>&1) || logline "reap: agent-queue settle-after --all failed: ${settled##*$'\n'}"
+  [ -z "$settled" ] || logline "reap: settle-after: ${settled//$'\n'/; }"
   while IFS=$'\x1f' read -r slug server sess _by project area state _weight agent started sids host; do
     [ -n "$slug" ] || continue
     active+=("$slug")
@@ -10402,6 +10426,7 @@ main() {
     fill) shift; cmd_fill "$@" ;;
     promote) shift; PULL=$(start_pull) cmd_promote "$@" ;;
     pull-after) shift; PULL=after cmd_pull_after "$@" ;;
+    row-tries) shift; cmd_row_tries "$@" ;;
     report) cmd_report ;;
     verdicts) cmd_verdicts ;;
     exits) shift; skip_exits "$@" ;;
