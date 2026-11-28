@@ -5760,10 +5760,15 @@ triage_human() {
   echo "$n"
 }
 
-# cause_tries <items> <cause> [trip] [route] -> -1 while an item stands for the cause:
+# cause_tries <items> <cause> [trip] [route] [verdict] -> -1 while an item stands for the cause:
 # - queued, running, waiting, or in review (its PR waits on a merge, and a second session would only repeat it);
 # - merged and closed under TRIAGE_WATCH_AFTER ago (the patience a low red gets before it is filed,
 #   given to a merge to deploy and age out of the probe's window);
+# - merged and closed after <verdict>, the epoch a runner red's runner recorded the verdict triage reads
+#   (runner_verdict_at): that verdict predates the fix and says nothing of it, so the fix holds until the
+#   runner's next run, at most TRIAGE_PROVES_MAX after it closed (its finished, which agent-land stamps
+#   seconds after the merge). 2026-11-28 (ar-1945): #1443 merged at
+#   10:41Z, triage re-filed lab-sync's 10:20Z STALLED at 11:18Z, and its After-deploy run read WORKED at 11:20Z;
 # - merged and before its proves_at, the time its fixer said the probe can first read it (a CronJob
 #   alert clears only on its next run), at most TRIAGE_PROVES_MAX after it closed (ar-4215);
 # - on an alert or owned route, closed ok since the trip (its job was the ask or the owner, not the red, so a PR it
@@ -5784,11 +5789,12 @@ cause_tries() {
   local owned=false
   case "${4:-}" in alert | owned:?*) owned=true ;; esac
   jq --arg c " cause:$2 " --arg trip "${3:-}" --argjson owned "$owned" --argjson now "$(now)" \
-    --argjson after "$TRIAGE_WATCH_AFTER" --argjson most "$TRIAGE_PROVES_MAX" \
+    --argjson after "$TRIAGE_WATCH_AFTER" --argjson most "$TRIAGE_PROVES_MAX" --argjson verdict "${5:-0}" \
     "$JQ_LIB$CAUSE_JQ"'def settles: ((.finished | ep) // 0) as $f | [$f + $after, ([(.proves_at | ep) // 0, $f + $most] | min)] | max;
+    def after_verdict: ((.finished | ep) // 0) as $f | $verdict > 0 and $f > $verdict and $f + $most >= $now;
     cause_items | trip_tries as $tries
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
-                or (.state == "done" and (.merged // "") != "" and settles >= $now))
+                or (.state == "done" and (.merged // "") != "" and (settles >= $now or after_verdict)))
          or ($owned and any($tries[]; .state == "done" and .status == "ok"))
       then -1 else ($tries | length) end' <<<"$1"
 }
@@ -5803,6 +5809,15 @@ watch_trip() {
   [[ "$1" == 'check(watch): '* ]] || return 0
   local n=${1#'check(watch): '}
   sed -n '1{/^[0-9][0-9]*$/p}' "$TRIAGE_WATCH_STATE/${n%% *}.since" 2>/dev/null
+}
+
+# runner_verdict_at <key> -> the epoch a runner row's runner wrote its last-outcome at; nothing for any
+# other row, or when the state dir cannot be read.
+runner_verdict_at() {
+  [[ "$1" == 'fix(runner): '* ]] || return 0
+  local n=${1#'fix(runner): '} sd
+  proof_lib && sd=$(proof_state_dir) && [ -n "$sd" ] || return 0
+  stat -c %Y "$sd/${n%% *}/last-outcome" 2>/dev/null || true
 }
 
 # cause_slugs <items> <cause> [trip] -> the slugs of the tries cause_tries counts, oldest first, comma-joined
@@ -5877,7 +5892,7 @@ triage_promote() {
       fi
     fi
     trip=$(watch_trip "$key")
-    tries=$(cause_tries "$items" "$cause" "$trip" "$route")
+    tries=$(cause_tries "$items" "$cause" "$trip" "$route" "$(runner_verdict_at "$key")")
     # Spent is counted before the day's cap, which says nothing about a cause's own tries; an
     # unreadable count is neither spent nor a try.
     [[ "$tries" =~ ^-?[0-9]+$ ]] || continue

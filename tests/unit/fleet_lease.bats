@@ -304,3 +304,38 @@ EOS
   run grep -rlE 'fleet-is-home|AGENT_STATE_LOCAL|AGENT_STATE_HOST' "$REPO_ROOT/.config/systemd/user"
   assert_output ''
 }
+
+@test "check passes on the holder, and names each way the lease stops being live" {
+  on a fleet-dispatch 2>/dev/null
+  run on a check
+  assert_success
+  assert_output ""
+  # The renewer stopped: the expiry is inside MARGIN_S.
+  FLEET_LEASE_NOW=$((T0 + 250)) run -1 on a check
+  assert_output --partial "origin lease expires in 50s"
+  # Another machine holds it: on that machine the watch cannot run, so this is a fault there.
+  run -1 on b check
+  assert_output --partial "b does not hold the fleet lease on its own record"
+  assert_output --partial "origin names a as holder, not b"
+  # The holder's own record lapsed.
+  FLEET_LEASE_NOW=$((T0 + 301)) run -1 on a check
+  assert_output --partial "a does not hold the fleet lease on its own record"
+  assert_output --partial "origin lease lapsed at"
+}
+
+@test "check reads backup while origin is unreachable, as the renewer does" {
+  conf "$R/gone.git"
+  on a fleet-dispatch 2>/dev/null
+  run on a check
+  assert_success
+  assert_output ""
+  FLEET_LEASE_NOW=$((T0 + 250)) run -1 on a check
+  assert_output --partial "backup lease expires in 50s"
+}
+
+@test "check says unreadable, never a fault, when no remote answers" {
+  on a fleet-dispatch 2>/dev/null
+  printf 'STORE_PRIMARY_URL="%s"\nSTORE_BACKUP_URL="%s"\n' "$R/gone.git" "$R/gone2.git" > "$STORE_SYNC_CONF"
+  run -2 on a check
+  assert_output "unreadable: no lease remote answered"
+}
