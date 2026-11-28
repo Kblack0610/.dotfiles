@@ -478,10 +478,22 @@ watched_gate() {
   [ -z "$ended" ] || echo "$ended"
 }
 
+# time_use_argv_lines -> the conf's gate, test and build lines as JSON, each with the regex that wants its text at the start
+# of an argv (time_use_lines_json). Built once a pass into PROC_SNAP's cache dir: live_wait runs once a session. A conf with no
+# line is said on stderr once, and reads as `[]`.
+time_use_argv_lines() {
+  local f="${PROC_SNAP:+$PROC_SNAP.tu}" out
+  if [ -n "$f" ] && [ -s "$f" ]; then cat "$f"; return 0; fi
+  out="$(time_use_lines_json "$FLEET_TIME_USE_CONF" "$SO_TU_ARGV_START" 2>/dev/null)" && [ "$out" != '[]' ] \
+    || { echo "fleet-sessions: no gate, test or build line readable in $FLEET_TIME_USE_CONF; live_wait reads none" >&2; out='[]'; }
+  [ -z "$f" ] || printf '%s\n' "$out" > "$f"
+  printf '%s\n' "$out"
+}
+
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
 # landing turn: WORKING past FLEET_SHELL_STALE_MIN, it ends itself), else gate, test or build when a process running in <cwd> (or below it), or
-# descended from the session's claude whatever its cwd, matches a `gate`, `test` or `build` line of
-# agent-panel's time-use.conf, else checkout for a live Git checkout or LFS transfer (git_checkout), else nothing. A background subagent's commands run in its own
+# descended from the session's claude whatever its cwd, runs a `gate`, `test` or `build` line of
+# agent-panel's time-use.conf (anchored at its argv, past wrappers), else checkout for a live Git checkout or LFS transfer (git_checkout), else nothing. A background subagent's commands run in its own
 # worktree and a gate script may cd elsewhere (2026-11-03 agent-49 read STALLED mid-gate on #1669),
 # but both stay children of the claude that started them. The transcript shows a gate detached
 # with & only as the until-loop watching its output file (2026-11-07 unity-core-playground-agent-30:
@@ -492,7 +504,7 @@ watched_gate() {
 # which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
 # without .pid) only the worktree is read.
 live_wait() {
-  local conf="$FLEET_TIME_USE_CONF" want kind text pid cmd
+  local conf="$FLEET_TIME_USE_CONF" want pid cmd
   local -a cmds=()
   while IFS=$'\t' read -r pid cmd; do [ -z "$pid" ] || cmds+=("$cmd"); done < <(wait_procs "$@")
   [ "${#cmds[@]}" -gt 0 ] || return 0
@@ -502,14 +514,13 @@ live_wait() {
     [ -n "$checkout" ] || ! git_checkout "$cmd" || checkout=checkout
   done
   if [ -r "$conf" ]; then
-    for want in gate test build; do
-      while read -r kind text; do
-        [ "$kind" = "$want" ] && [ -n "$text" ] || continue
-        for cmd in "${cmds[@]}"; do
-          case "$cmd" in *"$text"*) echo "$want"; return 0 ;; esac
-        done
-      done < "$conf"
-    done
+    # Each line's text must start the process's argv, past the wrappers (time_use_argv_lines, the rule the other readers
+    # share), so `vim x.bats` and `grep make test` are not a test run. gate beats test beats build whatever the line order.
+    want="$(printf '%s\n' "${cmds[@]}" | jq -nRr --argjson lines "$(time_use_argv_lines)" '
+      [inputs] as $cmds
+      | first(("gate", "test", "build") as $k | $lines[] | select(.kind == $k and (.re as $re | any($cmds[]; test($re)))) | $k) // empty')" \
+      || { echo "fleet-sessions: live_wait could not match $conf; it reads no wait" >&2; want=""; }
+    [ -z "$want" ] || { echo "$want"; return 0; }
   fi
   [ -z "$checkout" ] || echo "$checkout"
 }

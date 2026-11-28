@@ -963,6 +963,31 @@ load 'fleet_sessions/common'
   pkill -KILL -s "$root" || true; wait "$root" 2>/dev/null || true
 }
 
+@test "live_wait reads a time-use.conf line only where it starts the argv, never inside another command's arguments (ar-3521)" {
+  # 2026-11-18 ar-1284 review: the short lines (bats, make test, gh pr view) matched as a substring of any command line,
+  # so `vim x.bats` and `grep make test` read as a test run. The shipped conf, as the other three readers match it.
+  # `exec -a <argv0> bash <script> <args>` makes /proc show exactly `<argv0> <script> <args>`, the argv a real run has.
+  mkdir -p "$SANDBOX/wt/scripts/test"
+  export FLEET_TIME_USE_CONF="$BATS_TEST_DIRNAME/../../.config/agent-panel/time-use.conf"
+  local row a0 script rest want pid
+  # argv0|script|args|class: first the commands that only name a test or a gate, then the real runs, wrapped and not
+  for row in 'vim|x.bats||' 'grep|make|test|' 'grep|gh|pr view|' 'less|pytest.log||' 'vim|scripts/test/run.sh||' \
+             'bats|x.bats||test' 'make|test||test' 'gh|pr|view 3|gate' '/bin/bash|scripts/test/run.sh||test' \
+             'python3|pytest|-q|test' 'node|vitest|run|test' 'env|gh-run-wait|12 checks|gate'; do
+    IFS='|' read -r a0 script rest want <<<"$row"
+    printf 'sleep 60\n' > "$SANDBOX/wt/$script"
+    # shellcheck disable=SC2086  # rest is a word list
+    (cd "$SANDBOX/wt" && exec -a "$a0" bash "$script" $rest) >/dev/null 2>&1 3>&- &
+    pid=$!
+    # the process is the event: wait until /proc shows the exec, not for a delay
+    until grep -qa "$script" "/proc/$pid/cmdline" 2>/dev/null; do kill -0 "$pid" || fail "the $row stand-in exited before it started"; done
+    run live_wait "$SANDBOX/wt"
+    assert_output "$want"
+    kill "$pid"; wait "$pid" 2>/dev/null || true
+    rm -f "$SANDBOX/wt/$script"
+  done
+}
+
 @test "live_wait finds a gate or test process running in the session worktree, and only there" {
   # 2026-11-07 unity-core-playground-agent-30: a gate detached with & left only its until-loop in the
   # transcript (open job jobs), so a Tests run in progress read STALLED.
@@ -1159,7 +1184,7 @@ MD
   printf 'sleep 60\n' > "$SANDBOX/wt/scripts/authoring/unity-method.sh"
   printf 'gate agent-land\ntest bats\nbuild unity-method.sh\n' > "$SANDBOX/time-use.conf"
   export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
-  (cd "$SANDBOX/wt" && exec -a x bash scripts/authoring/unity-method.sh RenderCli) >/dev/null 2>&1 3>&- &
+  (cd "$SANDBOX/wt" && exec bash scripts/authoring/unity-method.sh RenderCli) >/dev/null 2>&1 3>&- &
   local pid=$!
   # the process is the event: wait until /proc shows its exec, not for a delay
   until grep -q unity-method.sh "/proc/$pid/cmdline" 2>/dev/null; do kill -0 "$pid" || fail "the build stand-in exited before it started"; done
@@ -1193,8 +1218,8 @@ MD
   export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
   local pid
   # a gate that is not queue-shaped stays a gate: gh-run-wait is a conf gate line, not a queue gate
-  printf 'sleep 60\n' > "$SANDBOX/wt/waiter.sh"
-  (cd "$SANDBOX/wt" && exec -a x bash waiter.sh gh-run-wait) >/dev/null 2>&1 3>&- &
+  printf 'sleep 60\n' > "$SANDBOX/wt/gh-run-wait"
+  (cd "$SANDBOX/wt" && exec bash gh-run-wait 12 checks) >/dev/null 2>&1 3>&- &
   pid=$!
   until grep -q gh-run-wait "/proc/$pid/cmdline" 2>/dev/null; do :; done
   run live_wait "$SANDBOX/wt"
