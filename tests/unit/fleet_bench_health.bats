@@ -93,23 +93,34 @@ watch() {
 }
 
 # The fleet-health-coverage watch runs `fleet-bench health --coverage` and trips on its exit 1, so
-# these two cases are what it guards: a new Flows row, and a watch deleted without a replacement.
-@test "health --coverage guard: a new Flows row with no watch, or a deleted watch, makes it exit 1 and name the part" {
+# these cases are what it guards: a new Flows row, a watch deleted without a replacement, a renamed row.
+@test "health --coverage guard: a new Flows row with no watch exits 1 and names the part" {
+  watch life-watch OK '[Lifecycle]'
+  printf '| Admission | What caps the queue? | `d.md` | - | none |\n' > "$SANDBOX/row"
+  sed -i "/^| Lifecycle /r $SANDBOX/row" "$FLEET_ARCH_DOC"
+  grep -q '^| Admission ' "$FLEET_ARCH_DOC"
+  run "$SUBJECT" health --coverage
+  assert_failure
+  assert_output 'Admission'
+}
+
+@test "health --coverage guard: a watch deleted without a replacement uncovers its part" {
   watch life-watch OK '[Lifecycle]'
   run "$SUBJECT" health --coverage
   assert_success
-  printf '| Admission | What caps the queue? | `d.md` | - | none |\n' > "$SANDBOX/row"
-  sed -i "/^| Lifecycle /r $SANDBOX/row" "$FLEET_ARCH_DOC"
+  rm "$TRIAGE_WATCHES/life-watch.yaml" "$TRIAGE_WATCH_STATE/life-watch.state"
   run "$SUBJECT" health --coverage
   assert_failure
-  assert_output 'Admission'
-  watch adm-watch OK '[Admission]'
-  run "$SUBJECT" health --coverage
-  assert_success
-  rm "$TRIAGE_WATCHES/adm-watch.yaml" "$TRIAGE_WATCH_STATE/adm-watch.state"
+  assert_output 'Lifecycle'
+}
+
+@test "health --coverage guard: a Flows row renamed under a watch's tag exits 1 and names the stale tag" {
+  watch life-watch OK '[Lifecycle]'
+  sed -i 's/^| Lifecycle /| Life cycle /' "$FLEET_ARCH_DOC"
   run "$SUBJECT" health --coverage
   assert_failure
-  assert_output 'Admission'
+  assert_output --partial 'Lifecycle'
+  assert_output --partial 'Life cycle'
 }
 
 @test "health negative control: a tripped watch makes its parts TRIP, the verdict RED, and the exit 1" {
