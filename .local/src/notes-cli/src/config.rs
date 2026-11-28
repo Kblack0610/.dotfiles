@@ -10,6 +10,7 @@
 //!   `$NOTES_CONFIG`, `~/.config/notes/config.toml`, `~/.dotfiles/.config/notes/config.toml`.
 //! A unit-test build reads `$NOTES_CONFIG` alone (`config_paths`, ar-4202).
 //! If none exist, a built-in `personal` default is used so the tool works out of the box.
+//! Either way, `profiles.toml` beside it adds the profiles every machine shares (`merge_shared`).
 
 use anyhow::{anyhow, Context, Result};
 use serde::Deserialize;
@@ -789,12 +790,63 @@ fn load_raw() -> Result<(RawConfig, String)> {
         if path.exists() {
             let text = std::fs::read_to_string(&path)
                 .with_context(|| format!("reading config {}", path.display()))?;
-            let raw: RawConfig = toml::from_str(&text)
+            let mut raw: RawConfig = toml::from_str(&text)
                 .with_context(|| format!("parsing config {}", path.display()))?;
-            return Ok((raw, path.display().to_string()));
+            let src = path.display().to_string();
+            let shared = path.with_file_name(SHARED_PROFILES);
+            let src = merge_shared(&mut raw, src, &shared)?;
+            return Ok((raw, src));
         }
     }
-    Ok((builtin_default(), "built-in default".to_string()))
+    let mut raw = builtin_default();
+    let src = "built-in default".to_string();
+    if cfg!(test) {
+        return Ok((raw, src));
+    }
+    let src = merge_shared(
+        &mut raw,
+        src,
+        &home().join(".config/notes").join(SHARED_PROFILES),
+    )?;
+    Ok((raw, src))
+}
+
+/// The profile tables every machine shares, beside the config file (`~/.config/notes/` with
+/// none). notes-bootstrap links it from the private overlay's `.config/notes/profiles.toml`, the
+/// one tracked copy of the org and job profiles, so a fleet worker resolves the same roots and
+/// flags as the workstation; `config.toml` keeps what is machine-local (ar-6354).
+const SHARED_PROFILES: &str = "profiles.toml";
+
+/// Only `[profile.<name>]` tables: anything else belongs to the machine's own config.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SharedProfiles {
+    #[serde(default)]
+    profile: HashMap<String, RawProfile>,
+}
+
+/// Add `path`'s profiles to `raw` and return the source line naming both files. No file is no
+/// change; a link to a missing file is an error, so a moved overlay cannot drop the profiles
+/// unseen. A profile defined in both files is an error too: one of the two would be a stale copy.
+fn merge_shared(raw: &mut RawConfig, src: String, path: &Path) -> Result<String> {
+    let text = match std::fs::read_to_string(path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && path.symlink_metadata().is_err() => {
+            return Ok(src)
+        }
+        r => r.with_context(|| format!("reading shared profiles {}", path.display()))?,
+    };
+    let shared: SharedProfiles = toml::from_str(&text)
+        .with_context(|| format!("parsing shared profiles {}", path.display()))?;
+    let mut names: Vec<&String> = shared.profile.keys().collect();
+    names.sort();
+    if let Some(dup) = names.into_iter().find(|n| raw.profile.contains_key(*n)) {
+        return Err(anyhow!(
+            "profile '{dup}' is defined in both {src} and {}: delete it from {src}",
+            path.display()
+        ));
+    }
+    raw.profile.extend(shared.profile);
+    Ok(format!("{src} + {}", path.display()))
 }
 
 fn pick_profile(raw: &RawConfig, override_name: Option<&str>) -> (String, String) {
@@ -1362,6 +1414,55 @@ mod tests {
         // ar-4202: the live config's orgs leaked into fixtures that share a live project's name
         let set = std::env::var("NOTES_CONFIG").is_ok_and(|c| !c.is_empty());
         assert_eq!(config_paths().len(), usize::from(set));
+    }
+
+    fn shared_scratch(tag: &str, text: Option<&str>) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("notes-shared-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let p = d.join(SHARED_PROFILES);
+        if let Some(t) = text {
+            std::fs::write(&p, t).unwrap();
+        }
+        p
+    }
+
+    // ar-6354: a worker reads the shared tables beside its own config, with the same flags.
+    #[test]
+    fn shared_profiles_join_the_machine_config() {
+        let p = shared_scratch(
+            "join",
+            Some("[profile.gig]\nroot = \"~/.notes/gig\"\nautomation = false\ndaily = \"log\"\n"),
+        );
+        let mut raw = builtin_default();
+        let src = merge_shared(&mut raw, "cfg".into(), &p).unwrap();
+        assert_eq!(src, format!("cfg + {}", p.display()));
+        assert!(raw.profile.contains_key("personal"));
+        assert!(!raw.profile["gig"].automation);
+        assert_eq!(raw.profile["gig"].daily, "log");
+    }
+
+    #[test]
+    fn no_shared_file_changes_nothing_but_a_dangling_link_is_an_error() {
+        let p = shared_scratch("none", None);
+        let mut raw = builtin_default();
+        assert_eq!(merge_shared(&mut raw, "cfg".into(), &p).unwrap(), "cfg");
+        assert_eq!(raw.profile.len(), 1);
+        std::os::unix::fs::symlink(p.with_file_name("gone.toml"), &p).unwrap();
+        assert!(merge_shared(&mut raw, "cfg".into(), &p).is_err());
+    }
+
+    #[test]
+    fn a_profile_in_both_files_or_a_non_profile_key_is_an_error() {
+        let p = shared_scratch("dup", Some("[profile.personal]\nroot = \"/x\"\n"));
+        let err = merge_shared(&mut builtin_default(), "cfg".into(), &p).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'personal' is defined in both cfg and"),
+            "{err}"
+        );
+        let p = shared_scratch("key", Some("default_profile = \"gig\"\n"));
+        assert!(merge_shared(&mut builtin_default(), "cfg".into(), &p).is_err());
     }
 
     #[test]

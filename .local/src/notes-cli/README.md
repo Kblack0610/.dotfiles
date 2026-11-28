@@ -25,7 +25,7 @@ It runs `cargo build --release`, copies the binary to `~/.local/lib/notes/notes`
 
 ## Configuration
 
-`~/.config/notes/config.toml`, machine-local and git-ignored (`~/.dotfiles/.config/notes/config.toml.example` is the tracked template). The binary also tries `$NOTES_CONFIG` and a hand-placed `~/.dotfiles/.config/notes/config.toml`, and uses a built-in `personal` default if none exist.
+`~/.config/notes/config.toml`, machine-local and git-ignored (`~/.dotfiles/.config/notes/config.toml.example` is the tracked template). The binary also tries `$NOTES_CONFIG` and a hand-placed `~/.dotfiles/.config/notes/config.toml`, and uses a built-in `personal` default if none exist. The org and job profiles every machine shares (bnb and the work profiles) are not in it: `profiles.toml` beside it holds only `[profile.<name>]` tables, linked by `notes-bootstrap` from the private overlay's `.config/notes/profiles.toml`, their one tracked copy. A profile defined in both files is an error.
 
 Active profile resolves: `--profile`, then `$NOTES_PROFILE`, then `[hostname_map]` (by
 `hostname -s`), then `default_profile`. This is what lets a corporate machine root its
