@@ -1397,6 +1397,33 @@ asks_order() { bash -c '. "$1"; ask_rows | jq -r "map(.id) | join(\" \")"' _ "$S
   assert_equal "$(jq -r .kpi <<<"$output")" judge_precision
 }
 
+@test "kpi: owner_debt and unowned are fact-owners count --json read now, never counted here, and absent when it cannot count" {
+  kpi_setup
+  run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '[.owner_debt, .unowned] | map([.["7d"], .["28d"], .now, .status])' <<<"$output"
+  assert_output '[[null,null,true,"-"],[null,null,true,"-"]]'
+  echo '{"owner_debt":3,"unowned":1}' > "$OWNERSKPI"
+  run "$SUBJECT" kpi --json
+  assert_success
+  run jq -c '{owner_debt: .owner_debt["7d"], unowned: .unowned["7d"], now: .unowned.now}' <<<"$output"
+  assert_output '{"owner_debt":3,"unowned":1,"now":true}'
+  run "$SUBJECT" kpi
+  assert_line '| owner_debt (now) | 3 | - | - | - |'
+}
+
+@test "kpi --check: unowned trips past its bound of 0 and passes at 0; the scope picks it from the others" {
+  kpi_setup
+  printf '%s\n' unowned_max=0 >> "$KPI_THRESHOLDS"
+  echo '{"owner_debt":3,"unowned":1}' > "$OWNERSKPI"
+  run "$SUBJECT" kpi --check '^unowned'
+  assert_failure 1
+  assert_output 'unowned 1 (max 0)'
+  echo '{"owner_debt":3,"unowned":0}' > "$OWNERSKPI"
+  run "$SUBJECT" kpi --check '^unowned'
+  assert_success
+}
+
 @test "kpi --check: judge_human_only_live_pct trips the runner-score scope on any live answer to a human-only ask, never on 0" {
   kpi_setup
   printf '%s\n' judge_human_only_live_pct_max=0 >> "$KPI_THRESHOLDS"
