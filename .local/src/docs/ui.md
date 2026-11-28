@@ -29,4 +29,4 @@ Each rule has its why. A rule a test checks names the test.
 
 ## Not met yet
 
-`tokens.css` has no spacing scale (rule 10). agent-web misses rules 4, 5, 7, 8 and 9 (solid badges and chips, mono headers, wrapping cells, striped KPI tiles: the restyle plan's P2), and its sign-in page carries its own copy of the old palette instead of loading `tokens.css` (rule 1). Board row ar-1988 tracks the agent-web part (plan `are-we-reaching-to-eventual-charm.md`). Delete this section when all are met.
+`tokens.css` has no spacing scale (rule 10), and agent-web's sign-in page carries its own copy of the old palette instead of loading `tokens.css` (rule 1). Rules 4, 5, 8 and 9 hold on Home, Sessions and Releases (the soft `.chip` and `statePill`, no tile stripe, no zebra, one-height rows checked by `render.mjs`'s rows check); the other tabs still draw some state words as coloured text (`levelClass` cells) instead of pills, a KPI tile's unit sits on its own line under the number (rule 8), and `.dlane`, `.rjob` and `.panel.down` keep a left stripe (rule 11). Delete this section when all are met.

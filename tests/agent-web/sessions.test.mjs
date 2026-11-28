@@ -422,7 +422,7 @@ test("an open session's facts are one line linking to the page, which shows the 
   run(`st.view = "transcript"`);
   ctx.renderFacts();
   assert.equal(boxes.facts.hidden, false);
-  assert.match(boxes.facts.innerHTML, /WORKING.*PR #12.*<button class="btn sm" data-page>Session page<\/button>/);
+  assert.match(boxes.facts.innerHTML, /Working.*PR #12.*<button class="btn sm" data-page>Session page<\/button>/);
   assert.doesNotMatch(boxes.facts.innerHTML, /wcard/, "the card is the page's: the facts line links to it");
   run("st.sel = st.agents[3]");
   ctx.renderFacts();

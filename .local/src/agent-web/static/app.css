@@ -20,7 +20,7 @@ html, body { height: 100%; }
 .kb-nav .outl button:hover { color: var(--ink); }
 .seg button { border: 1px solid var(--line); background: transparent; color: var(--ink); padding: 5px 10px; border-radius: 6px; cursor: pointer; font: inherit; }
 .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-.badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--wait); color: #fff; font-size: 11px; text-align: center; margin-left: 4px; }
+.badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--bad-bg); color: var(--wait); font-size: var(--fs-xs); font-weight: 600; text-align: center; margin-left: 4px; }
 .signout { white-space: nowrap; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; padding: 5px 4px; }
 .foot-link { white-space: nowrap; color: var(--muted); font-size: 12px; text-decoration: none; padding: 5px 4px; }
 .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
@@ -37,12 +37,12 @@ main { display: grid; grid-template-columns: 1fr; height: calc(100% - var(--head
 .newdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; vertical-align: middle; background: var(--accent); }
 .pills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
 .pill { font: 11px var(--mono); padding: 0 6px; border-radius: 9px; background: var(--fill); color: var(--muted); white-space: nowrap; }
-.pill.here { background: var(--accent); color: #fff; }
+.pill.here { background: var(--accent-bg); color: var(--accent); }
 /* Inner tabs (app.js innerStrip): a count pill on a tab whose sections need a look. */
-.istrip .pill.warn { background: var(--b-stalled); color: #fff; }
+.istrip .pill.warn { background: var(--warn-bg); color: var(--b-stalled); }
 [data-in][hidden] { display: none; }
-.pill.parked { background: var(--busy); color: #fff; }
-.pill.ask { background: var(--wait); color: #fff; }
+.pill.parked { background: var(--warn-bg); color: var(--busy); }
+.pill.ask { background: var(--bad-bg); color: var(--wait); }
 .acts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .acts .btn.danger { border-color: var(--wait); color: var(--wait); }
 .acts .btn.danger.primary { background: var(--wait); color: #fff; }
@@ -147,15 +147,14 @@ details.csec > summary { cursor: pointer; }
 details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8px; }
 .chead { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 2px; }
 .ctitle { flex: 1 1 240px; min-width: 0; font-weight: 600; font-size: var(--fs-lg); overflow-wrap: anywhere; }
-.cchip { font-size: var(--fs-xs); font-weight: 600; padding: 1px 8px; border-radius: 9px; white-space: nowrap; background: var(--fill); color: var(--muted); }
-.cchip.waiting, .cchip.bad, .cchip.prio.urgent { color: var(--b-needs); background: var(--bad-bg); }
-.cchip.running { color: var(--b-working); background: color-mix(in srgb, var(--b-working) 14%, transparent); }
-.cchip.ok { color: var(--b-done); background: var(--ok-bg); }
-.cchip.warn { color: var(--b-stalled); background: var(--warn-bg); }
-.cchip.state::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: currentColor; }
+.cchip { --c: var(--muted); font-size: var(--fs-xs); font-weight: 500; padding: 1px 8px; border-radius: 9px; white-space: nowrap; color: color-mix(in srgb, var(--c) 78%, var(--ink)); background: color-mix(in srgb, var(--c) 13%, var(--panel)); }
+.cchip.waiting, .cchip.bad, .cchip.prio.urgent { --c: var(--b-needs); }
+.cchip.running { --c: var(--b-working); }
+.cchip.ok { --c: var(--b-done); }
+.cchip.warn, .cchip.prio.high { --c: var(--b-stalled); }
+.cchip.state::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: var(--c); }
 .cline.warn { color: var(--b-stalled); } .cline.bad { color: var(--b-needs); }
 .cline.vital b { display: inline-block; min-width: 5em; }
-.cchip.prio.high { color: var(--b-stalled); background: var(--warn-bg); }
 .cline { font-size: var(--fs-sm); color: var(--muted); margin-bottom: 8px; }
 .cline a { color: var(--accent); }
 .cfold dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 0 0 8px; font-size: var(--fs-xs); font-family: var(--mono); }
@@ -276,13 +275,14 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
 .sec.warn { color: var(--b-stalled); } .sec.bad { color: var(--b-needs); }
 .bhead { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; font-family: var(--mono); margin-bottom: 10px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 8px; }
-.tile { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px 10px 15px; font: inherit; overflow: hidden; }
-.tile::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--c); }
+.tile { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left; background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: inherit; overflow: hidden; }
 button.tile, a.tile { cursor: pointer; }
 a.tile { text-decoration: none; }
-button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 0 0 0 1px var(--c) inset; }
+button.tile:hover, a.tile:hover { border-color: var(--c, var(--accent)); }
+.tile.on { border-color: var(--c, var(--accent)); background: color-mix(in srgb, var(--c, var(--accent)) 8%, var(--panel)); }
 .tl { font-size: 11px; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
 .tv { font-size: 26px; font-weight: 650; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.tile .tv { color: var(--c, var(--ink)); }
 .ts1 { font-size: 13px; font-family: var(--mono); }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
 .tog { margin-left: auto; font-size: 12px; text-transform: none; letter-spacing: 0; font-weight: normal; display: flex; gap: 6px; align-items: center; cursor: pointer; }
@@ -312,10 +312,13 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .pcard .ptl { font: var(--fs-xs) var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .pcard .ptl.warn { color: var(--b-stalled); } .pcard .ptl.bad { color: var(--b-needs); } .pcard .ptl a { color: inherit; }
 .pcard .pstat { font-size: var(--fs-sm); margin-bottom: 8px; overflow-wrap: anywhere; }
-.chip { display: inline-block; padding: 1px 7px; border-radius: 9px; font: 600 11px var(--mono); color: #fff; background: var(--c); }
-.chip.sm { padding: 0 6px; font-size: 10px; }
+/* The one status pill (ui.md rule 4): the hue in --c as its light tint, a dot and the word. .chip is a
+   bucket or state drawn with an inline --c; .cchip.state is ui.js statePill, a card's label tinted by class. */
+.chip { --c: var(--muted); display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 9px; font: 500 var(--fs-xs)/1.5 var(--sans); white-space: nowrap; color: color-mix(in srgb, var(--c) 78%, var(--ink)); background: color-mix(in srgb, var(--c) 13%, var(--panel)); }
+.chip::before { content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--c); }
+.chip.sm { padding: 0 6px; }
 .wgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr)); gap: 10px; }
-.wcard { background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--c); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+.wcard { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
 .wh { display: flex; gap: 8px; align-items: center; }
 .wt { font: 600 13px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
 .wm { font: 12px var(--mono); color: var(--muted); margin: 4px 0; overflow-wrap: anywhere; }
@@ -338,7 +341,6 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .stiles { margin-bottom: 10px; }
 /* A table's head (table.js tblBar): its state tiles in their hue (hub-core Chip.tone, rule 5), a
    tile at zero dimmed, then the query bar fused to the top of the table under it. */
-.tile { --c: var(--c-other); }
 .tile.t-ok { --c: var(--b-done); } .tile.t-warn { --c: var(--b-stalled); } .tile.t-bad { --c: var(--b-needs); }
 .tile.zero:not(.on) { opacity: .55; }
 .tqbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 14px; }
@@ -381,10 +383,9 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
    row lines, and every other record row tinted so a wide row is easy to follow across. The tint
    counts record rows only: an opened row's detail, a channel's detail and the filter row are skipped. */
 .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-.tbl th { text-align: left; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 24%, transparent); white-space: nowrap; }
+.tbl th { text-align: left; font-weight: 600; font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .04em; color: var(--muted); padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 24%, transparent); white-space: nowrap; }
 .tbl td { padding: 7px 10px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 8%, transparent); white-space: nowrap; }
 .tbl tr:last-child > td { border-bottom: 0; }
-.tbl tr:nth-child(odd of :not(.wdet, .rcd, .tfilters, .bopen)):has(> td) { background: color-mix(in srgb, var(--ink) 3%, transparent); }
 .tbl .n { text-align: right; font-family: var(--mono); }
 .tbl th.n { font-family: inherit; }
 .tbl td a:not(.btn) { color: var(--accent); text-decoration: none; } .tbl td a:not(.btn):hover { text-decoration: underline; }
@@ -613,12 +614,11 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .o-steps tr.warn { color: var(--wait); }
 
 /* Needs you (home.js, waiting.js): one card per thing that waits on the human, its kind a band
-   and a left stripe. Waiting is the status, so the kind takes the categorical colours (rule 5):
+   label in its colour. Waiting is the status, so the kind takes the categorical colours (rule 5):
    plan c5, question c1, permission c6, your turn ink; blocked is stalled amber, failing red. */
-/* One colour per need kind, shared by the card stripe and the tally chip. */
+/* One colour per need kind, shared by the card's kind label and the tally chip. */
 .k-plan { --k: var(--c5); } .k-ask { --k: var(--c1); } .k-perm { --k: var(--c6); }
 .k-turn { --k: var(--ink); } .k-todo { --k: var(--ink); } .k-blocked { --k: var(--b-stalled); } .k-red, .k-stopped { --k: var(--b-needs); }
-.need { border-left: 5px solid var(--k, var(--muted)); }
 .nband { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; font-size: var(--fs-sm); color: var(--muted); margin-bottom: 4px; }
 .nkind { font-size: var(--fs-xs); font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--k); }
 .ntitle { font-weight: 600; font-size: var(--fs-lg); line-height: 1.35; overflow-wrap: anywhere; margin-bottom: 8px; }

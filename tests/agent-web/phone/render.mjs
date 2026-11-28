@@ -3,6 +3,8 @@
 // No server and no auth: the page is assets::index() (dumped by an ignored Rust test), the
 // static files are the checkout's, and /api/* is fixtures.mjs, all through Playwright routing.
 //   node tests/agent-web/phone/render.mjs [--out dir] [--control] [--no-kit] [--wide] [--dark] [--api origin]
+// The rows check: at 1280px every row of Home, Sessions and Releases is at most two lines tall; under --control the
+// clamp of a long cell is taken off and it must be reported.
 // --wide draws every tab at 1280px for a before-and-after look; it skips the phone checks.
 // --dark draws every page in the dark colour scheme (ui.md rule 14); the checks are the same.
 // --api answers /api/* from a running agent-web instead of the fixtures, so a change is seen on
@@ -291,6 +293,36 @@ async function heightOf(browser, spec, page0) {
   return result;
 }
 
+// One row, one height (ui.md rule 9): at 1280px a data row of Home, Sessions and Releases is at most two
+// lines of text, however long its cells are, so 50 rows still fit a screen. ROW_MAX_PX is two 13px lines at 1.5
+// plus the cell padding and the hairline, with a little room. `css` is the --control breakage: the clamp of a
+// long cell taken off, which must be reported.
+const ROW_MAX_PX = 58;
+const ROWS_CHECKED = [["home", "#home tr.jr"], ["sessions", "#ov-sessions tr.click"], ["releases", "#releases tr.jr"]];
+const ROWS_CONTROL_CSS = ".c2, .c12 { display: block !important; -webkit-line-clamp: unset !important; white-space: normal !important; max-width: 14ch !important; }";
+async function rowsCheck(browser, page0, css) {
+  const errors = [];
+  for (const [tab, row] of ROWS_CHECKED) {
+    const { context, page, seen } = await openPage(browser, page0, WIDE, false);
+    try {
+      await page.goto(`${ORIGIN}/#${tab}`, { waitUntil: "load" });
+      await page.waitForLoadState("networkidle");
+      await page.waitForSelector(row, { state: "visible", timeout: WAIT_MS });
+      if (css) await page.addStyleTag({ content: css });
+      await page.evaluate(async () => { await document.fonts.ready; await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))); });
+      const tall = await page.evaluate(({ row, max }) => [...document.querySelectorAll(row)]
+        .map((tr) => ({ px: Math.round(tr.getBoundingClientRect().height), what: tr.textContent.trim().replace(/\s+/g, " ").slice(0, 40) }))
+        .filter((r) => r.px > max), { row, max: ROW_MAX_PX });
+      if (tall.length) errors.push(`${tab}: ${tall.length} row(s) taller than ${ROW_MAX_PX}px at 1280px, the tallest ${Math.max(...tall.map((r) => r.px))}px ("${tall[0].what}")`);
+    } catch (e) {
+      errors.push(`${tab}: ${e.message.split("\n")[0]}`);
+    }
+    await context.close();
+    errors.push(...seen.errors);
+  }
+  return errors;
+}
+
 // The shell at phone width, closed then open then Escaped, and at a desktop width. Each failed
 // expectation is one error line; screenshots go beside the tabs' (nav-*.png).
 async function navCheck(browser, page0) {
@@ -474,11 +506,12 @@ async function main() {
   const browser = await pw.chromium.launch({ headless: true, executablePath: chromium(pw) });
   const slot = limiter(PAGES_AT_ONCE);
   // --control proves the overflow detector alone; the nav check has its own control, --no-kit.
-  const [navErrors, phoneCardErrors, deskCardErrors, pagerErrors, results, heights] = await Promise.all([
+  const [navErrors, phoneCardErrors, deskCardErrors, pagerErrors, rowErrors, results, heights] = await Promise.all([
     control || wide ? [] : slot(() => navCheck(browser, page)),
     wide || noKit ? [] : slot(() => cardsCheck(browser, page, control ? CARDS_CONTROL_CSS : null)),
     wide || noKit ? [] : slot(() => packCheck(browser, page, control ? PACK_CONTROL_CSS : null)),
     wide || noKit ? [] : slot(() => pagerCheck(browser, page, control)),
+    wide || noKit ? [] : slot(() => rowsCheck(browser, page, control ? ROWS_CONTROL_CSS : null)),
     noKit ? [] : Promise.all(TABS.map((spec) => slot(() => renderTab(browser, spec, page)))),
     noKit ? [] : Promise.all(TALL.map((spec) => slot(() => heightOf(browser, spec, page)))),
   ]);
@@ -487,7 +520,9 @@ async function main() {
   for (const e of navErrors) console.log(`NAV ${e}`);
   for (const e of cardErrors) console.log(`CARDS ${e}`);
   for (const e of pagerErrors) console.log(`PAGER ${e}`);
+  for (const e of rowErrors) console.log(`ROWS ${e}`);
   if (control && !pagerErrors.some((e) => e.includes("no pager"))) { console.log("FAIL: --control: the pager check did not report the missing pager"); process.exit(1); }
+  if (control && !rowErrors.some((e) => e.includes("taller than"))) { console.log("FAIL: --control: the row-height check did not report an unclamped long cell"); process.exit(1); }
   if (control && !cardErrors.some((e) => e.includes("not two across"))) { console.log("FAIL: --control: the cards check did not report one card per row"); process.exit(1); }
   if (control && !deskCardErrors.some((e) => e.includes("under the card above it"))) { console.log("FAIL: --control: the cards check did not report the unpacked grid's gaps"); process.exit(1); }
   if (noKit) {
@@ -502,6 +537,8 @@ async function main() {
   else if (!control && !wide) console.log("cards ok: Home's cards show two across, they and the Needs you head inside the first screen, each one gap under the card above it");
   if (!control && pagerErrors.length) fail.push(`pager check, ${pagerErrors.length} error(s)`);
   else if (!control && !wide) console.log(`pager ok: Stack Rules pages ${pageRows("rules")} rows at a time, next reads page 2 into the URL, a search opens page 1`);
+  if (!control && rowErrors.length) fail.push(`row height check, ${rowErrors.length} error(s)`);
+  else if (!control && !wide) console.log(`rows ok: Home, Sessions and Releases rows stay under ${ROW_MAX_PX}px at ${WIDE.width}px`);
   writeFileSync(join(out, "numbers.json"), JSON.stringify(results, null, 2) + "\n");
   print(results);
   console.log(`screenshots and numbers.json: ${out}`);

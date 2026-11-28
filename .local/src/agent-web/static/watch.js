@@ -54,7 +54,7 @@ function card(s, now) {
   const blockers = (s.blockers || []).length ? fold("", `${s.blockers.length} reason(s)`, tblRec(s.blockers.map((b) => [esc(b)]))) : "";
   return `
     <div class="wcard" data-sid="${esc(s.session_id || "")}" data-t="${esc(s.target)}" style="--c:${bucketColor(s.bucket)}">
-      <div class="wh"><span class="chip">${esc(s.bucket)}</span><span class="wt" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 34))}</span></div>
+      <div class="wh"><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(pillWord(s.bucket))}</span><span class="wt" title="${esc(s.target)}">${esc(clip(shortTarget(s.target), 34))}</span></div>
       ${s.topic ? `<div class="wtask">${esc(s.topic)}</div>` : ""}
       <div class="wm">${esc(s.branch || "-")}, ${pr}${git ? ", " + git : ""}</div>
       <div class="wf">${esc((s.bucket === "WORKING" && s.doing) || s.reason || s.fact || "")}</div>
@@ -81,8 +81,8 @@ function feed(now) {
   if (!rows.length) return '<div class="empty">No changes in the last day.</div>';
   return rows.slice(0, LOG_ROWS).map((t) => {
     let what = esc(t.text);
-    if (t.kind === "change" && t.to) what = `<span class="chip sm" style="--c:${bucketColor(t.from)}">${esc(t.from)}</span> -&gt; <span class="chip sm" style="--c:${bucketColor(t.to)}">${esc(t.to)}</span> ${esc(t.text.replace(/stage \S+ -> \S+,? ?/, ""))}`;
-    if (t.kind === "new") what = `new <span class="chip sm" style="--c:${bucketColor(t.to)}">${esc(t.to)}</span> ${esc(t.text.replace(/^new: \S+ ?/, ""))}`;
+    if (t.kind === "change" && t.to) what = `<span class="chip sm" style="--c:${bucketColor(t.from)}">${esc(pillWord(t.from))}</span> -&gt; <span class="chip sm" style="--c:${bucketColor(t.to)}">${esc(pillWord(t.to))}</span> ${esc(t.text.replace(/stage \S+ -> \S+,? ?/, ""))}`;
+    if (t.kind === "new") what = `new <span class="chip sm" style="--c:${bucketColor(t.to)}">${esc(pillWord(t.to))}</span> ${esc(t.text.replace(/^new: \S+ ?/, ""))}`;
     return `<div class="fr"><span class="ft">${esc(t.ts.slice(11))}</span><span class="fg" title="${esc(t.target)}">${esc(clip(t.target))}</span><span class="fw">${what}</span></div>`;
   }).join("") + older(rows.length - LOG_ROWS);
 }
@@ -107,7 +107,7 @@ function renderFacts() {
   const pr = s.pr && s.pr !== "-" ? ` PR #${esc(s.pr)}${s.ci ? ` <b class="ci ${esc(s.ci.toLowerCase())}">${esc(s.ci)}</b>` : ""}` : "";
   const ph = s.phases_total ? `, ${s.phases_done}/${s.phases_total} phases` : "";
   const eta = s.eta ? `, eta ${esc(s.eta)}` : "";
-  paint(el, `<div class="facts-line"><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(s.bucket)}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span> ` +
+  paint(el, `<div class="facts-line"><span class="chip" style="--c:${bucketColor(s.bucket)}">${esc(pillWord(s.bucket))}</span> ${esc(s.topic || s.reason || "")}<span class="muted">${pr}${ph}${eta}</span> ` +
     `<button class="btn sm" data-page>Session page</button></div>`, wst.open);
 }
 $("facts").addEventListener("click", (e) => { if (e.target.closest("[data-page]")) setView("page"); });

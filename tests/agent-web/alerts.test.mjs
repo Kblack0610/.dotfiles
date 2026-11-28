@@ -174,8 +174,8 @@ test("fixes: open rows lead with their ticket, then outcome, red, run, PR, CI an
   const h = run(`alertsFixes(${JSON.stringify(data())})`);
   assert.match(h, /<h2 class="sec">Fixes <span class="n">2<\/span><\/h2>/);
   const [openPart, foldPart] = h.split('<details class="sec-d" data-k="fixes-settled">');
-  assert.ok(openPart.indexOf("CAME BACK") < openPart.indexOf("QUEUED"), "the server's order is kept");
-  assert.match(openPart, /CAME BACK<\/span><span class="by"><a class="tl" href="#projects\/all\?q=id:=ar-3">ar-3<\/a><\/span><span class="pt">watch ar-3</, "the ticket leads");
+  assert.ok(openPart.indexOf("Came back") < openPart.indexOf("Queued"), "the server's order is kept");
+  assert.match(openPart, /Came back<\/span><span class="by"><a class="tl" href="#projects\/all\?q=id:=ar-3">ar-3<\/a><\/span><span class="pt">watch ar-3</, "the ticket leads");
   assert.match(openPart, /item <a class="tl" href="#queue\/red-x-1124">red-x-1124<\/a>/);
   assert.match(openPart, /pr <a class="tl" href="https:\/\/github.com\/Kblack0610\/.dotfiles\/pull\/1170"[^>]*>.dotfiles#1170<\/a>/);
   assert.match(openPart, /<a class="tl" href="#infra\/runs\?bq=pr:=[^"]+">CI runs of Kblack0610\/.dotfiles#1170<\/a>/);
@@ -184,7 +184,7 @@ test("fixes: open rows lead with their ticket, then outcome, red, run, PR, CI an
   assert.match(openPart, /<span class="by">PR 986<\/span>/, "a PR with no repo is text, not a link");
   assert.match(openPart, /<span class="by">3h<\/span>/);
   assert.match(foldPart, /<summary class="muted fold">\+2 settled<\/summary>/);
-  assert.ok(!openPart.includes("FIXED") && foldPart.includes("FIXED"));
+  assert.ok(!openPart.includes("Fixed") && foldPart.includes("Fixed"));
 });
 
 test("fixes: a failed read says so, never an empty list, and the open ones draw the page they are sent with its pager", async () => {
@@ -195,7 +195,7 @@ test("fixes: a failed read says so, never an empty list, and the open ones draw 
   const sent = Array.from({ length: 3 }, (_, i) => fix(`ar-${50 + i}`, "queued"));
   const paged = data({ fixes: { open: sent, settled: [], summary: "53 open" }, counts: { ...counts, fixes_open: 53 }, fixes_table: { total: 53, shown: 53, pager: { page: 2, pages: 2, per: 50 } } });
   const many = run(`alertsFixes(${JSON.stringify(paged)})`);
-  assert.equal(many.match(/QUEUED/g).length, 3);
+  assert.equal(many.match(/Queued/g).length, 3);
   assert.match(many, /Fixes <span class="n">53<\/span>/);
   assert.match(many, /<div data-tbl="f"><nav class="tpager".*rows 51-53 of 53<\/span><\/nav><\/div>/s);
   assert.doesNotMatch(many, /\+\d+ more/);

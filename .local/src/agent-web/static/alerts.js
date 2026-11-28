@@ -140,7 +140,7 @@ function alertsFixRow(r) {
   const rest = links.filter((l) => l !== ticket).map((l) => `<span class="by">${l.what === "ci" ? "" : esc(l.what) + " "}${tblLink(l.href, l.text)}</span>`).join("");
   // Each PR that names no repo (a bare number) has no page, so it stays as its label.
   const bare = (r.pr || "").split(/[\s,]+/).filter((t) => t && !/^https?:/.test(t) && !t.includes("/")).map((t) => `<span class="by">PR ${esc(t)}</span>`).join("");
-  return `<div class="pr"><span class="chip sm" style="--c:${ALERTS_FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(r.outcome.toUpperCase())}</span>` +
+  return `<div class="pr"><span class="chip sm" style="--c:${ALERTS_FIX_COLOR[r.outcome] || "var(--c-other)"}">${esc(pillWord(r.outcome))}</span>` +
     `${ticket ? `<span class="by">${tblLink(ticket.href, ticket.text)}</span>` : ""}<span class="pt">${esc(r.red)}</span>${r.project ? `<span class="by">${esc(r.project)}</span>` : ""}${rest}${bare}<span class="by">${r.queued ? ago(r.queued) : "-"}</span></div>`;
 }
 
