@@ -9,7 +9,7 @@ setup() {
   FIX="$BATS_TEST_TMPDIR/repo"
   mkdir -p "$FIX/tests/unit" "$FIX/tests/integ" "$FIX/tests/vendor/bats-core/bin" "$FIX/.local/lib" "$FIX/bin"
   cp "$SRC/tests/Makefile" "$SRC/tests/pick.sh" "$SRC/tests/run-bats.sh" "$FIX/tests/"
-  cp "$SRC/.local/lib/test-pick.sh" "$FIX/.local/lib/"
+  cp "$SRC/.local/lib/test-pick.sh" "$SRC/.local/lib/uncomment.sh" "$FIX/.local/lib/"
   : > "$FIX/tests/broad.txt"
   # A stub bats: prints the files it was handed, one a line.
   printf '#!/bin/sh\nfor a; do case "$a" in *.bats) echo "ran ${a##*/tests/}";; esac; done\n' > "$FIX/tests/vendor/bats-core/bin/bats"
