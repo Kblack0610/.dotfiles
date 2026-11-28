@@ -384,8 +384,10 @@ test("Projects > Sprints is one row per window, its version a link to its page, 
 
 test("a project's Sprint tab has its open window, the queued one, and the scored past newest first, each version a link", async () => {
   const past = [{ version: "v0.2.0", link: "#projects/bnb%2Fdemo/sprint/v0.2.0", opened: "11-10", cut: "11-17", committed: 5, delivered: 4, carried: 1, dropped: 0, interrupted: 2, timing: "1d late", line: "delivered 4 of 5" }, { version: "v0.1.0", link: "#projects/bnb%2Fdemo/sprint/v0.1.0", opened: null, cut: null, committed: 3, delivered: 3, carried: 0, dropped: 0, interrupted: 0, timing: null, line: "delivered 3 of 3" }];
-  ctx.answers = { "/api/projects/demo/page": { ...page, sprint_past: past }, "/api/sprints?scope=bnb%2Fdemo": sprAnswer([sprRow({}), sprQueued()]) };
-  vm.runInContext("sprst.data = null", ctx);
+  const areas = { heads: ["v0.1.0", "v0.2.0"].map((version) => ({ version, link: `#projects/bnb%2Fdemo/sprint/${version}` })),
+    lines: [{ group: "Tests, CI and benches", cells: ["3/8", "48/80"] }, { group: "Engine", cells: [null, "40/90"] }], errors: ["v0.0.9: no sprints/v0.0.9.md"] };
+  ctx.answers = { "/api/projects/demo/page": { ...page, sprint_past: past }, "/api/sprints?scope=bnb%2Fdemo": sprAnswer([sprRow({}), sprQueued()]), "/api/sprints/across?scope=bnb%2Fdemo": areas };
+  vm.runInContext("sprst.data = null; sprst.across = null", ctx);
   draw(list([card({})]), "bnb/demo");
   vm.runInContext(`pInner("sprint");`, ctx);
   await settle(); await settle();
@@ -397,7 +399,13 @@ test("a project's Sprint tab has its open window, the queued one, and the scored
   assert.match(sprint.slice(open, queued), /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.3\.0">v0\.3\.0<\/a>/, "the open window's version links to its page");
   assert.doesNotMatch(sprint.slice(open, queued), /v0\.3\.1/, "the queued window is not the open one");
   assert.match(sprint.slice(queued, pastAt), /v0\.3\.1.*queued/s);
-  const pastHtml = sprint.slice(pastAt);
+  const acrossAt = at(/id="sec-p-sprint-across">By area across sprints <span class="n">2</);
+  assert.ok(pastAt < acrossAt, "By area across sprints sits under Past");
+  const pastHtml = sprint.slice(pastAt, acrossAt), across = sprint.slice(acrossAt);
+  assert.match(across, /<th class="n" data-label="v0\.1\.0"><a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.1\.0">v0\.1\.0<\/a><\/th><th class="n" data-label="v0\.2\.0">/, "one column per window, oldest first, each head a link to its page");
+  assert.match(across, /<td>Tests, CI and benches<\/td><td class="n">3\/8<\/td><td class="n">48\/80<\/td>/);
+  assert.match(across, /<td>Engine<\/td><td class="n muted">-<\/td>/, "a window with no row of the area says -");
+  assert.match(across, /<div class="panel down">v0\.0\.9: no sprints\/v0\.0\.9\.md<\/div>/, "a window that failed to read is said");
   assert.ok(pastHtml.indexOf("v0.2.0") >= 0 && pastHtml.indexOf("v0.2.0") < pastHtml.indexOf("v0.1.0"), "newest first");
   assert.match(pastHtml, /<td class="warn">1d late<\/td>/, "a late cut is marked");
   assert.match(pastHtml, /<a class="tl" href="#projects\/bnb%2Fdemo\/sprint\/v0\.2\.0">v0\.2\.0<\/a>/, "a scored version links to its page");

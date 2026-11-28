@@ -265,6 +265,7 @@ fn router(state: Shared) -> Router {
         .route("/api/board", get(board::feed).post(board::write))
         .route("/api/sprints", get(sprints::get))
         .route("/api/sprints/page", get(sprints::page))
+        .route("/api/sprints/across", get(sprints::across))
         .route("/api/deliverables", get(deliverables::get))
         .route("/api/stages", get(stages::get))
         .route("/api/stages/requirements", get(stages::get_requirements))
@@ -2067,7 +2068,7 @@ mod tests {
     /// The caches read on their first open, and why that is fine. Times are each tab's first open
     /// after a start, `agent-web-shot --time --every-tab`, load avg 117, 2026-11-18. Over about 1 s
     /// cold belongs in `warm`. Revisit when a tab's first open passes 1.5 s.
-    const ON_OPEN: [(&str, &str); 12] = [
+    const ON_OPEN: [(&str, &str); 13] = [
         (
             "reports",
             "Reports, a `notes report list` of local files; the nav badge reads it on page load",
@@ -2097,6 +2098,10 @@ mod tests {
         (
             "machine-page",
             "one per name: nothing to warm before a name is opened",
+        ),
+        (
+            "sprints-across",
+            "one per project, keyed by the Sprint tab opened; its open window draws without it",
         ),
     ];
     /// Like `machine-page`: a page per name.

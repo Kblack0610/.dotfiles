@@ -442,6 +442,9 @@ pub enum Msg {
     /// An opened project's sprint page (hub_core::sprint_page::read): its version, then the page
     /// or why it failed.
     SprintPage(String, Box<Result<hub_core::sprint_page::Page, String>>),
+    /// An opened project's By area across sprints (hub_core::sprint_page::read_across): the
+    /// `<profile>/<project>` it was asked for, then the table.
+    SprintAcross(String, Box<hub_core::sprint_page::Across>),
     /// The Costs tab's one read of every source it cuts (hub_core::costs::read).
     Costs(Box<hub_core::costs::Costs>),
     /// The Stack tab's read of what the agent system is made of (hub_core::stack::read).
@@ -1056,6 +1059,7 @@ impl App {
             return;
         }
         let Some(so) = self.pv.sprint.as_mut() else {
+            self.read_across_due(profile, project);
             return;
         };
         if so.page.is_some() || so.busy {
@@ -1087,6 +1091,49 @@ impl App {
             );
             let _ = tx.send(Msg::SprintPage(version, Box::new(r)));
         });
+    }
+
+    /// The Sprint tab's By area across sprints reads once per opened project, once the board
+    /// feed has answered which window is open (a feed that failed is said in its errors): as with
+    /// a page, the notes reads behind it have no file to watch.
+    fn read_across_due(&mut self, profile: String, project: String) {
+        if self.pv.across.is_some() {
+            return;
+        }
+        let now = chrono::Local::now().naive_local();
+        let (open, note) = match &self.tasks {
+            None => return,
+            Some(Ok(f)) => (
+                hub_core::sprint_page::open_windows(f, &profile, &project, now),
+                None,
+            ),
+            Some(Err(e)) => (Vec::new(), Some(format!("board: {e}"))),
+        };
+        let scope = format!("{profile}/{project}");
+        self.pv.across = Some(crate::projtab::AcrossRead {
+            scope: scope.clone(),
+            table: None,
+        });
+        let (tx, runner) = (self.tx.clone(), self.runner.clone());
+        std::thread::spawn(move || {
+            let mut a = hub_core::sprint_page::read_across(
+                runner.as_ref(),
+                hub_core::areas::Areas::load(),
+                &profile,
+                &project,
+                &open,
+            );
+            a.errors.extend(note);
+            let _ = tx.send(Msg::SprintAcross(scope, Box::new(a)));
+        });
+    }
+
+    /// A By area across sprints read came back: kept only for the `<profile>/<project>` it was
+    /// asked for, since one opened after it starts its own.
+    fn sprint_across_in(&mut self, scope: &str, a: hub_core::sprint_page::Across) {
+        if let Some(r) = self.pv.across.as_mut().filter(|r| r.scope == scope) {
+            r.table = Some(a);
+        }
     }
 
     /// A sprint page's read came back: kept only when it is still the version the view wants. A
@@ -1976,6 +2023,23 @@ impl App {
         });
     }
 
+    /// The board feed came back: the selection follows its row, and a Sprint tab opened before
+    /// the first feed reads its across table now that the open window is known.
+    fn tasks_in(&mut self, f: Result<Feed, String>) {
+        if let Ok(new) = f.as_ref() {
+            let was = match &self.tasks {
+                Some(Ok(old)) => self.tv.selected(old).cloned(),
+                _ => None,
+            };
+            self.tv.reselect(was, new);
+        }
+        self.tasks = Some(f);
+        if self.tasks_read.done() {
+            self.read_tasks();
+        }
+        self.read_sprint_due();
+    }
+
     /// The rows and the cards are read through `notes board --json` (hub_core::tasks) and
     /// `notes projects --stats --json` (hub_core::projects), never from the sheets: on entering
     /// the Projects tab, on `r`, after a write, and on the tick while shown. Home reads the rows
@@ -2440,6 +2504,7 @@ impl App {
                 }
             }
             Msg::SprintPage(version, r) => self.sprint_page_in(version, *r),
+            Msg::SprintAcross(scope, a) => self.sprint_across_in(&scope, *a),
             Msg::StagesFile if self.ladder_shown() => self.read_ladder(),
             Msg::StagesFile => {}
             Msg::Deliverables(r) => {
@@ -2674,19 +2739,7 @@ impl App {
                     self.read_candidates();
                 }
             }
-            Msg::Tasks(f) => {
-                if let Ok(new) = f.as_ref() {
-                    let was = match &self.tasks {
-                        Some(Ok(old)) => self.tv.selected(old).cloned(),
-                        _ => None,
-                    };
-                    self.tv.reselect(was, new);
-                }
-                self.tasks = Some(*f);
-                if self.tasks_read.done() {
-                    self.read_tasks();
-                }
-            }
+            Msg::Tasks(f) => self.tasks_in(*f),
             Msg::Proposals(r) => {
                 self.proposals = Some(*r);
                 let n = self.prv.shown(open_rows(&self.proposals)).len();
