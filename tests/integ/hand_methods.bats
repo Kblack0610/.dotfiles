@@ -199,6 +199,39 @@ allowed() { assert_success; assert_output ""; }
   allowed
 }
 
+@test "a playground run cancel goes through gh-run-cancel.sh, even with own or stuck" {
+  ln -s "$REPO/.claude/skills/ops/playground-headless-test" "$CLAUDE_SKILLS/playground-headless-test"
+  run run_guard 'gh run cancel 46041044210 # own: ucp-1456 superseded by 285c' /home/u/.worktrees/unity-core-playground-agent-3
+  denied
+  assert_output --partial 'gh-run-cancel.sh'
+  run run_guard 'gh api -X POST repos/{owner}/{repo}/actions/runs/1/cancel # stuck: Run tests' /x/unity-core-playground
+  denied
+  run run_guard 'gh run cancel 45277619723 -R org/unity-core-playground # own: 9acd867773' /tmp
+  denied
+  run run_guard 'gh -R org/unity-core-playground run cancel 1 # own: #2' /tmp
+  denied
+  run run_guard 'gh api -X POST repos/org/unity-core-playground/actions/runs/1/cancel # own: #2' /tmp
+  denied
+  run run_guard 'scripts/test/gh-run-cancel.sh 1 "superseded by 285c"' /x/unity-core-playground
+  allowed
+  run run_guard 'gh run cancel 1 -R o/other # own: #2' /tmp
+  allowed
+  run run_guard 'GH_REPO=org/unity-core-playground gh run cancel 1 # own: #2' /tmp
+  denied
+  run run_guard 'cd ~/dev/unity-core-playground && gh run cancel 1 # own: x' /tmp
+  denied
+  run run_guard 'gh run cancel 1 -Rorg/unity-core-playground # own: #2' /tmp
+  denied
+  run run_guard 'gh --repo=org/unity-core-playground run cancel 1' /tmp
+  denied
+  run run_guard 'gh api -X POST repos/{owner}/{repo}/actions/runs/1/force-cancel' /x/unity-core-playground
+  denied
+  run run_guard 'gh run cancel 1 # own: #2' /home/u/.worktrees/other
+  allowed
+  run run_guard 'gh run cancel 9 -R o/other # own: #1' /x/unity-core-playground
+  allowed
+}
+
 @test "unless lets a named exception through" {
   run run_guard 'cd ~/.worktrees/asset-library-fx && U -batchmode -executeMethod A.B.C' /x/unity-core-playground
   allowed
