@@ -352,6 +352,10 @@ pub struct Glance {
     pub units: Option<Units>,
     /// Job pods no node has room for, by kind and size (`jobpods::pending`).
     pub pending: Vec<Pending>,
+    /// The head line and the waiting-for-room line, worded once (`head`, `pending_line`) for the
+    /// surfaces that only draw them: agent-web reads these, never rebuilds them.
+    pub head: String,
+    pub pending_line: Option<String>,
 }
 
 impl Glance {
@@ -521,6 +525,8 @@ pub fn glance(infra: &Infra) -> Glance {
         .collect();
     long.sort_by_key(|a| std::cmp::Reverse(a.ran));
     g.long = long;
+    g.head = g.head(|s| crate::display::fmt::dur_secs(s as f64));
+    g.pending_line = g.pending_line();
     g
 }
 
@@ -2267,6 +2273,23 @@ mod tests {
         assert_eq!((unity.done_1h, unity.done_5h), (Some(2.0), Some(9.0)));
     }
 
+    /// The head line is served worded, so agent-web draws the TUI's own line (ar-3372).
+    #[test]
+    fn the_glance_serves_its_head_and_waiting_lines_as_strings() {
+        let mut i = crate::machines::tests::fleet();
+        i.derive();
+        let g = &i.ci.glance;
+        assert_eq!(g.head, g.head(|s| crate::display::fmt::dur_secs(s as f64)));
+        assert!(
+            g.head.starts_with("1 running, 2 queued (oldest 15m)"),
+            "{}",
+            g.head
+        );
+        assert_eq!(g.pending_line, g.pending_line());
+        let json = serde_json::to_value(g).unwrap();
+        assert_eq!(json["head"], g.head.as_str());
+    }
+
     /// ar-3326: the glance every surface renders counts each slot once and names what the slots
     /// are doing.
     #[test]
@@ -2305,9 +2328,28 @@ mod tests {
         assert_eq!(
             keys(&v),
             [
-                "alert", "busy", "done", "done_1h", "done_5h", "down", "expected", "feed", "kinds",
-                "level", "long", "machines", "next", "oldest", "parts", "pass", "pending",
-                "queued", "units", "up"
+                "alert",
+                "busy",
+                "done",
+                "done_1h",
+                "done_5h",
+                "down",
+                "expected",
+                "feed",
+                "head",
+                "kinds",
+                "level",
+                "long",
+                "machines",
+                "next",
+                "oldest",
+                "parts",
+                "pass",
+                "pending",
+                "pending_line",
+                "queued",
+                "units",
+                "up"
             ]
         );
         assert_eq!(
