@@ -515,7 +515,9 @@ cmd_report() {
             # already had, and went six nights writing nothing.
             _outcome_promote "$name"
             # A paused skip is not a run, so it gets no ledger line.
-            [ "${SERVICE_RESULT:-}" = exec-condition ] || _ledger_stop "$name" ;;
+            [ "${SERVICE_RESULT:-}" = exec-condition ] || _ledger_stop "$name"
+            # This run's arguments (cmd_start --): the next start writes its own, and a skipped one's must not linger.
+            rm -f "$STATE_DIR/$name/args" ;;
         "") ;;
         *) die "report: unknown lifecycle '$lifecycle' (start|stop)" ;;
     esac
@@ -793,14 +795,35 @@ cmd_status() {
     fi
 }
 
-# start <name> [--no-block]: --no-block queues the start job and returns, for a caller that must not wait
-# out the run (agent-ask start_held); without it, start returns when the run ends.
+# start <name> [--no-block] [-- args...]: --no-block queues the start job and returns, for a caller that must not wait
+# out the run (agent-ask start_held); without it, start returns when the run ends. Arguments are this run's
+# own (a queued job item's, fleet-dispatch start_job): they go in $STATE_DIR/<name>/args, one a line, which the
+# runner reads with proof_start_args and `report --lifecycle stop` removes. A runner holds one run at a time, so a
+# start with arguments is refused while the unit runs or while a start's arguments are less than ARGS_PENDING_S
+# old and unread: a second start must not replace what the first run reads. A line break cannot be an argument.
+ARGS_PENDING_S=60
 cmd_start() {
-    local name="${1:-}" block=()
-    [ -n "$name" ] || die "usage: agentctl start <name> [--no-block]"
-    case "${2:-}" in "") ;; --no-block) block=(--no-block) ;; *) die "usage: agentctl start <name> [--no-block]" ;; esac
+    local name="${1:-}" block=() args=() usage="usage: agentctl start <name> [--no-block] [-- args...]"
+    [ -n "$name" ] || die "$usage"
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --no-block) block=(--no-block); shift ;;
+            --) shift; args=("$@"); break ;;
+            *) die "$usage" ;;
+        esac
+    done
     [ -f "$CONFIG_DIR/${name}.conf" ] || die "no such agent: $name"
     [ "$(agent_field "$name" KIND)" != call ] || die "$name is KIND=call: its caller starts it (agentctl-run --agent $name)"
+    if [ "${#args[@]}" -gt 0 ]; then
+        local f="$STATE_DIR/$name/args" a
+        for a in "${args[@]}"; do case "$a" in *$'\n'*) die "an argument holds a line break: $a" ;; esac; done
+        case "$(unit_state "$name")" in active | activating | reloading | deactivating) die "$name is running: a start with arguments waits for its run to end" ;; esac
+        if [ -e "$f" ] && [ $(( $(date +%s) - $(stat -c %Y "$f" 2>/dev/null || echo 0) )) -lt "$ARGS_PENDING_S" ]; then
+            die "$name has a start's arguments not yet read (under ${ARGS_PENDING_S}s old): a start with arguments waits for it"
+        fi
+        mkdir -p "$STATE_DIR/$name" && printf '%s\n' "${args[@]}" > "$f" || die "cannot write $f"
+    fi
     systemctl --user start ${block[@]+"${block[@]}"} "agentctl@${name}.service"
 }
 
@@ -1224,7 +1247,7 @@ Usage:
   agentctl budget                Spend against each runner's caps today (lib/budget.sh)
   agentctl budget <n> raise <usd> [calls]  Lift <n>'s day cap (and hour cap) for the rest of today
   agentctl report [k=v ...]      Publish this runner's status (runner-side; see below)
-  agentctl start <name>          Start agent (oneshot: run now; persistent: spawn; call: refused, its caller starts it)
+  agentctl start <name> [--no-block] [-- args...]  Start agent (oneshot: run now; persistent: spawn; call: refused, its caller starts it); args are this run's, read by the runner (proof_start_args)
   agentctl stop <name>           Stop a running agent
   agentctl restart <name>        Restart agent
   agentctl enable <name>         Set ENABLED=yes in its conf and reload (arms its timer)

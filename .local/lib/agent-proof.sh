@@ -229,6 +229,14 @@ proof_outcome() {
   esac
 }
 
+# proof_start_args NAME - the arguments the start of runner NAME carried (`agentctl start NAME -- args`),
+# one a line on stdout; nothing when it carried none. The file stays until the run's stop report removes it,
+# so a restart of the same run reads the same arguments. Use: mapfile -t args < <(proof_start_args "$NAME").
+proof_start_args() {
+  cat "$(proof_state_dir)/$1/args" 2>/dev/null
+  return 0
+}
+
 # proof_runner_outcome VERDICT WORDS - proof_outcome for the runner this pass runs as
 # ($AGENTCTL_NAME, exported into every unit); outside agentctl it does nothing. For a tool that
 # is also run by hand: under agentctl a pass that declares no outcome is promoted to STALLED,

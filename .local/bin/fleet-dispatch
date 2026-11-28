@@ -993,7 +993,7 @@ telemetry_env() {
 # server and session, and only reap reads them (settle_sessionless for the second).
 item_sessions() {
   agent-queue list --json --state active 2>/dev/null | jq -r '
-    select(.state != "queued")
+    select(.state != "queued" and (.mode // "") != "job")
     | ((.session // "") | index(":")) as $i
     | [.slug, (if $i then .session[:$i] else "" end), (if $i then .session[$i + 1:] else "" end),
        (.by // ""), .project, (.area // ""), .state, (.weight // "light"),
@@ -4592,13 +4592,8 @@ cmd_start() {
     say "start: give exactly one of --brief, --item or --resume"
     return 2
   fi
-  if [ -n "$resume" ]; then
-    # One writer per transcript: a second claude on a live conversation would also take its item.
-    ! claude_pid_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
-    # A resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM too.
-    # A conversation that worked several items resumes the one updated last (ar-2676).
-    [ -n "$item" ] || item=$(agent-queue mine --sid "$resume" --newest 2>/dev/null) || item=''
-  fi
+  [ -z "$resume" ] || resume_item || return
+  [ -z "$item" ] || [ -n "$resume" ] || [ "$(agent-queue show "$item" --json 2>/dev/null | jq -r '.mode // empty')" != job ] || { start_job_item "$item" "$harness$model$host$key$session"; return; }
   if [ -n "$item" ] && [ -z "$resume" ]; then
     [ -n "$harness" ] || [ -n "$model" ] || ! cloud_routed "$item" || harness=claude-cloud
     # Before the lock: model-lane may ask an LLM (20s timeout), and another start must not wait on it.
@@ -7044,6 +7039,123 @@ next_items() {
   return 0
 }
 
+# --- mode: job items: an agentctl runner run with no model session (QUEUE.md "Job items") ---
+# A job item's `run:` is "<runner> [args]". It keeps every hold a queued item has (at:, night, after:, hold:),
+# because runnable's `.hold` is what start_jobs reads; a start takes no run unit and no pace, since no
+# session runs. The start is `agentctl start <runner> --no-block -- <args>`; the runner's own ledger line
+# (agentctl's runs.jsonl, written when the run stops) closes the item, in reap_jobs: WORKED and NOOP close it
+# ok, any other word failed. No process watches the run, so a dispatch restart orphans nothing.
+
+# job_runner <run> -> the runner name, the first word of a job item's run:.
+job_runner() { local w; read -ra w <<<"$1"; printf '%s' "${w[0]:-}"; }
+
+# job_ledger <runner> <since epoch> -> the outcome word of the first run of <runner> that started at or after <since> and
+# has finished (NONE when it declared none), from the ledger agentctl writes; nothing while no such run has.
+job_ledger() {
+  local d
+  d=$( . "$HOME/.local/lib/agent-proof.sh" 2>/dev/null && proof_state_dir) || return 0
+  jq -rn --arg n "$1" --argjson s "$2" \
+    'first(inputs | select(.name == $n and (.started // 0) >= $s) | (.outcome // "") | if . == "" then "NONE" else . end)' \
+    "$d/runs.jsonl" 2>/dev/null || :   # no ledger yet (jq exits 2) is no finished run
+}
+
+# job_unit_live <runner> -- the runner's unit is active, starting or stopping (its stop report still runs).
+job_unit_live() {
+  case "$(systemctl --user show -p ActiveState --value "agentctl@$1.service" 2>/dev/null)" in active | activating | reloading | deactivating) return 0 ;; *) return 1 ;; esac
+}
+
+# job_close <slug> <ok|failed> <note> -- close a job item with its words; the note is what a reader sees first.
+job_close() {
+  agent-queue set "$1" "note=$3" >/dev/null 2>&1
+  agent-queue move "$1" done --status "$2" --if "${4:-running}" >/dev/null 2>&1 || return 1
+  logline "reaped job ${5:-$1}: queue item $1 ${4:-running} -> done ($3)"
+}
+
+# start_job <item json> -- start one queued job item: rc 0 when it started or waits for the next pass (the reason said),
+# the item closed failed when its run: can never start (no runner by that name, a runner a caller starts).
+start_job() {
+  local it=$1 slug run name conf out tags
+  local -a w
+  slug=$(jq -r .slug <<<"$it"); run=$(jq -r '.run // ""' <<<"$it")
+  read -ra w <<<"$run"; name=${w[0]:-}
+  conf="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/$name.conf"
+  if ! [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || [ ! -f "$conf" ]; then
+    job_close "$slug" failed "run: \"$run\" names no agentctl runner ($conf is missing)" queued "$name"
+    return 0
+  fi
+  if [ "$DRY" = 1 ]; then say "would start job $slug: agentctl start $name -- ${w[*]:1}"; return 0; fi
+  # A runner mid-run is a wait, decided before the claim: a claimed item's ledger window opens at the claim, so it would
+  # never see the run in flight, and each pass would flip it running and back (events, board marks).
+  if job_unit_live "$name"; then say "job $slug: $name is running, so it stays queued"; return 0; fi
+  # The claim is the one start: a second pass or a hand start finds it running and stops (--if queued). The move strips
+  # its hold: tags (a requeue would hold it behind its own claim); a start that races a run puts them back.
+  tags=$(jq -r '.tags // ""' <<<"$it")
+  agent-queue move "$slug" running --if queued >/dev/null 2>&1 || { say "job $slug: no longer queued, another start took it"; return 0; }
+  if out=$(agentctl start "$name" --no-block -- "${w[@]:1}" 2>&1); then
+    logline "job $slug: agentctl start $name${w[1]:+ ${w[*]:1}} (no model session)"
+    echo "started job $slug: $name"
+    return 0
+  fi
+  # A runner already running, or holding an earlier start's arguments, is a wait: the item goes back, as it was.
+  agent-queue move "$slug" queued --if running >/dev/null 2>&1
+  [ -z "$tags" ] || agent-queue set "$slug" "tags=$tags" >/dev/null 2>&1
+  say "job $slug: agentctl start $name did not start it, so it stays queued: ${out//$'\n'/ }"
+  logline "job $slug: agentctl start $name refused, stays queued: ${out//$'\n'/ }"
+  return 0
+}
+
+# start_jobs -- start every queued job item no hold stops, once a pass, before the gates that pace sessions. Held
+# by the dispatch hold (agent-hold) as every start is.
+start_jobs() {
+  local it
+  agent-hold check dispatch >/dev/null 2>&1 || return 0   # exit 0 is nothing holding dispatch; a hold (exit 1) starts nothing
+  agent-queue list --json --state queued 2>/dev/null | jq -c 'select(.hold == null and .mode == "job")' |
+    while IFS= read -r it; do [ -z "$it" ] || start_job "$it"; done
+  return 0
+}
+
+# resume_item -- cmd_start's --resume: sets its `item`. One writer per transcript, a second claude on a live conversation
+# would also take its item; a resume works the item that lists its conversation, so a hand resume keeps AGENT_QUEUE_ITEM
+# too, and a conversation that worked several items resumes the one updated last (ar-2676).
+resume_item() {
+  ! claude_pid_live "$resume" || { say "start: conversation $resume is still running; end it before resuming it"; return 1; }
+  [ -n "$item" ] || item=$(agent-queue mine --sid "$resume" --newest 2>/dev/null) || item=''
+}
+
+# start_job_item <slug> <session flags> -- `start --item` on a job item, the hand path of start_jobs under the same holds. A
+# job item runs an agentctl runner, no session: no lane pick, worktree or harness, so a flag that picks one is refused.
+start_job_item() {
+  local it st hold
+  [ -z "${2:-}" ] || { say "start: $1 is a job item: --harness, --model, --host, --row and --session do not apply"; return 2; }
+  it=$(agent-queue show "$1" --json 2>/dev/null) || { say "start: no queue item: $1"; return 2; }
+  st=$(jq -r .state <<<"$it")
+  [ "$st" = queued ] || { say "start: $1 is $st, not queued"; return 1; }
+  hold=$(jq -r '.hold // empty' <<<"$it")
+  [ -z "$hold" ] || { say "start: $1 waits on $hold; it starts once that clears"; return 1; }
+  DRY=${DRY:-0}
+  start_job "$it"
+}
+
+# reap_jobs -- close each running job item whose runner has a finished run since the item started (job_ledger), by
+# that run's outcome word; one with none past DISPATCH_REAP_GRACE and no live unit is closed failed (the run
+# was skipped by a pause or the stop switch, or the unit failed before it wrote a record), never left running.
+reap_jobs() {
+  local it slug name started t word st
+  while IFS= read -r it; do
+    [ -n "$it" ] || continue
+    slug=$(jq -r .slug <<<"$it"); name=$(job_runner "$(jq -r '.run // ""' <<<"$it")")
+    started=$(jq -r '.started // ""' <<<"$it"); t=$(date -d "$started" +%s 2>/dev/null) || continue
+    word=$(job_ledger "$name" "$t")
+    if [ -n "$word" ]; then
+      case "$word" in WORKED | NOOP) st=ok ;; *) st=failed ;; esac
+      job_close "$slug" "$st" "runner $name ended $word" running "$name"
+    elif past_reap_grace "$started" && ! job_unit_live "$name"; then
+      job_close "$slug" failed "runner $name left no run record $DISPATCH_REAP_GRACE s after the start: its start was skipped (agentctl pause, the stop switch) or the unit failed; agentctl status $name" running "$name"
+    fi
+  done < <(agent-queue list --json --state active 2>/dev/null | jq -c 'select(.state == "running" and .mode == "job")')
+  return 0
+}
+
 # load_findings -- FIRING is the findings firing now, read once a pass; rc 1 when they cannot be
 # read, which holds every item.
 load_findings() {
@@ -8420,7 +8532,8 @@ cmd_headroom() {
 runnable() {
   local q
   q=$(agent-queue list --json ${1:+"$1"} --state queued 2>/dev/null) || return 1
-  jq -c 'select(.hold == null) | . + {t: (.queued | try fromdateiso8601 catch null)}' <<<"$q"
+  # A job item is no session: it takes no run unit and no pace, so start_jobs starts it and no pick or count sees it.
+  jq -c 'select(.hold == null and (.mode // "") != "job") | . + {t: (.queued | try fromdateiso8601 catch null)}' <<<"$q"
 }
 
 # queue_depth -> the queued items no hold stops: what the low water mark measures. An item the fleet
@@ -8632,6 +8745,7 @@ reap_once() {
       jq -r 'select((.row // "") != "" and .status != "ok") | .slug' 2>/dev/null |
       while IFS= read -r s; do settle_row "$s"; done
   done
+  reap_jobs
   # The guard for queued items a failed close left waiting on it for good (ar-6144): agent-queue move
   # settles them as it closes the item, so this finds only a close from before that, or a settle that
   # did not finish. Idempotent: an item already returned or asked about is left as it is.
@@ -9533,6 +9647,7 @@ cmd_run() {
   # write gates onto the rows they un-start (agent-queue return_gates).
   GATES_LOADED=''; load_gates; pass_mark gates
   [ "$DRY" = 1 ] || { pull_closed_after; pass_mark pulled; }
+  start_jobs; pass_mark jobs
   pass_reset
   [ "$DRY" = 1 ] || { triage_pass; pass_mark triage; }
   # Each skip takes the exit its rule names (plan, the human, a gate); a dry run only reads.

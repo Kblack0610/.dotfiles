@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
-#   add [--project p] [--mode oneshot|plan] [--priority urgent|high|normal|low] [--tags "t1 t2"]
+#   add [--project p] [--mode oneshot|plan|job [--run "<runner> [args]"]] [--priority urgent|high|normal|low] [--tags "t1 t2"]
 #       [--weight heavy|light] [--after slug|row-id[,...]] [--from human|session|shepherd|canary|trainee|research:<facet>|auto:<filer>|item:<slug>|ask:<id>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
 #       [--row <code>-<N>] [--pr <owner>/<repo>#<N>] [--epic <code>-<N>] [--want <channel>] [--checked <id>[,...]] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --running with no --from or --want is from item:<$AGENT_QUEUE_ITEM> in a queue item's session, from session in any
@@ -26,6 +26,8 @@
 #       One owner per piece of work (live_owner): an add is refused, naming the live item, when it names a cause: tag, a --row, a --pr
 #       (the PR the item works, recorded as its pr:) or a plan phase (a first line "P4 of <plan>") another active item already has; set refuses
 #       a cause: tag, plan= and phases= the same way, and never a pr= (agent-land records the PR it merged). A `validate` item reviews its author's PR and owns none.
+#       --mode job --run "<runner> [args]" queues no session: a dispatch pass runs `agentctl start <runner> -- <args>` (no model) once no hold stands
+#       (at:, night, after:, hold:), and reap closes the item on that run's own outcome word (fleet-dispatch reap_jobs, QUEUE.md "Job items"). --run is required with --mode job and refused without it.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. When notes refuses that row for
@@ -2472,6 +2474,7 @@ add_cap_hold() {
 # add_item_text -> the item file cmd_add writes, from its locals.
 add_item_text() {
   printf 'slug: %s\nproject: %s\nmode: %s\npriority: %s\nweight: %s\n' "$slug" "$project" "$mode" "$priority" "$weight"
+  [ -z "$job_run" ] || printf 'run: %s\n' "$job_run"
   [ -n "$title" ] && printf 'title: %s\n' "$title"
   [ -n "$ctype" ] && printf 'type: %s\narea: %s\n' "$ctype" "$carea"
   [ -n "$tags" ] && printf 'tags: %s\n' "$tags"
@@ -2532,11 +2535,12 @@ story_refused() {
 # overflow row was a twin that dispatch skipped to the human sheet beside the first (2026-11-25).
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
-  local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given="" pr="" AQ_ADD_CHECKED=""
+  local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given="" pr="" AQ_ADD_CHECKED="" job_run=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:?}"; shift 2 ;;
       --mode) mode="${2:?}"; shift 2 ;;
+      --run) job_run="$(oneline "${2:?}")"; shift 2 ;;
       --priority) priority="${2:?}"; priority_given=1; shift 2 ;;
       --weight) weight="${2:?}"; shift 2 ;;
       --tags) tags="$(word_list "${2:?}")"; shift 2 ;;
@@ -2567,6 +2571,7 @@ cmd_add() {
   [ -z "$running" ] || [ -n "$priority_given" ] || [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] || priority=normal
   if [ -n "$planf" ]; then
     plan_flags_ok "${#task[@]}" "$want" "$row" "$pr" "$mode" "$running"
+    [ -z "$job_run" ] || die "--plan items are queued oneshot items: no --run"
     plan_check_markers "$planf" "$check"
     # --from board:<project>:<id> is dispatch's promote of a plan row filed before ar-5605 (its brief is
     # plan_row_task's): that row goes on the plan's `rows:` line (add_plan), which agent-land closes with
@@ -2590,9 +2595,9 @@ cmd_add() {
   fi
   [ -z "$dry" ] || die "--dry-run and --check go with --plan"
   local text
-  if [ "${#task[@]}" -gt 0 ]; then text="${task[*]}"; elif [ ! -t 0 ]; then text="$(cat)"; fi
+  if [ "${#task[@]}" -gt 0 ]; then text="${task[*]}"; elif [ -z "$job_run" ] && [ ! -t 0 ]; then text="$(cat)"; fi
+  job_admit "$mode" "$job_run" "$running"
   [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
-  case "$mode" in oneshot | plan) ;; *) die "--mode is oneshot or plan, not $mode" ;; esac
   prio_rank "$priority" >/dev/null || die "--priority is urgent, high, normal or low, not $priority"
   case "$weight" in '' | heavy | light) ;; *) die "--weight is heavy or light, not $weight" ;; esac
   [ -z "$running" ] || [ -n "$from_given$want" ] || from="$(running_from)"
@@ -2600,11 +2605,7 @@ cmd_add() {
   case "$agent" in *[!a-z0-9-]* | '') die "--agent is one word, not $agent" ;; esac
   local row_id='^[a-z0-9]+-[0-9]+$'
   [ -z "$epic" ] || [[ "$epic" =~ $row_id ]] || die "--epic is a row id, <code>-<N>, not $epic"
-  if [ -n "$row" ]; then
-    [[ "$row" =~ $row_id ]] || die "--row is a row id, <code>-<N>, not $row"
-    [ -z "$epic$want" ] || die "--epic and --want shape a new story; --row links a row already filed"
-    case "$from" in board:* | canary | trainee) die "--row is for an item not promoted from the board and not a canary or trainee review, not --from $from" ;; esac
-  fi
+  row_guard "$row" "$epic$want" "$from"
   check_tags "$tags"
   # A hand-started session records itself and its window, in a worktree session on any world.
   local window='' host=''
@@ -2640,6 +2641,7 @@ cmd_add() {
   fi
   if [ -z "$running" ] && { [ -z "${AGENT_QUEUE_PULL:-}" ] || [[ "$from" != board:* ]]; }; then
     add_gates "$slug" "${after:-$(landing_after "${AGENT_QUEUE_ITEM:-}" "$text")}" "$tags"; after="$AFTER_ITEMS"
+    job_keep_gates "$mode" "$running" "$from" "$from_given"
   fi
   # Admission: every add that is not running or the board's own pull counts against the cap
   # (see admit); a queue item's session adding without --from is recorded as from the item.
@@ -2647,7 +2649,7 @@ cmd_add() {
   case "$from" in trainee | auto:epics | auto:validate | canary) capped='' ;; esac
   case "${AGENT_QUEUE_PULL:-}" in hand | land) capped='' ;; esac
   [[ "$from" != board:* ]] || ! plan_phase_task "$text" || capped=''
-  { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
+  { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ] && [ "$mode" != job ]; } || capped=''   # a job item runs no session: it holds none of the room the cap protects
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
   [ -z "$capped" ] || ! pull_ok "$running" "$from" "$from_given" || make_room "$priority" "$tags" "$slug"
   # `type(area): title` on the first line or --title, parsed by the grammar's one home before the lock (ar-5606).
@@ -2790,6 +2792,7 @@ cmd_start() {
 weight_of() {
   local words MEMO_V
   read -ra words <<<"$3"
+  [ "$2" != job ] || { WEIGHT=light; return; } # no session: a job item holds no run unit
   if [ "$2" = plan ] || [ "${#words[@]}" -ge 2 ]; then WEIGHT=heavy; return; fi
   memo "unity:$1" unity_weight "$1"
   WEIGHT="$MEMO_V"
@@ -3852,7 +3855,7 @@ cmd_bump() {
 # settable: they are what the item is. `from` is, so a project rename can move a board origin, and
 # `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
 # writes it). The board row's own words are its sheet's: `notes ptask edit`.
-SETTABLE=" asked asker title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged landed_by partial closing_pr fix_tries land_tries takeover_tries provider_tries rerun_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix proves_at validate verdict verdict_head "
+SETTABLE=" asked asker title project mode run priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged landed_by partial closing_pr fix_tries land_tries takeover_tries provider_tries rerun_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix proves_at validate verdict verdict_head "
 
 # One landed_by pair, <session id>=<owner>/<repo>#<N> (cmd_set).
 LANDED_PAIR='[^= ]+=[^# ]+/[^# ]+#[0-9]+'
@@ -4557,6 +4560,49 @@ own_pr() {
     [ "${ref,,}" != "${2,,}" ] || return 0
   done
   return 1
+}
+
+# job_check <run> <running> -- a --mode job add's command is one agentctl runner and its arguments, which
+# `agentctl start <runner> -- <args>` takes word for word (no shell reads it). Dies on no command, a runner with
+# no conf, a KIND=call runner (its caller starts it), a KIND=persistent one (no run ends) or one that may run a model (EFFECT is not none: a job
+# item runs no model session), and on --running, since dispatch starts a job item and nothing works it.
+job_check() {
+  local name="${1%% *}" conf="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/${1%% *}.conf" eff kind
+  [ -n "$1" ] || die "--mode job needs --run \"<runner> [args]\": the agentctl runner a dispatch pass starts with no model"
+  [ -z "$2" ] || die "--mode job items are started by dispatch: no --running"
+  [[ "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]] || die "--run starts with a runner name (agentctl list), not $name"
+  [ -f "$conf" ] || die "--run names no agentctl runner: $name has no $conf"
+  eff="$(sed -n 's/^EFFECT=//p' "$conf" | tail -1 | tr -d "\"'")" kind="$(sed -n 's/^KIND=//p' "$conf" | tail -1 | tr -d "\"'")"
+  [ "$kind" != call ] || die "--run: $name is KIND=call, started by its caller, not by a job item"
+  [ "$kind" != persistent ] || die "--run: $name is KIND=persistent, which has no run end for the item to close on"
+  [ "$eff" = none ] || die "--run: $name has EFFECT=${eff:-unset}, and a job item runs no model: only an EFFECT=none runner"
+}
+
+# job_admit <mode> <run> <running> -- the --mode and --run of an add must agree (die). A job item's own words are its
+# command, so it needs no task beside it: sets the caller's `text` when it has none.
+job_admit() {
+  case "$1" in oneshot | plan) [ -z "$2" ] || die "--run is the command of a --mode job item" ;; job) job_check "$2" "$3" ;; *) die "--mode is oneshot, plan or job, not $1" ;; esac
+  [ "$1" != job ] || [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || text="job: $2"
+}
+
+# job_keep_gates <mode> <running> <from> <from_given> -- a job item keeps its holds on the item, where the queue reads them
+# (hold_for): a board row cannot carry --run, so filing it as a gated row would turn it into a session, and a caller the
+# queue turns away to the board (board_only_say) would lose its command. Clears the caller's GATES; only a wait on a
+# board row (--after a row) has no form on the item and dies.
+job_keep_gates() {
+  [ "$1" = job ] || return 0
+  pull_ok "$2" "$3" "$4" || die "--mode job goes straight into the queue only from the human (a terminal, a session they opened, the hub): a board row cannot carry --run"
+  [[ " $GATES " != *" after/"* ]] || die "--mode job waits on queue items (--after <slug>), not on a board row (${GATES})"
+  GATES=''
+}
+
+# row_guard <row> <epic and want> <from> -- --row links a row already filed, so it shapes no new story and is no board pull.
+row_guard() {
+  local row_id='^[a-z0-9]+-[0-9]+$'
+  [ -n "$1" ] || return 0
+  [[ "$1" =~ $row_id ]] || die "--row is a row id, <code>-<N>, not $1"
+  [ -z "$2" ] || die "--epic and --want shape a new story; --row links a row already filed"
+  case "$3" in board:* | canary | trainee) die "--row is for an item not promoted from the board and not a canary or trainee review, not --from $3" ;; esac
 }
 
 # check_tags <tags> [<slug>] -- die on a hold tag the queue could not read, so a gate is never silently
