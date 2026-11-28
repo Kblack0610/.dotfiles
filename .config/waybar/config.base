@@ -315,7 +315,7 @@
         "tooltip": true
     },
     // Machine mode: the mode's initial, in every mode. Placed by config.desktop only (right of
-    // custom/storage); the laptop has no pool runners, so it has no chip.
+    // custom/storage), so the laptop has no chip.
     "custom/machine-mode": {
         "format": "{}",
         "return-type": "json",
