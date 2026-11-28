@@ -745,6 +745,7 @@ if [ "$1" = prs ]; then
 fi
 [ -e "$D/unsynced" ] && { echo "$2 is not in the run ledger" >&2; exit 3; }
 [ -e "$D/later" ] && { echo "$2 not yet past $6" >&2; exit 4; }
+[ -e "$D/down" ] && { echo "ledger down: GitHub API rate limit hit" >&2; exit 5; }
 [ "$1 $3 $5" = "runs --branch --until" ] || exit 2
 jq -c 'map({workflow: .workflowName, path, sha: .headSha, status: "completed", conclusion,
   created_at: .createdAt, started_at: .startedAt, ended_at: .updatedAt})' "$D/runs-$4.json"
@@ -826,6 +827,21 @@ merged_pr() {
   assert_success
   run jq -s -c 'map(.number) | sort' "$FLEET_BENCH_DIR/pr-ci.jsonl"
   assert_output '[7,8,9]'
+}
+
+@test "a run ledger down for every repo (runs exit 5) is a PR it cannot count now, never one its forge calls gone (ar-230)" {
+  stub_review
+  merged_pr s1 7 35
+  touch "$GHD/down"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_failure
+  assert_output --partial 'cannot count'
+  refute_output --partial 'no such PR'
+  rm "$GHD/down"
+  BENCH_NOW=$T0 run "$SUBJECT" review
+  assert_success
+  run jq -s -c 'map(.number)' "$FLEET_BENCH_DIR/pr-ci.jsonl"
+  assert_output '[7]'
 }
 
 # stub_forgejo: session-outcomes names git.example.test/o/audio#12, merged an hour ago; its API

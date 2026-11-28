@@ -200,7 +200,7 @@ LEDGER = os.environ.get(
 )
 SYNC = os.path.join(os.path.dirname(LEDGER), "sync.json")
 # The gh wrapper's one shared reading of the REST budget, "<remaining> <reset epoch> <read at>"
-# (.local/bin/gh budget_left): `runs` names its reset when the ledger waits on the budget.
+# (.local/bin/gh budget_left): a pass keeps its reset with a budget error, which `runs` names.
 GH_BUDGET = os.path.join(os.environ.get("GH_CALLS_DIR")
                          or os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.join(HOME, ".local/state"), "gh-calls"), "budget")
 JOBS_LEDGER = os.environ.get("SCHEDULES_JOBS_LEDGER", os.path.join(os.path.dirname(LEDGER), "jobs.jsonl"))
@@ -1464,23 +1464,26 @@ def stale_why(label, entry):
 def ledger_down(entry, t):
     """The cause a stale repo shares with every repo of the pass, as `ledger down: <cause>`, or None
     when its staleness is its own: a sync file no pass has written in STALE (the timer or the pass is
-    down), or the entry's shared error (GhShared). A REST budget cause names its reset when the gh
-    wrapper's reading has one ahead: `, resets <ISO>`."""
+    down), or the entry's shared error (GhShared). A REST budget cause names the reset the pass
+    recorded with it: `, resets <ISO>`."""
     gen = when(read_sync("generated_at") or None)
     if gen and gen < t - STALE:
         return f"ledger down: no sync pass since {iso(gen)} (schedules-sync.timer)"
-    kind = entry.get("error_shared")
-    if not kind or not entry.get("error"):
+    if not entry.get("error_shared") or not entry.get("error"):
         return None
-    reset = None
-    if kind == "budget":
-        try:
-            with open(GH_BUDGET) as f:
-                at = datetime.fromtimestamp(int(f.read().split()[1]), timezone.utc)
-            reset = at if at > t else None
-        except (OSError, ValueError, IndexError, OverflowError):
-            pass
-    return f"ledger down: {entry['error']}" + (f", resets {iso(reset)}" if reset else "")
+    reset = entry.get("error_reset")
+    return f"ledger down: {entry['error']}" + (f", resets {reset}" if reset else "")
+
+
+def budget_reset():
+    """The reset of the gh wrapper's shared REST budget reading, ISO, or None when it has none. A pass
+    keeps it on the entry its budget error stopped (`error_reset`), so the reset `runs` names stays
+    put once it passes, until the next good read: the wrapper renews its reading to the next hour's."""
+    try:
+        with open(GH_BUDGET) as f:
+            return iso(datetime.fromtimestamp(int(f.read().split()[1]), timezone.utc))
+    except (OSError, ValueError, IndexError, OverflowError):
+        return None
 
 
 def read_sync(part="repos", path=SYNC):
@@ -2109,6 +2112,7 @@ def main(argv):
                 raise GhError(f"unknown forge {forge} (github, forgejo)")
             entry.update(synced_at=iso(t), error=None)
             entry.pop("error_shared", None)
+            entry.pop("error_reset", None)
         except GhError as e:
             bad += not isinstance(e, GhDeferred)
             print(f"schedules-sync: {repo}: {e.detail}", file=sys.stderr)
@@ -2117,6 +2121,11 @@ def main(argv):
                 entry["error_shared"] = e.kind
             else:
                 entry.pop("error_shared", None)
+            reset = budget_reset() if getattr(e, "kind", None) == "budget" else None
+            if reset:
+                entry["error_reset"] = reset
+            else:
+                entry.pop("error_reset", None)
             if forge == "github":
                 kept = dict(state or p or {"repo": repo, "base": base, "synced_at": None, "workflows": []})
                 kept["error"] = str(e)
