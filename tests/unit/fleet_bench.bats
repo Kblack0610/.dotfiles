@@ -2752,6 +2752,50 @@ fix_item() {
   assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
 }
 
+# 2026-11-21 (ar-4538): source-pace, on the alert route, tripped on after the human answered "keep"
+# (asks agERZ5, KntBiO), and each new trip queued an item that closed in minutes finding that answer.
+@test "triage: an alert watch's recorded ask stands for later trips while pending or answered in TRIAGE_FIX_DAYS" {
+  log_triage_setup
+  watch spend TRIP -25200 high
+  route 'watch.: (spend) tripped' alert - 'pace is their call'
+  local want before
+  want=$(printf '%s' 'check(watch):spend' | sha256sum | cut -c1-8)
+  before=$(date -u -d "@$((T0 - 90000))" +%FT%TZ)
+  # an earlier trip's item recorded the ask; a later item that recorded none does not hide it
+  jq -cn --arg t "red watch cause:$want" --arg q "$before" '{slug: "ar-1", tags: $t, state: "done", status: "ok", queued: $q, ask: "Ask123"}' >> "$ITEMS"
+  jq -cn --arg t "red watch cause:$want" --arg q "${before%Z}.5Z" '{slug: "ar-2", tags: $t, state: "done", status: "ok", queued: $q}' >> "$ITEMS"
+  export ASKSTATUS=answered ASKANSWERED; ASKANSWERED=$(date -d "@$((T0 - 2 * 86400))" +%FT%T%z)
+  run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  assert_output --partial "triage: $want (check(watch): spend"
+  assert_output --partial 'stands on ask Ask123: no item'
+  run cat "$ASKLOG"
+  assert_output 'show Ask123'
+  # a pending ask stands too: the decision is with the human
+  ASKSTATUS=pending ASKANSWERED='' run "$SUBJECT" triage
+  assert_success
+  [ ! -s "$PLOG" ]
+  # an agent route reads no recorded ask: its red is a fault to fix
+  : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' agent - 'fix the spend'
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  : > "$TRIAGE_ROUTES"; route 'watch.: (spend) tripped' alert - 'pace is their call'
+  # NEGATIVE CONTROL: an answer older than TRIAGE_FIX_DAYS has aged out, so this trip gets its item
+  : > "$PLOG"; ASKANSWERED=$(date -d "@$((T0 - 8 * 86400))" +%FT%T%z)
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want --raw "
+  # ... and so does one whose ask was cancelled, or that agent-ask cannot show
+  : > "$PLOG"; ASKSTATUS=cancelled run "$SUBJECT" triage
+  assert_output --partial '1 queued as red fixes'
+  : > "$PLOG"; ASKANSWERED=$(date -d "@$((T0 - 86400))" +%FT%T%z) TRIAGE_ASK_CMD=false run "$SUBJECT" triage
+  assert_output --partial '1 queued as red fixes'
+}
+
 # 2026-11-20 (ar-4064): tries were counted over the whole TRIAGE_FIX_DAYS window, so a watch that
 # cleared and tripped again found both tries spent by the last trip: 12 of 22 tripped watches,
 # release-links and alertmanager-fleet among them, had no owner.
