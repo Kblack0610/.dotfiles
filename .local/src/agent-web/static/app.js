@@ -70,15 +70,13 @@ document.addEventListener("click", async (e) => {
 
 // Session actions (hub-core session_actions on the server). A button only arms a confirm
 // here in the page; the confirm's own button sends it. Parked rows offer only unpark.
-const DANGER = ["stop", "cancel"];
-// The button for each session action (hub-core session_actions.rs names); an unknown one shows its name.
-const ACT_LABEL = { interrupt: "Interrupt", park: "Park session", unpark: "Unpark session", move: "Move to account",
-  stop: "Stop session", cancel: "Cancel task", "approve-plan": "Approve plan" };
-const actLabel = (n) => ACT_LABEL[n] || n;
+// The words and the dangers come from the server (hub-core session_actions::options): one place names each action.
+const actOpt = (n) => st.opts.actions.find((o) => o.name === n) || { name: n, label: n, describe: "", danger: false };
+const actLabel = (n) => actOpt(n).label;
 st.act = { confirm: null, busy: false, msg: "", err: false };
 // Why the last Approve plan failed, by session target, shown beside its button.
 st.approveErr = {};
-st.opts = { describe: {}, accounts: [] };
+st.opts = { actions: [], accounts: [] };
 api("/api/session-options").then((o) => { st.opts = o; if (st.sel) renderActs(); }).catch((e) => console.warn(e));
 
 // A fold opened on a phone stays open across redraws. Only then: a wide screen has them all open.
@@ -95,14 +93,14 @@ function renderActs() {
     const others = st.opts.accounts.filter((n) => n !== a.account);
     const pick = c.action === "move"
       ? `<select id="act-acct">${others.map((n) => `<option>${esc(n)}</option>`).join("")}</select>` : "";
-    const danger = DANGER.includes(c.action) ? " danger" : "";
-    html += `<span class="q">${esc(actLabel(c.action))}? This will ${esc(st.opts.describe[c.action] || "")}.${a.attached ? " You are attached to it." : ""} (${esc(a.target)})</span>${pick}`
+    const danger = actOpt(c.action).danger ? " danger" : "";
+    html += `<span class="q">${esc(actLabel(c.action))}? This will ${esc(actOpt(c.action).describe)}.${a.attached ? " You are attached to it." : ""} (${esc(a.target)})</span>${pick}`
       + (c.action === "approve-plan" && a.question && a.question.kind === "plan"
         ? `<div class="planpeek md">${md(a.question.text.split("\n").filter((l) => l.trim()).slice(0, 6).join("\n"))}</div>` : "")
       + `<button class="btn primary${danger}" data-go ${st.act.busy || (c.action === "move" && !others.length) ? "disabled" : ""}>Yes, ${esc(actLabel(c.action).toLowerCase())}</button>`
       + `<button class="btn" data-no ${st.act.busy ? "disabled" : ""}>Cancel</button>`;
   } else {
-    const btns = (a.actions || []).map((n) => `<button class="btn${DANGER.includes(n) ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
+    const btns = (a.actions || []).map((n) => `<button class="btn${actOpt(n).danger ? " danger" : ""}" data-act="${esc(n)}" ${st.act.busy ? "disabled" : ""}>${esc(actLabel(n))}</button>`).join("");
     if (btns) html += pfold("acts", "Actions", `<div class="actrow">${btns}</div>`);
   }
   if (st.act.msg) html += (st.act.err ? errPanel(st.act.msg, { cls: "msg" }) : `<div class="msg">${esc(st.act.msg)}</div>`);
@@ -135,7 +133,7 @@ $("acts").addEventListener("click", async (e) => {
 function renderHead() {
   $("v-seg").hidden = $("d-dot").hidden = false;
   $("d-dot").className = "dot " + st.sel.status;
-  $("d-name").textContent = `${st.sel.name || st.sel.target}  ${st.sel.summary || ""}`;
+  $("d-name").textContent = `${st.sel.name || st.sel.target}  ${st.sel.summary?.text || ""}`;
   // A parked session has no claude to type into or screen to show: only its transcript.
   const noPane = !!(st.sel.parked || st.sel.paneless);
   $("compose").hidden = noPane;

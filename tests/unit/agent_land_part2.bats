@@ -1942,3 +1942,34 @@ EOF
   assert_success
   assert_output --partial 'landed #42'
 }
+
+# A hold's --scope locks a repo or path for every project's work, not only the rows its #hold/ tag is on:
+# home-config #1333, a unity-core-playground row's work, changed a held path (2026-11-20, ar-4187).
+@test "a PR whose changed files a hold's --scope covers fails before the checks, and lands once the hold grants its item (ar-4187)" {
+  export AGENT_HOLD_DIR="$HOME/.agent/holds"
+  HOLD="$REPO_ROOT/.local/bin/agent-hold"
+  item ship
+  printf '%s\n' README.md apps/gov/main.go >"$NOTES_FIXTURE/files"
+  "$HOLD" set lock --kind resource --by coordinator --scope 'R:apps/gov,other' "the human locked the governor"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'agent-land: hold failed: held: lock since'
+  assert_output --partial '(scope R:apps/gov covers apps/gov/main.go)'
+  run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+  # Negative control: the same PR lands once the hold grants the item by a name grant-names gives it.
+  "$HOLD" grant lock "$(agent-queue grant-names ship | cut -d' ' -f1)"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
+}
+
+@test "a hold scoped to another repo or path costs no file read and does not stop a landing (ar-4187)" {
+  export AGENT_HOLD_DIR="$HOME/.agent/holds"
+  item ship
+  printf '%s\n' apps/govx/main.go >"$NOTES_FIXTURE/files"
+  "$REPO_ROOT/.local/bin/agent-hold" set lock --kind resource --by coordinator --scope 'r:apps/gov,home-config' "locked"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'landed #42'
+}
