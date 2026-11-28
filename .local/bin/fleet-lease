@@ -8,6 +8,9 @@
 #   fleet-lease held             what this machine last read, no network: exit 0 it holds the lease,
 #                                1 another machine does (or this one never may), 2 no holder known
 #   fleet-lease status [--json]  who holds it, until when, on which remote
+#   fleet-lease check            the watch probe, run on the holder: exit 0 the lease is live on the
+#                                remote that decides and this machine is its holder with more than
+#                                MARGIN_S left; 1 a line per fault; 2 `unreadable:` no remote answered
 #
 # Any peer of the store may hold the lease; every singleton lane shares it. A lane's conf says
 # SCOPE=singleton or every-node; no conf, or no SCOPE, is a singleton. The lease is the branch
@@ -167,7 +170,7 @@ lock() { mkdir -p "$SYNC_DIR" && exec 8>"$SYNC_DIR/lease.lock" && flock -w "$LOC
 
 cmd_gate() {
   local lane="$1" rc
-  [[ "$lane" =~ ^[A-Za-z0-9@._-]+$ ]] || die "usage: fleet-lease <lane> | renew | held | status [--json]"
+  [[ "$lane" =~ ^[A-Za-z0-9@._-]+$ ]] || die "usage: fleet-lease <lane> | renew | held | status [--json] | check"
   [ "$(scope "$lane")" = singleton ] || exit 0
   [ ! -f "$NOLEASE" ] || { echo "fleet-lease: $ME never holds the fleet lease ($NOLEASE), so it skips $lane" >&2; exit 1; }
   held "$MARGIN_S" && exit 0
@@ -283,11 +286,28 @@ cmd_status() {
   fi
 }
 
+# cmd_check: the lease as the remote that decides (the first that answers) holds it, against this
+# machine's own record. Sentinel runs only on the holder, so a lease another machine holds is a fault
+# here, not a state; a renewer that stopped shows as the expiry closing in, a MARGIN_S before it lapses.
+cmd_check() {
+  local j faults
+  j=$(cmd_status --json) || { echo "unreadable: fleet-lease status failed"; exit 2; }
+  jq -e '[.remotes[] | select(.reached)] | length > 0' <<<"$j" >/dev/null ||
+    { echo "unreadable: no lease remote answered"; exit 2; }
+  faults=$(jq -r --argjson t "$(now)" --argjson m "$MARGIN_S" '
+    ([.remotes[] | select(.reached)][0]) as $d
+    | (if .held then empty else "\(.me) does not hold the fleet lease on its own record (fleet-lease held)" end),
+      (if $d.holder == .me then empty else "\($d.remote) names \($d.holder // "no one") as holder, not \(.me)" end),
+      (if $d.holder == .me and ($d.expires - $t) < $m then "\($d.remote) lease expires in \([$d.expires - $t, 0] | max)s, so the renewer has stopped (fleet-lease.timer)" else empty end)' <<<"$j")
+  [ -z "$faults" ] || { printf '%s\n' "$faults"; exit 1; }
+}
+
 case "${1:-}" in
   renew) cmd_renew ;;
   held) cmd_held ;;
   status) shift; cmd_status "$@" ;;
+  check) cmd_check ;;
   -h | --help) awk 'NR==1 && /^#!/ {next} /^#/ {sub(/^# ?/,""); print; next} {exit}' "$0" ;;
-  "") die "usage: fleet-lease <lane> | renew | held | status [--json]" ;;
+  "") die "usage: fleet-lease <lane> | renew | held | status [--json] | check" ;;
   *) cmd_gate "$1" ;;
 esac
