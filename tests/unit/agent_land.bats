@@ -574,6 +574,7 @@ EOS
 @test "the base moves on again, branch protection with strict checks: merged up again, and that head lands once its checks pass" {
   printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   echo '{"required_status_checks":{"strict":true,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
+  for _ in 1 2 3; do echo '[{"name":"Checks","bucket":"pass","workflow":"Checks"}]'; done >"$NOTES_FIXTURE/checks.cancelled"
   run "$LAND" 42 --item ship
   moved_again 2 3
 }
@@ -592,6 +593,7 @@ EOS
   printf '0\n1\n1\n' >"$NOTES_FIXTURE/behind.seq"
   echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false}}]' >"$NOTES_FIXTURE/rules.json"
   echo '{"required_status_checks":{"strict":false,"contexts":["Checks"]}}' >"$NOTES_FIXTURE/protection.json"
+  for _ in 1 2 3; do echo '[{"name":"Checks","bucket":"pass","workflow":"Checks"}]'; done >"$NOTES_FIXTURE/checks.cancelled"
   run "$LAND" 42 --item ship
   assert_output --partial 'landing that green head behind it'
   moved_again 1 2
@@ -1269,6 +1271,58 @@ RERUN_GAP='[{"name":"shard weights","bucket":"pass","workflow":"shell tests"},{"
   assert_line 'landed #42'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 2
+}
+
+# A merge-up push opens its workflows' runs one by one: the watch listed only gate guard, read green, no
+# run was open for rerun_pending to see, and GitHub refused the merge on the required gate (#3671, ar-6328).
+GATE_GUARD_ONLY='[{"name":"gate guard","bucket":"pass","workflow":"gate guard"}]'
+GATE_LISTED='[{"name":"gate guard","bucket":"pass","workflow":"gate guard"},{"name":"gate","bucket":"pass","workflow":"shell tests"}]'
+
+@test "a green watch that lists no check a ruleset requires: it waits for the head to register it, then lands (ar-6328)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green so far, but origin/main requires gate, which the head has not registered yet; waiting on it'
+  assert_line 'landed #42'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 3
+  run grep -c '^sleep 60$' "$LOG"
+  assert_output 2
+  [ "$(grep -n 'pr checks 42 --watch' "$LOG" | tail -1 | cut -d: -f1)" -lt "$(grep -n 'gh pr merge 42' "$LOG" | cut -d: -f1)" ]
+}
+
+@test "a green watch that lists no check branch protection requires: it waits the same (ar-6328)" {
+  echo '{"required_status_checks":{"strict":false,"contexts":["gate"]}}' >"$NOTES_FIXTURE/protection.json"
+  printf '%s\n' "$GATE_GUARD_ONLY" "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'checks: green so far, but origin/main requires gate, which the head has not registered yet; waiting on it'
+  assert_line 'landed #42'
+}
+
+@test "a required check the head never registers: stops at checks naming it after CHECKS_FIRST_RUN_TRIES waits, never the merge (ar-6328)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  for _ in 1 2 3 4; do echo "$GATE_GUARD_ONLY"; done >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  AGENT_LAND_CHECKS_FIRST_RUN_TRIES=2 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'checks failed: required check gate never registered on the head'
+  run grep -c '^gh pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a green watch whose head lists every required check lands with no extra wait (ar-6328)" {
+  echo '[{"type":"required_status_checks","parameters":{"strict_required_status_checks_policy":false,"required_status_checks":[{"context":"gate"}]}}]' >"$NOTES_FIXTURE/rules.json"
+  printf '%s\n' "$GATE_LISTED" >"$NOTES_FIXTURE/checks.cancelled"
+  fake_sleep
+  run "$LAND" 42 --item ship
+  assert_success
+  refute_output --partial 'has not registered yet'
+  run grep -c 'pr checks 42 --watch' "$LOG"
+  assert_output 1
 }
 
 @test "a check that registers pending after a green watch is watched again, never green (ar-6084 review)" {
