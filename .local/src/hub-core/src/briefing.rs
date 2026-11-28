@@ -954,7 +954,7 @@ fn projects(i: &Inputs) -> Vec<String> {
     for c in changes(i, rec).iter().filter(|c| c.area != FLEET_AREA) {
         let m = by
             .entry(if c.project.is_empty() {
-                "unknown"
+                "no project"
             } else {
                 c.project
             })
