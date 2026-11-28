@@ -100,6 +100,7 @@ agent-ask sweep [project|--all]              judge every pending ask again and a
 agent-ask assume-due                         answer every armed ask whose wait has passed, after reading its verdict again, judge once more one pending ask whose judge call timed out at post, and run `expire`; `fleet-state.service` runs it each pass
 agent-ask expire [--dry-run]                 cancel same-row duplicates of a human answer, audits on a row whose item landed since, past today/tonight asks and stale audits, park then cancel idle asks ("Asks that settle themselves"); prints `<project> <id> cancel|park <why>` per ask it acts on
 agent-ask standing [--propose]               the ask shapes the human answered the same way `STANDING_BAR` (3) times running within `STANDING_DAYS` (60), none already in `standing-orders.conf`: `project kind shape answer n ids` a line; `--propose` files each as one `agent-propose` (stream `standing-orders`, verb `queue`). `assume-due` runs it at most hourly ("Standing orders")
+agent-ask batch [--take]                     the daily Decisions batch ("The daily Decisions batch"): park what the last batch listed and nobody answered, then list today's; `--take` answers each pending ask of it with its recommendation
 agent-ask cancel <id>                        status->cancelled
 agent-ask park <id> [--until <date>]         keep a pending ask off the boards until <date> (any `date -d` string); with no --until, PARK_DAYS of park.conf by the held item's priority. Drops a judge arm
 agent-ask unpark <id>                        put a parked ask back on the boards now
@@ -197,6 +198,12 @@ A pending ask is judged again whenever `judge` runs on it, so a verdict made und
 Scores come only from `judge-eval` (every judge lane against its ground truth, per rule, under the current prompt; the standard is `~/.local/src/docs/judges.md`), which also counts assumed answers and how many were overridden. A type, its level ceiling and its wait are the human's call, by a PR to `DELAY_RULES`; `judge-eval cells` shows each type at each level with its precision interval to inform it, and `judge-eval promote` weighs each shadow cell against the bar for its level (`PROMOTE_BARS` in `ask-judge.conf`); on Mondays the briefing posts one approval ask per candidate (`judge-eval promote --ask`).
 
 `AGENT_ASK_NO_JUDGE=1` skips the call, and `AGENT_ASK_<key>` replaces the conf's `DELAY_RULES` or `PRECEDENTS`; the test sandbox sets the first.
+
+## The daily Decisions batch
+
+A pending question or gate the judge levelled below critical (`judge_level` self, repo or fleet), and a plan approval, no longer page and leave the briefing's Needs you. They list once a day under `## Decisions` in `briefing.md` (hub-core `briefing.rs`, `decisions`), each with its recommendation picked: `<ask> (project, age, ask <id>) -> <recommend>`. Everything else stays in Needs you and pages: a critical ask, an approval (never judged, so never levelled) and any ask with no level, since nothing proves it can wait a day.
+
+`agentctl-briefing` runs `agent-ask batch` before its reader, once a day. The pass parks each ask the last batch listed that is still pending, for its `PARK_DAYS` (`park.conf`, by the held item's priority; a parked ask is not answered, so a decision nobody made is never taken for them), then keeps today's batch in `AGENT_ASK_BATCH` (`~/.local/state/agent-ask/batch`, `<day> <id> <project> <recommend> <question>` a row). A second call the same day prints the same batch. `agent-ask batch --take` is the one reply: it answers each ask of the batch still pending with its recommendation, as the human; one with no recommendation stays for its card, and a session running it answers as an agent, so what only the human may answer stays pending. `[pager.needs]` pages only a critical ask that holds a session or a queue item, at most `max_buzz_day` (2) a day.
 
 ## Parked asks
 
