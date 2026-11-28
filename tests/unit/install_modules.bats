@@ -231,6 +231,38 @@ SH
   assert_output --partial "agy up to date"   # the rest of the step still ran
 }
 
+@test "a claude download that drops is tried three times, then fails the step; one that recovers installs" {
+  sandbox_init
+  local b="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$HOME/.local/bin" "$b"
+  # curl fails its first CURL_FAILS calls, as a download cut mid-transfer does; the script it
+  # then serves plants the claude binary the step checks for.
+  cat > "$b/curl" <<'SH'
+#!/bin/sh
+n=$(($(cat "$BATS_TEST_TMPDIR/curl-calls" 2>/dev/null || echo 0) + 1))
+echo "$n" > "$BATS_TEST_TMPDIR/curl-calls"
+[ "$n" -gt "$CURL_FAILS" ] || { echo "curl: (56) recv failure" >&2; exit 56; }
+echo "printf '#!/bin/sh\\necho 1.0\\n' > \"$HOME/.local/bin/claude\"; chmod +x \"$HOME/.local/bin/claude\""
+SH
+  chmod +x "$b/curl"
+  printf '#!/bin/sh\nexit 0\n' > "$HOME/.local/bin/agy"
+  printf '#!/bin/sh\nexit 0\n' > "$b/codex"
+  printf '#!/bin/sh\nexit 0\n' > "$b/opencode"
+  chmod +x "$HOME/.local/bin/agy" "$b/codex" "$b/opencode"
+  export HARNESS_NPM_BACKOFF_S=0 CURL_FAILS=2
+  PATH="$b:/usr/bin:/bin" run install_agent_harnesses
+  assert_success
+  assert_output --partial "claude install failed, try 2 of 3"
+  assert [ -x "$HOME/.local/bin/claude" ]
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/curl-calls")" 3
+  # Negative control: three drops are a failed step.
+  rm "$BATS_TEST_TMPDIR/curl-calls" "$HOME/.local/bin/claude"
+  CURL_FAILS=9 PATH="$b:/usr/bin:/bin" run install_agent_harnesses
+  assert_failure
+  assert_output --partial "claude install failed"
+  assert_equal "$(cat "$BATS_TEST_TMPDIR/curl-calls")" 3
+}
+
 # --- the catalog steps and helpers every OS installer shares (base_functions.sh) ---------------
 
 @test "install_catalog installs the common list, this OS's list and any extras through PKG_INSTALL" {
