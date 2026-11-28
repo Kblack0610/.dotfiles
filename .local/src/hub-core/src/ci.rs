@@ -2328,9 +2328,28 @@ mod tests {
         assert_eq!(
             keys(&v),
             [
-                "alert", "busy", "done", "done_1h", "done_5h", "down", "expected", "feed", "kinds",
-                "level", "long", "machines", "next", "oldest", "parts", "pass", "pending",
-                "queued", "units", "up"
+                "alert",
+                "busy",
+                "done",
+                "done_1h",
+                "done_5h",
+                "down",
+                "expected",
+                "feed",
+                "head",
+                "kinds",
+                "level",
+                "long",
+                "machines",
+                "next",
+                "oldest",
+                "parts",
+                "pass",
+                "pending",
+                "pending_line",
+                "queued",
+                "units",
+                "up"
             ]
         );
         assert_eq!(
