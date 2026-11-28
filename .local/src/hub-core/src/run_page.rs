@@ -714,6 +714,13 @@ fn pick(reg: &Registry, r: &Run) -> PickRun {
         started: r.started,
         prs: r.prs.clone(),
         url: r.url.clone(),
+        path: r.path.clone(),
+        event: r.event.clone(),
+        rank: reg
+            .test_workflows(&r.repo)
+            .iter()
+            .position(|w| *w == r.path)
+            .unwrap_or(0),
         artifacts: reg.test_artifacts(&r.repo),
         store: artifact_store::lister(reg, &r.repo),
     }

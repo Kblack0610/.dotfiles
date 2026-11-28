@@ -11,7 +11,9 @@
 //! | fact                    | home                                                              |
 //! |-------------------------|-------------------------------------------------------------------|
 //! | which runs have results | the builds ledger: finished runs of a workflow the repo declares    |
-//! | which workflows count   | the registry: `trackers.<repo>.testWorkflows`                      |
+//! | which workflows count   | the registry: `trackers.<repo>.testWorkflows`, each one a lane, in declaration order |
+//! | a lane's default run    | the latest `schedule` (nightly) run of the lane, else its newest finished run (`lanes`) |
+//! | a repo's default run    | the default of its first declared lane that has a finished run (`default_of`) |
 //! | which artifacts         | the registry: `trackers.<repo>.testArtifacts`, else `junit-*`      |
 //! | where they are          | the registry: `trackers.<repo>.artifactStore`'s lister, else GitHub |
 //! | a suite or a test       | `<cache>/junit/<repo>-<run>-<attempt>/<artifact>/**/{report,results}.xml` |
@@ -37,7 +39,7 @@ use crate::releases::Level;
 use crate::session_actions::Runner;
 use crate::table::{Row, Summary, Val, View};
 
-/// How many runs of each repo the picker offers, newest first.
+/// How many runs of each repo's workflow the picker offers, newest first.
 pub const PICK_RUNS: usize = 30;
 /// The most of a failure's text kept per test.
 pub const MESSAGE_BYTES: usize = 4000;
@@ -58,6 +60,13 @@ pub struct PickRun {
     pub started: i64,
     pub prs: Vec<u64>,
     pub url: String,
+    /// The workflow file it ran (`Run.path`): the lane it belongs to.
+    pub path: String,
+    /// What started it (`Run.event`): `schedule` for a nightly.
+    pub event: String,
+    /// The workflow's place among the repo's declared `testWorkflows`; lanes list in this order.
+    #[serde(skip)]
+    pub rank: usize,
     /// The artifact name globs its results are in (`project_map::Registry::test_artifacts`).
     #[serde(skip)]
     pub artifacts: Vec<String>,
@@ -81,6 +90,9 @@ impl PickRun {
             started: r.started,
             prs: r.prs.clone(),
             url: r.url.clone(),
+            path: r.path.clone(),
+            event: r.event.clone(),
+            rank: 0,
             artifacts: vec![],
             store: None,
         }
@@ -96,14 +108,15 @@ impl PickRun {
 }
 
 /// The finished runs of each repo's declared test workflows, newest first, one per run id (its
-/// latest attempt), at most `PICK_RUNS` per repo so a busy repo never pushes a quiet one out: a
-/// cancelled or skipped run uploaded nothing worth listing. With no registry no repo declares any.
+/// latest attempt), at most `PICK_RUNS` per workflow so a busy workflow never pushes a quiet one
+/// out: a cancelled or skipped run uploaded nothing worth listing. With no registry no repo
+/// declares any.
 pub fn pickable(b: &Builds, registry: Option<&Registry>) -> Vec<PickRun> {
     let Some(reg) = registry else {
         return vec![];
     };
     let mut declared: HashMap<&str, Vec<String>> = HashMap::new();
-    let mut best: Vec<&Run> = vec![];
+    let mut best: Vec<(&Run, usize)> = vec![];
     for r in b
         .rows
         .iter()
@@ -112,23 +125,27 @@ pub fn pickable(b: &Builds, registry: Option<&Registry>) -> Vec<PickRun> {
         let workflows = declared
             .entry(r.repo.as_str())
             .or_insert_with(|| reg.test_workflows(&r.repo));
-        if !workflows.contains(&r.path) {
+        let Some(rank) = workflows.iter().position(|w| *w == r.path) else {
             continue;
-        }
-        match best.iter_mut().find(|o| (&o.repo, o.id) == (&r.repo, r.id)) {
-            Some(o) if o.attempt < r.attempt => *o = r,
+        };
+        match best
+            .iter_mut()
+            .find(|(o, _)| (&o.repo, o.id) == (&r.repo, r.id))
+        {
+            Some((o, _)) if o.attempt < r.attempt => *o = r,
             Some(_) => {}
-            None => best.push(r),
+            None => best.push((r, rank)),
         }
     }
-    let mut kept: HashMap<&str, usize> = HashMap::new();
+    let mut kept: HashMap<(&str, &str), usize> = HashMap::new();
     best.into_iter()
-        .filter(|r| {
-            let n = kept.entry(r.repo.as_str()).or_default();
+        .filter(|(r, _)| {
+            let n = kept.entry((r.repo.as_str(), r.path.as_str())).or_default();
             *n += 1;
             *n <= PICK_RUNS
         })
-        .map(|r| PickRun {
+        .map(|(r, rank)| PickRun {
+            rank,
             artifacts: reg.test_artifacts(&r.repo),
             store: crate::artifact_store::lister(reg, &r.repo),
             ..PickRun::of(r)
@@ -145,6 +162,54 @@ pub fn repos(runs: &[PickRun]) -> Vec<&str> {
         }
     }
     out
+}
+
+/// One declared test workflow of a repo with at least one finished run.
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct Lane<'a> {
+    pub repo: &'a str,
+    /// The workflow file, as `testWorkflows` names it.
+    pub workflow: &'a str,
+    /// Its finished runs, newest first.
+    pub runs: Vec<&'a PickRun>,
+    /// The run the lane opens on: its latest `schedule` (nightly) run, else its newest.
+    pub default: &'a PickRun,
+}
+
+/// The lanes of `runs` (from `pickable`): the repos newest run first, each one's workflows in the
+/// order the registry declares them. A workflow with no finished run has no lane.
+pub fn lanes(runs: &[PickRun]) -> Vec<Lane<'_>> {
+    let mut out: Vec<Lane> = vec![];
+    for repo in repos(runs) {
+        let mut mine: Vec<Lane> = vec![];
+        for r in runs.iter().filter(|r| r.repo == repo) {
+            match mine.iter_mut().find(|l| l.workflow == r.path) {
+                Some(l) => l.runs.push(r),
+                None => mine.push(Lane {
+                    repo,
+                    workflow: &r.path,
+                    runs: vec![r],
+                    default: r,
+                }),
+            }
+        }
+        for l in &mut mine {
+            if let Some(n) = l.runs.iter().find(|r| r.event == "schedule") {
+                l.default = n;
+            }
+        }
+        mine.sort_by_key(|l| l.default.rank);
+        out.extend(mine);
+    }
+    out
+}
+
+/// The run a repo's Tests open on: the default of its first declared lane.
+pub fn default_of<'a>(runs: &'a [PickRun], repo: &str) -> Option<&'a PickRun> {
+    lanes(runs)
+        .into_iter()
+        .find(|l| l.repo == repo)
+        .map(|l| l.default)
 }
 
 /// One test of a suite.
@@ -1555,6 +1620,111 @@ at line nine
             Some(1),
             "the quiet repo's run is still offered"
         );
+    }
+
+    const NIGHTLY: &str = ".github/workflows/nightly.yml";
+
+    fn two_lanes() -> Registry {
+        Registry::parse(&format!(
+            r#"{{"trackers": {{"app": {{"github": "Org/app", "testWorkflows": ["{NIGHTLY}", "{TESTS}"]}}}}}}"#
+        ))
+        .unwrap()
+    }
+
+    fn event(mut r: Run, event: &str) -> Run {
+        r.event = event.into();
+        r
+    }
+
+    #[test]
+    fn a_repo_with_two_test_workflows_lists_a_lane_each_in_declaration_order() {
+        let b = Builds {
+            rows: vec![
+                event(ledger_run(9, 1, TESTS, "green"), "pull_request"),
+                event(ledger_run(8, 1, NIGHTLY, "red"), "schedule"),
+                ledger_run(7, 1, ".github/workflows/other.yml", "green"),
+            ],
+            ..Default::default()
+        };
+        let p = pickable(&b, Some(&two_lanes()));
+        let got: Vec<(&str, usize)> = lanes(&p)
+            .iter()
+            .map(|l| (l.workflow, l.runs.len()))
+            .collect();
+        assert_eq!(got, vec![(NIGHTLY, 1), (TESTS, 1)]);
+        // negative control: a registry that declares only one of them has one lane
+        let one = pickable(&b, Some(&registry()));
+        assert_eq!(lanes(&one).len(), 1);
+    }
+
+    #[test]
+    fn a_lane_opens_on_its_latest_nightly_not_its_newest_run() {
+        let b = Builds {
+            rows: vec![
+                event(ledger_run(12, 1, TESTS, "green"), "push"),
+                event(ledger_run(11, 1, TESTS, "red"), "schedule"),
+                event(ledger_run(10, 1, TESTS, "green"), "schedule"),
+                event(ledger_run(9, 1, TESTS, "green"), "push"),
+            ],
+            ..Default::default()
+        };
+        let p = pickable(&b, Some(&registry()));
+        let l = lanes(&p);
+        assert_eq!(l[0].default.id, 11, "the newest schedule run");
+        assert_eq!(l[0].runs.len(), 4, "every run stays listed");
+        assert_eq!(default_of(&p, "Org/app").map(|r| r.id), Some(11));
+        // negative control: a lane with no schedule run opens on its newest run
+        let b = Builds {
+            rows: vec![
+                event(ledger_run(12, 1, TESTS, "green"), "push"),
+                event(ledger_run(9, 1, TESTS, "green"), "push"),
+            ],
+            ..Default::default()
+        };
+        let p = pickable(&b, Some(&registry()));
+        assert_eq!(default_of(&p, "Org/app").map(|r| r.id), Some(12));
+        assert!(default_of(&p, "Org/none").is_none());
+    }
+
+    #[test]
+    fn a_repo_opens_on_its_first_declared_lane_with_a_run() {
+        let rows = vec![
+            event(ledger_run(9, 1, TESTS, "green"), "push"),
+            event(ledger_run(5, 1, NIGHTLY, "green"), "schedule"),
+        ];
+        let b = Builds {
+            rows,
+            ..Default::default()
+        };
+        let p = pickable(&b, Some(&two_lanes()));
+        assert_eq!(default_of(&p, "Org/app").map(|r| r.id), Some(5));
+        // a declared first lane with no finished run is skipped
+        let only = Builds {
+            rows: vec![event(ledger_run(9, 1, TESTS, "green"), "push")],
+            ..Default::default()
+        };
+        let p = pickable(&only, Some(&two_lanes()));
+        assert_eq!(default_of(&p, "Org/app").map(|r| r.id), Some(9));
+    }
+
+    #[test]
+    fn a_busy_workflow_never_pushes_a_quiet_nightly_out_of_its_repo() {
+        let mut rows: Vec<Run> = (0..PICK_RUNS as u64 + 5)
+            .rev()
+            .map(|i| event(ledger_run(100 + i, 1, TESTS, "green"), "pull_request"))
+            .collect();
+        rows.push(event(ledger_run(1, 1, NIGHTLY, "green"), "schedule"));
+        let p = pickable(
+            &Builds {
+                rows,
+                ..Default::default()
+            },
+            Some(&two_lanes()),
+        );
+        let l = lanes(&p);
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].default.id, 1);
+        assert_eq!(l[1].runs.len(), PICK_RUNS, "each lane keeps its own cap");
     }
 
     fn scratch(tag: &str) -> PathBuf {

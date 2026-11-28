@@ -1,8 +1,10 @@
 //! Infra's CI Tests section: the suites of one finished run of a repo's declared test workflow
 //! (`testWorkflows` in the registry), from hub-core's `junit`, and the Quarantine table, one row
-//! per quarantined test of every repo, from hub-core's `quarantine`. The run is the newest
-//! finished one of the repo the page names (`trepo`, else the repo of the newest finished run)
-//! unless the page names another run (`trun`); each repo offers its own last `PICK_RUNS`, and
+//! per quarantined test of every repo, from hub-core's `quarantine`. The run is the repo's
+//! default (`junit::default_of`: the latest nightly of its first declared workflow, else that
+//! workflow's newest finished run) of the repo the page names (`trepo`, else the repo of the
+//! newest finished run) unless the page names another run (`trun`); each workflow offers its own
+//! last `PICK_RUNS`, and
 //! `repos` lists the repos a picker can switch to. Its artifacts are fetched when it is first
 //! read and kept, so only the first look at a run waits on GitHub. A failure of a test the run's
 //! repo holds in quarantine counts as quarantined, applied on each read so a quarantine change
@@ -179,9 +181,10 @@ fn render(r: &Read, q: &Query) -> String {
     serde_json::to_string(&out).unwrap_or_else(|e| failed(&["rows", "runs"], e.to_string()))
 }
 
-/// The run `id` names among `repo`'s runs, else that repo's newest. No repo, or one with no runs,
-/// is the repo of the run `id` names, else of the newest run. The second value says when the repo
-/// or run asked for was not there.
+/// The run `id` names among `repo`'s runs, else that repo's default (`junit::default_of`: the
+/// latest nightly of its first declared workflow, else that workflow's newest). No repo, or one
+/// with no runs, is the repo of the run `id` names, else of the newest run. The second value says
+/// when the repo or run asked for was not there.
 fn choose<'a>(runs: &'a [PickRun], repo: &str, id: &str) -> (Option<&'a PickRun>, Option<String>) {
     let want = id.parse::<u64>().ok();
     let mine = |r: &&PickRun| {
@@ -210,15 +213,16 @@ fn choose<'a>(runs: &'a [PickRun], repo: &str, id: &str) -> (Option<&'a PickRun>
                 .collect()
         }
     };
+    let newest = pool.first().and_then(|r| junit::default_of(runs, &r.repo));
     let Some(want) = want else {
-        return (pool.first().copied(), why);
+        return (newest, why);
     };
     match pool.iter().find(|r| r.id == want) {
         Some(r) => (Some(r), why),
         None => (
-            pool.first().copied(),
+            newest,
             Some(format!(
-                "run {want} is not among the last {} finished runs of its repo; showing the newest",
+                "run {want} is not among the last {} finished runs of its workflow; showing the default",
                 junit::PICK_RUNS
             )),
         ),
@@ -348,6 +352,9 @@ mod tests {
             started: 0,
             prs: vec![],
             url: String::new(),
+            path: String::new(),
+            event: String::new(),
+            rank: 0,
             artifacts: vec![],
             store: None,
         }
@@ -501,6 +508,18 @@ mod tests {
         assert_eq!(r.unwrap().id, 7);
         assert!(why.unwrap().contains("run 99"));
         assert!(choose(&[], "", "5").0.is_none());
+    }
+
+    #[test]
+    fn the_tab_opens_on_the_latest_nightly_of_the_first_workflow() {
+        let mut nightly = pick(5);
+        nightly.event = "schedule".into();
+        let runs = [pick(7), pick(6), nightly];
+        assert_eq!(choose(&runs, "", "").0.unwrap().id, 5);
+        assert_eq!(choose(&runs, "Org/app", "").0.unwrap().id, 5);
+        assert_eq!(choose(&runs, "", "6").0.unwrap().id, 6, "a named run wins");
+        let (r, _) = choose(&runs, "", "99");
+        assert_eq!(r.unwrap().id, 5, "a run aged out falls back to the default");
     }
 
     #[test]
