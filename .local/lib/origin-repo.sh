@@ -39,13 +39,29 @@ url_host() {
   printf '%s\n' "${host,,}"
 }
 
-# origin_on_github <dir> -- exit 0 when <dir>'s origin may be a GitHub repo: its host is github.com,
-# ssh.github.com or a github.com-<name> ssh alias, or it is a path origin (no host). rc 1 for any
-# other host, or no origin.
+# host_is_github <host> -- exit 0 when <host> may serve a GitHub repo: github.com, ssh.github.com or a
+# github.com-<name> ssh alias, or no host at all (a path origin). The one list of them.
+host_is_github() { case "${1,,}" in ''|github.com|ssh.github.com|github.com-*) return 0 ;; *) return 1 ;; esac; }
+
+# origin_on_github <dir> -- exit 0 when <dir>'s origin may be a GitHub repo (host_is_github). rc 1 for
+# any other host, or no origin.
 origin_on_github() {
   local host
   host=$(origin_host "$1") || return 1
-  case "$host" in ''|github.com|ssh.github.com|github.com-*) return 0 ;; *) return 1 ;; esac
+  host_is_github "$host"
+}
+
+# store_name <host> <owner/repo> -> the PR store's key of a repo (`schedules-sync repos`): owner/repo on
+# GitHub (host_is_github), host/owner/repo anywhere else. The one host rule: git-release.sh,
+# credit-backfill, fleet-sessions and agent-land all build the key through it. A Forgejo host that is
+# an alias of the store's is mapped by so_store_key (session-outcomes.sh), the caller's step.
+store_name() { if host_is_github "$1"; then printf '%s\n' "$2"; else printf '%s/%s\n' "${1,,}" "$2"; fi; }
+
+# origin_store_name <dir> -> store_name of <dir>'s origin remote; nothing and rc 1 with no origin.
+origin_store_name() {
+  local repo host
+  repo=$(origin_repo "$1") && host=$(origin_host "$1") || return 1
+  store_name "$host" "$repo"
 }
 
 # forge_marked <checkout> -- exit 0 when the checkout commits the mirror workflow, the marker that

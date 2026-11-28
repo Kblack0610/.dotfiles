@@ -1957,11 +1957,9 @@ live=$("${DOTFILES_AUTOPULL:-$(dirname "$(readlink -f "$0")")/dotfiles-autopull}
 # that way for a week, as home-config and fleet-platform had before it (ar-5402). Any other failure
 # is said, and the next poll reads the merge.
 if [[ "$pr_ref" == */*#* ]]; then
-  store=${pr_ref%#*} host=$(url_host "$url")
   # html_url carries the public host; the store keys a Forgejo repo by the project map's
   # forges.forgejo host, so map the alias or sync-prs exits 3, unseen (ar-4530).
-  [ "$host" = github.com ] ||
-    store=$(so_store_key "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" "$host/$store")
+  store=$(so_store_key "${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}" "$(store_name "$(url_host "$url")" "${pr_ref%#*}")")
   rc=0; out=$("${SCHEDULES_SYNC:-schedules-sync}" sync-prs "$store" 2>&1) || rc=$?
   case "$rc" in
     0) ;;
