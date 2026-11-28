@@ -2233,7 +2233,7 @@ mod tests {
         ("stages", "Projects Ladder, 678 ms cold"),
         (
             "suites",
-            "Infra Tests on a run other than the newest, 767 ms cold; the newest is `suites-newest`, read by `keep_tests` when a run lands",
+            "Infra Tests on a run other than a lane's newest, 767 ms cold; each lane's newest is `suites-newest`, read by `keep_newest` when a run lands",
         ),
         ("jobs", "Infra Jobs, 619 ms cold"),
         ("pipelines", "Infra Pipelines, 546 ms cold"),
