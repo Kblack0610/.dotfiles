@@ -74,6 +74,8 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("job_pods", crate::jobpods::pods_query()),
         ("job_requests", crate::jobpods::requests_query()),
         ("ci_alloc", crate::jobpods::alloc_query()),
+        // What the pods of other namespaces request on each CI node: taken units too.
+        ("ci_other", crate::jobpods::other_query()),
         // Each node NotReady, quarantined (the degraded taint) or cordoned, for the machine rows'
         // state.
         ("node_state", crate::jobpods::node_state_query()),
@@ -110,6 +112,7 @@ pub const OPTIONAL: &[&str] = &[
     "job_pods",
     "job_requests",
     "ci_alloc",
+    "ci_other",
     "node_state",
     "job_usual",
     "uname",
@@ -592,6 +595,7 @@ mod tests {
                 "job_pods",
                 "job_requests",
                 "ci_alloc",
+                "ci_other",
                 "node_state",
                 "job_usual",
                 "uname",

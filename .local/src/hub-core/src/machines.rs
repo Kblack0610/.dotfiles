@@ -60,7 +60,8 @@ pub struct Machine {
     pub runner_cores: Vec<(String, f64)>,
     /// The memory each CI runner uses, bytes, by name (`cc:runner_mem_bytes`).
     pub runner_mem: Vec<(String, f64)>,
-    /// The CPU and memory CI job pods book on it against its allocatable (`jobpods::booked`);
+    /// The CPU and memory every pod placed on it requests (job pods, the build-slot hold, other
+    /// namespaces' pods) against its allocatable (`jobpods::booked`);
     /// None for a machine that is no CI node.
     pub booked: Option<crate::jobpods::Booked>,
     /// Each job running there by kind and repo (`ci::running_by_host`): `[unity] unity-core-playground x2`.

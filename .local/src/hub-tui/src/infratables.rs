@@ -6,6 +6,7 @@
 
 use hub_core::ci::{LocalFail, Queued, Slot};
 use hub_core::infra::Infra;
+use hub_core::jobpods::Booked;
 use hub_core::links::Link;
 use hub_core::machines::{Machine, Pool};
 use hub_core::table::Row;
@@ -232,8 +233,9 @@ impl InfraTables {
     }
 }
 
-/// One row per CI machine and nothing under it: what its job pods book against allocatable, its
-/// real CPU, and the jobs running there by kind. The per-pod rows are `runners`, folded until `e`.
+/// One row per CI machine and nothing under it: its units (allocatable cores), the units every
+/// pod there takes and their share, its real CPU, what is free in the limit that binds, memory
+/// taken, and the jobs running there by kind. The per-pod rows are `runners`, folded until `e`.
 /// Drawn with no view and no keys: the Machines tab's table is the one to sort and open.
 pub fn ci_machines(infra: &Infra, p: Palette, w: usize) -> Vec<Line<'static>> {
     let t = DataTable::default();
@@ -260,7 +262,9 @@ pub fn ci_machines(infra: &Infra, p: Palette, w: usize) -> Vec<Line<'static>> {
     ci_machine_rows(&d, &rows)
 }
 
-const CI_MACHINE_HEAD: [&str; 6] = ["MACHINE", "STATE", "BOOKED", "CPU", "JOBS", "RUNNING"];
+const CI_MACHINE_HEAD: [&str; 9] = [
+    "MACHINE", "STATE", "UNITS", "TAKEN", "REAL", "FREE", "MEM", "JOBS", "RUNNING",
+];
 
 fn ci_machine_rows(d: &Draw, rows: &[Machine]) -> Vec<Line<'static>> {
     let p = d.p;
@@ -275,21 +279,32 @@ fn ci_machine_rows(d: &Draw, rows: &[Machine]) -> Vec<Line<'static>> {
                 hub_core::reading::NO_DATA => p.dim(),
                 _ => p.warn(),
             };
+            let b = m.booked.filter(Booked::on_ci);
+            let full = b.is_some_and(|b| b.share() >= 1.0);
+            let or_dash =
+                |f: fn(&hub_core::jobpods::Booked) -> String| b.as_ref().map_or("-".into(), f);
             vec![
                 m.host.clone().into(),
                 cell(&m.state, state),
-                booked(m, p),
+                b.map_or("-".into(), |b| format!("{:.0}", b.cpu_alloc))
+                    .into(),
+                or_dash(|b| b.taken_cell()).into(),
                 pct(m.cpu).into(),
+                match full {
+                    true => cell(or_dash(|b| b.free_cell()), p.warn()),
+                    false => or_dash(|b| b.free_cell()).into(),
+                },
+                or_dash(|b| b.mem_cell()).into(),
                 m.busy.to_string().into(),
                 dash(m.running.join(", ")).into(),
             ]
         },
         Table {
             header: CI_MACHINE_HEAD.to_vec(),
-            keep: vec![0, 2, 5, 4, 3, 1],
-            right: vec![3, 4],
-            cap: vec![(5, 80)],
-            flex: Some(5),
+            keep: vec![0, 3, 5, 8, 4, 2, 7, 6, 1],
+            right: vec![2, 3, 4, 5, 6, 7],
+            cap: vec![(8, 80)],
+            flex: Some(8),
             flexmin: 14,
             ..Default::default()
         },
