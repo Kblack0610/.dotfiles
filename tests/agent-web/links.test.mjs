@@ -30,7 +30,7 @@ const ALLOW = {
   "flow.js": { n: 1, by: "P7" },
   "focus.js": { n: 2, by: "P7" },
   "home.js": { n: 1, by: "P7" },
-  "infra.js": { n: 6, by: "P7" },
+  "infra.js": { n: 5, by: "P7" },
   "jobs.js": { n: 2, by: "P7" },
   "log.js": { n: 1, by: "P7" },
   "md.js": { n: 2, by: "keeps: a note's own wikilinks and #p: tags are text the note holds, not a record link" },
