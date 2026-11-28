@@ -1515,3 +1515,92 @@ empty_object() {
   refute_line 'dispatch/.wake'
   refute_line 'dispatch/.kick'
 }
+
+@test "a short-bodied queue item moved on the fleet home while a worker edits its queued copy merges at the new path, whichever syncs first (ar-4101)" {
+  # Short body (<50% similarity once run headers are added) causes git merge-tree to miss the rename
+  # and report a modify/delete conflict on queue/queued/<slug>.md.
+  short_queued() {
+    mkdir -p "$SANDBOX/$1/queue/queued"
+    printf 'slug: %s\nproject: p\nagent: claude\n---\ntitle\n' "$2" > "$SANDBOX/$1/queue/queued/$2.md"
+    on "$1" --now >/dev/null
+  }
+  start_short() {
+    mkdir -p "$SANDBOX/$1/queue/running"
+    sed 's/^---$/host: home\nstarted: 2026-11-20T01:00:00Z\naccount: a\nmodel: m\nlane_run: r1\n---/' \
+      "$SANDBOX/$1/queue/queued/$2.md" > "$SANDBOX/$1/queue/running/$2.md"
+    rm "$SANDBOX/$1/queue/queued/$2.md"
+  }
+  edit_queued() {
+    sed -i 's/^---$/open_pr: o#1\nsessions: s1\n---/' "$SANDBOX/$1/queue/queued/$2.md"
+  }
+
+  # Fleet home pushes the move first, then worker syncs its queued edit.
+  peer a; short_queued a m1; peer b
+  start_short a m1; edit_queued b m1
+  on a --now
+  run on b --now
+  assert_success
+  assert_output --partial COMPLETE
+  run show "$ORIGIN" queue/running/m1.md
+  assert_line 'host: home'
+  assert_line 'open_pr: o#1'
+  assert_line 'sessions: s1'
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued
+  assert_output ''
+  [ ! -e "$SANDBOX/b/queue/queued/m1.md" ]
+  [ ! -e "$SANDBOX/b/.sync/conflict" ]
+  [ ! -d "$SANDBOX/b/.sync/lost" ] || [ -z "$(ls -A "$SANDBOX/b/.sync/lost")" ]
+
+  # Worker pushes its queued edit first, then fleet home syncs its move.
+  peer c; short_queued c m2; peer d
+  start_short c m2; edit_queued d m2
+  on d --now
+  run on c --now
+  assert_success
+  assert_output --partial COMPLETE
+  run show "$ORIGIN" queue/running/m2.md
+  assert_line 'host: home'
+  assert_line 'open_pr: o#1'
+  assert_line 'sessions: s1'
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued
+  assert_output ''
+
+  # Fleet home closes the item while worker edits its queued copy.
+  peer e; short_queued e m3; peer f
+  mkdir -p "$SANDBOX/e/queue/done/2026-11-24"
+  sed 's/^---$/status: ok\nfinished: 2026-11-24T01:00:00Z\n---/' \
+    "$SANDBOX/e/queue/queued/m3.md" > "$SANDBOX/e/queue/done/2026-11-24/m3.md"
+  rm "$SANDBOX/e/queue/queued/m3.md"
+  edit_queued f m3
+  on e --now
+  run on f --now
+  assert_success
+  run show "$ORIGIN" queue/done/2026-11-24/m3.md
+  assert_line 'status: ok'
+  assert_line 'open_pr: o#1'
+  run git -C "$ORIGIN" ls-tree -r --name-only master -- queue/queued
+  assert_output ''
+
+  # Both sides set one header key differently: the moved copy stands whole at the new path and the
+  # worker's edit is kept in lost/, never a queued header under running/.
+  peer i; short_queued i m5; peer j
+  start_short i m5; sed -i 's/^---$/sessions: s0\n---/' "$SANDBOX/i/queue/running/m5.md"
+  edit_queued j m5
+  on i --now
+  run on j --now
+  assert_success
+  run show "$ORIGIN" queue/running/m5.md
+  assert_line 'host: home'
+  assert_line 'sessions: s0'
+  run ls "$SANDBOX/j/.sync/lost"
+  assert_output --partial 'queue__running__m5.md.lost-'
+
+  # Negative control: a genuine delete (not a move) while another side edits still conflicts.
+  peer g; short_queued g m4; peer h
+  rm "$SANDBOX/g/queue/queued/m4.md"
+  edit_queued h m4
+  on g --now
+  run on h --now
+  assert_failure
+  assert_output --partial 'conflicts in queue/queued/m4.md'
+}
