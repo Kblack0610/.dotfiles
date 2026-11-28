@@ -982,6 +982,8 @@ pub struct Watch {
     pub state: Value,
     /// Oldest first.
     pub transitions: Vec<Transition>,
+    /// The last day's swimlanes, drawn as served.
+    pub lanes: Lanes,
 }
 
 pub fn watch(state: &Path, log: &Path, r: &dyn Runner) -> Watch {
@@ -993,12 +995,185 @@ pub fn watch(state: &Path, log: &Path, r: &dyn Runner) -> Watch {
         .unwrap_or_default();
     let lines: Vec<&str> = log.lines().collect();
     let skip = lines.len().saturating_sub(WATCH_LOG_LINES);
+    let transitions: Vec<Transition> = lines[skip..]
+        .iter()
+        .filter_map(|l| parse_transition(l))
+        .collect();
+    let lanes = lanes(
+        &state,
+        &transitions,
+        chrono::Utc::now().timestamp_millis(),
+        &chrono::Local,
+    );
     Watch {
         state,
-        transitions: lines[skip..]
-            .iter()
-            .filter_map(|l| parse_transition(l))
-            .collect(),
+        transitions,
+        lanes,
+    }
+}
+
+/// How far back the swimlanes reach.
+pub const LANE_HOURS: i64 = 24;
+
+/// One bucket a session held, from `a` to `b` (epoch ms).
+#[derive(Serialize, Debug, PartialEq)]
+pub struct LaneSeg {
+    pub a: i64,
+    pub b: i64,
+    pub key: String,
+    /// `WORKING 09:12-10:40`, in the host's clock.
+    pub title: String,
+}
+
+/// One session's last day: its buckets in order. A lane of a session that ended is `gone`.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct Lane {
+    pub target: String,
+    pub gone: bool,
+    pub segs: Vec<LaneSeg>,
+}
+
+/// The swimlanes over `t0..until` (epoch ms), live sessions first in bucket order.
+#[derive(Serialize, Debug, PartialEq, Default)]
+pub struct Lanes {
+    pub t0: i64,
+    pub until: i64,
+    pub lanes: Vec<Lane>,
+}
+
+/// A watch.log target carries no tmux server (`dotfiles:2`); state.json's does (`hub/dotfiles:2`).
+fn short_target(t: &str) -> &str {
+    t.rsplit('/').next().unwrap_or(t)
+}
+
+struct Building {
+    lane: Lane,
+    cur: Option<String>,
+    since: i64,
+    gone_at: Option<i64>,
+}
+
+/// One lane per session: its bucket over the last day, from the transitions, ending in the bucket
+/// `state.json` shows now. A session whose first change in the window is a stage change was in
+/// that change's `from` bucket before it. `now` is epoch ms and `tz` the zone watch.log's local
+/// times were written in.
+pub fn lanes<Tz: chrono::TimeZone>(
+    state: &Value,
+    transitions: &[Transition],
+    now: i64,
+    tz: &Tz,
+) -> Lanes {
+    use chrono::{NaiveDateTime, Timelike};
+    let t0 = now - LANE_HOURS * 3_600_000;
+    let clock = |ms: i64| {
+        tz.timestamp_millis_opt(ms)
+            .single()
+            .map(|d| format!("{:02}:{:02}", d.hour(), d.minute()))
+            .unwrap_or_default()
+    };
+    let at_of = |ts: &str| {
+        NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M")
+            .ok()
+            .and_then(|n| tz.from_local_datetime(&n).earliest())
+            .map(|d| d.timestamp_millis())
+    };
+    let mut all: Vec<Building> = vec![];
+    let mut index = std::collections::HashMap::<String, usize>::new();
+    let mut lane = |all: &mut Vec<Building>, t: &str| -> usize {
+        *index.entry(t.to_string()).or_insert_with(|| {
+            all.push(Building {
+                lane: Lane {
+                    target: t.to_string(),
+                    gone: false,
+                    segs: vec![],
+                },
+                cur: None,
+                since: 0,
+                gone_at: None,
+            });
+            all.len() - 1
+        })
+    };
+    let close = |l: &mut Building, at: i64| {
+        if let Some(key) = l.cur.take() {
+            let title = format!("{key} {}-{}", clock(l.since), clock(at));
+            l.lane.segs.push(LaneSeg {
+                a: l.since,
+                b: at,
+                key,
+                title,
+            });
+        }
+    };
+    for tr in transitions {
+        let Some(at) = at_of(&tr.ts).filter(|at| *at >= t0) else {
+            continue;
+        };
+        let i = lane(&mut all, &tr.target);
+        let l = &mut all[i];
+        match tr.kind {
+            "new" => {
+                close(l, at);
+                l.cur = tr.to.clone();
+                l.since = at;
+            }
+            "gone" => {
+                close(l, at);
+                l.gone_at = Some(at);
+            }
+            _ => {
+                if let Some(to) = &tr.to {
+                    if l.cur.is_none() && l.lane.segs.is_empty() {
+                        l.cur = tr.from.clone();
+                        l.since = t0;
+                    }
+                    close(l, at);
+                    l.cur = Some(to.clone());
+                    l.since = at;
+                }
+            }
+        }
+    }
+    let vocab = agent_core::vocab::Vocab::from_state(state);
+    let mut live = std::collections::HashMap::<&str, &str>::new();
+    for s in state["sessions"].as_array().into_iter().flatten() {
+        let (Some(t), Some(b)) = (s["target"].as_str(), s["bucket"].as_str()) else {
+            continue;
+        };
+        let t = short_target(t);
+        live.insert(t, b);
+        let i = lane(&mut all, t);
+        let l = &mut all[i];
+        l.gone_at = None;
+        if l.cur.is_none() {
+            // Its first bucket starts where its age says; one after earlier segments, where the last ended.
+            l.since = match l.lane.segs.last() {
+                None => {
+                    let age = (s["age_min"].as_f64().unwrap_or(0.0) * 60_000.0) as i64;
+                    t0.max(now - age)
+                }
+                Some(g) => g.b,
+            };
+        }
+        l.cur = Some(b.to_string());
+        close(l, now);
+    }
+    let mut out: Vec<Lane> = all
+        .into_iter()
+        .map(|mut l| {
+            l.lane.gone = l.gone_at.is_some();
+            l.lane
+        })
+        .collect();
+    let key = |l: &Lane| {
+        live.get(l.target.as_str())
+            .map_or(usize::MAX, |b| vocab.rank(b))
+    };
+    out.sort_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.target.cmp(&b.target)));
+    Lanes {
+        t0,
+        until: now,
+        lanes: out,
     }
 }
 
@@ -1756,6 +1931,63 @@ mod tests {
         unreadable(&mut again, "agent-panel");
         assert_eq!(again["unreadable"], json!(["agent-panel"]));
         assert_eq!(st["sessions"][0]["bucket"], "WORKING");
+    }
+
+    fn tr(line: &str) -> Transition {
+        parse_transition(line).unwrap()
+    }
+
+    // 2026-11-28 12:00 UTC, in ms.
+    const NOON: i64 = 1_795_867_200_000;
+
+    #[test]
+    fn a_lane_runs_from_its_first_bucket_to_the_one_state_shows_now() {
+        let state = json!({"vocab": {"buckets": ["WAITING", "WORKING"]}, "sessions": [
+            {"target": "hub/a:1", "bucket": "WORKING", "age_min": 600},
+            {"target": "hub/b:2", "bucket": "WAITING", "age_min": 30}]});
+        let trs = [
+            tr("2026-11-28 09:00  a:1  new: WAITING (asked) sid=x"),
+            tr("2026-11-28 10:00  a:1  stage WAITING -> WORKING (answered)"),
+            tr("2026-11-28 11:00  old:3  gone sid=y"),
+        ];
+        let l = lanes(&state, &trs, NOON, &chrono::Utc);
+        assert_eq!(l.until, NOON);
+        assert_eq!(l.t0, NOON - 24 * 3_600_000);
+        let names: Vec<_> = l
+            .lanes
+            .iter()
+            .map(|x| (x.target.as_str(), x.gone))
+            .collect();
+        assert_eq!(names, [("b:2", false), ("a:1", false), ("old:3", true)]);
+        let a = &l.lanes[1];
+        let keys: Vec<_> = a
+            .segs
+            .iter()
+            .map(|g| (g.key.as_str(), g.title.as_str()))
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                ("WAITING", "WAITING 09:00-10:00"),
+                ("WORKING", "WORKING 10:00-12:00")
+            ]
+        );
+        assert_eq!(a.segs[1].b, NOON);
+        // b has no transition: its lane starts where its age says.
+        assert_eq!(l.lanes[0].segs[0].a, NOON - 30 * 60_000);
+    }
+
+    #[test]
+    fn a_first_stage_change_in_the_window_means_the_from_bucket_held_before_it() {
+        let state = json!({"sessions": [{"target": "hub/a:1", "bucket": "DONE", "age_min": 5}]});
+        let trs = [tr("2026-11-28 11:00  a:1  stage WORKING -> DONE (merged)")];
+        let l = lanes(&state, &trs, NOON, &chrono::Utc);
+        let segs = &l.lanes[0].segs;
+        assert_eq!((segs[0].key.as_str(), segs[0].a), ("WORKING", l.t0));
+        assert_eq!(segs[1].key, "DONE");
+        // A line older than the window is not drawn.
+        let old = [tr("2026-11-26 11:00  z:9  new: WORKING (x) sid=q")];
+        assert!(lanes(&json!({}), &old, NOON, &chrono::Utc).lanes.is_empty());
     }
 
     #[test]
