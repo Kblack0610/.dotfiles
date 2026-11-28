@@ -324,7 +324,6 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_WATCHES:=$HOME/.agent/watches}"   # triage: each watch's manifest, for its severity and what
 : "${TRIAGE_SYSTEM_SKILLS:=6}"   # triage: skills of a watch's system named in its red item, at most
 : "${TRIAGE_ALERT_WATCH:=alertmanager-fleet}"   # triage: the aggregate watch whose evidence is one firing alert a line: each is its own row (triage_alerts)
-: "${TRIAGE_PINS_CMD:=kubectl --context ${CC_KUBE_CONTEXT:-home-k3s} -n monitoring --request-timeout=10s get configmap ci-runner-governor-override -o json}"   # triage: the governor's host pins, which say a host is being moved on purpose
 : "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
 : "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
@@ -1486,16 +1485,15 @@ epics_section() {
 # pool, so an empty read means the rule or Prometheus is gone, not that nothing waited). <since>, an epoch,
 # starts the session rows there instead of at the window start (window_stats).
 bottleneck_data() {
-  local t="$1" scope="${2:-all}" since="${3:-}" win="${BENCH_WINDOW_H}h" pool=null queued=null low=null
+  local t="$1" scope="${2:-all}" since="${3:-}" win="${BENCH_WINDOW_H}h" pool=null low=null
   if [ "$scope" = all ] || [ "$scope" = pools ]; then
     pool=$(prom_map pool "sum_over_time(cc:pool_waiting[$win:10m]) / 6" "$t") || pool=null
     [ "$pool" != '{}' ] || pool=null
   fi
   if [ "$scope" = all ]; then
-    queued=$(prom_map kind "sum_over_time(ci_governor_backlog_units{kind=\"local\"}[$win:10m]) / 6" "$t") || queued=null
     low=$(prom_map topic "sum_over_time(max by (topic) (mqtt_under_low_water{topic=~\"agents_.+_summary_dispatch\"})[$win:10m]) / 6" "$t") || low=null
   fi
-  jq -n --arg scope "$scope" --argjson pool "$pool" --argjson queued "$queued" --argjson low "$low" --slurpfile w <([ "$scope" = pools ] && echo "{}" || window_stats "$t" "$since") \
+  jq -n --arg scope "$scope" --argjson pool "$pool" --argjson low "$low" --slurpfile w <([ "$scope" = pools ] && echo "{}" || window_stats "$t" "$since") \
       --rawfile r <([ "$scope" != all ] || runs_between $((t - BENCH_WINDOW_H * 3600)) "$t") "$JQ_LIB"'
     def hours($k): map(.[$k]) | add // 0 | . / 60;
     def top($k): map(select(.[$k] > 0)) | sort_by(-.[$k]) | .[:3] | map({target, h: (.[$k] / 60)});
@@ -1508,8 +1506,6 @@ bottleneck_data() {
     | ($runs | bad | group_by(.branch) | map({branch: .[0].branch, not_passed: length, h: (map(.s) | add / 3600)}) | sort_by(-.h)) as $branches
     | [ (if $pool == null then {key: "pools", what: "Pool queues", h: null, unit: "job-hours", detail: "prometheus unreadable"}
          else $pool | to_entries[] | select(.value >= 0.1) | {key: "pool:\(.key)", what: "Pool queue: \(.key)", h: .value, unit: "job-hours", detail: "jobs waiting, sampled every 10 minutes"} end),
-        (if $queued == null then {key: "local", what: "Local queue", h: null, unit: "unit-hours", detail: "prometheus unreadable"}
-         else $queued | to_entries[] | select(.value >= 0.1) | {key: "local", what: "Local queue", h: .value, unit: "unit-hours", detail: "governor units waiting for a seat, sampled every 10 minutes"} end),
         (if $low == null then {key: "low-water", what: "Queue under low water", h: null, unit: "hours", detail: "prometheus unreadable"}
          else ([$low[]] | max // 0) as $h | select($h >= 0.1) | {key: "low-water", what: "Queue under low water", h: $h, unit: "hours", detail: "runnable under DISPATCH_LOW_WATER, sampled every 10 minutes"} end),
         (select($lost > 0) | {key: "runs", what: "Local runs not passed", h: $lost, unit: "editor-hours", detail: "of \($editor | round1)h on all local runs"}),
@@ -5137,33 +5133,42 @@ cmd_retro() {
   upsert_report "$grows" "$IMPROVE_LINE"
 }
 
-# upsert_why <key> <priority tag> -> the priority reason (priority-reasons.tsv) of a row whose key says what
-# it is: a tripped watch, an alert, a dispatch hold or a recurring lesson at #high is a runtime fault, a
-# lesson at #low is upkeep. Any other row files without one, and the priority pass judges it.
+# upsert_why <key> <priority tag> -> the priority reason (priority-reasons.tsv) of a row whose key
+# says what it is: a firing alert at #high is a firing-alert, which the board's daily cap never
+# holds (ar-4296), a tripped watch, a dispatch hold or a recurring lesson at #high is a runtime
+# fault, a lesson at #low is upkeep. Any other row files without one, and the priority pass judges
+# it.
 upsert_why() {
   case "$1:$2" in
-    'check(watch)'*:'#high'|'check(alert)'*:'#high'|'fix(hold)'*:'#high'|'check(lesson)'*:'#high') echo runtime-fault ;;
+    'check(alert)'*:'#high') echo firing-alert ;;
+    'check(watch)'*:'#high'|'fix(hold)'*:'#high'|'check(lesson)'*:'#high') echo runtime-fault ;;
     'check(lesson)'*:'#low') echo upkeep ;;
   esac
 }
 
-# board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
-# row per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so
-# the backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, one
-# that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A key with no open row but one closed in the board feed's window
-# (upsert_closed) has that row reopened and its text refreshed, never a new row: a cause that is red
-# again is the same work (alertmanager-fleet was filed 27 times in 7 days, 2026-11-18). A row whose
-# condition cleared is triage_retire's. Every row is #size/s. A reopen that fails is said and the key
-# is filed as a new row, and a row whose add or edit fails is said and skipped, so one stuck row never
-# stops the pass (ar-4064: one failed add skipped every red fix promotion after it). An add the board's daily cap
-# refuses (exit 6) is said and tried again next pass; a red marked urgent passes the cap.
+# board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board row
+# per key, matched as a lowercase title prefix (each key's shape is in lib/board-keys.sh, so the
+# backlog triager leaves the row's prefix alone): a row whose text moved is edited in place, and one
+# that matches writes nothing. An add runs only for a key with no open row, and passes the key
+# (`ptask add --key`), so the writer takes no other key's row for its near twin (ar-4296: two alerts
+# on one label, or one alert on two hosts, were twins, and the second had no row for days); an exit
+# 3 that still comes is a red with no row, and no item, since triage_promote queues a key's own row:
+# a failed write, never filed. A key with no open row but one closed in
+# the board feed's window (upsert_closed) has that row reopened and its text refreshed, never a new
+# row: a cause that is red again is the same work (alertmanager-fleet was filed 27 times in 7 days,
+# 2026-11-18). A row whose condition cleared is triage_retire's. Every row is #size/s. A reopen that
+# fails is said and the key is filed as a new row, and a row whose add or edit fails is said and
+# skipped, so one stuck row never stops the pass (ar-4064: one failed add skipped every red fix
+# promotion after it). An add the board's daily cap refuses (exit 6) is said, counted in
+# UPSERT_CAPPED and tried again next pass; a firing alert's row and a red marked urgent pass the
+# cap.
 # Each write names its row by id, since `notes ptask edit` refuses a query two open rows match: the
 # key's row is its first open row with an id marker, and only a key whose one row has none (written
 # by hand) is named by its prefix. A twin a race left open on the key (ar-5690) is dropped as a dup
 # of that row, its children moving under it; a twin being done, or one with no id, is left and said.
-# Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED and UPSERT_DROPPED and the failed
-# keys in UPSERT_FAILED, which upsert_report reports FAILED, so every caller ends with upsert_report;
+# Leaves the counts in UPSERT_ADDED, UPSERT_EDITED, UPSERT_REOPENED, UPSERT_DROPPED and
+# UPSERT_CAPPED and the failed keys in UPSERT_FAILED, which upsert_report reports FAILED, so every
+# caller ends with upsert_report;
 # status 1 only when the board cannot be read, 2 when the upsert lock stays held (nothing is written).
 # The read of the board and the writes after it are one section under BENCH_UPSERT_LOCK: the timed
 # runner and every dispatch pass run triage, and two of them reading before either added filed the
@@ -5171,8 +5176,8 @@ upsert_why() {
 # A key whose row closed within the board feed's window is reopened with the red as a detail line,
 # so the trip is history on that row, not a row of its own.
 board_upsert() {
-  local board closed human p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 failed=() twins=() trip=()
-  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=
+  local board closed human p text pri why have hid twin id rc added=0 edited=0 reopened=0 dropped=0 capped=0 failed=() twins=() trip=()
+  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_CAPPED=0; UPSERT_FAILED=
   upsert_lock_take || { say "$UPSERT_LOCK_WHY"; report_outcome FAILED "$UPSERT_LOCK_WHY"; return 2; }
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { upsert_lock_drop; report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
   closed=$(upsert_closed)
@@ -5223,12 +5228,12 @@ board_upsert() {
     fi
     if [ -z "$have" ]; then
       rc=0 why=$(upsert_why "$p" "$pri")
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" ${why:+--why "$why"} --origin fleet-bench >/dev/null || rc=$?
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" ${why:+--why "$why"} --origin fleet-bench --key "$p" >/dev/null || rc=$?
       case $rc in
         0) added=$((added + 1)) ;;
-        3) ;;
+        3) say "$p: the board took it for a twin of another open row, so it has no row"; failed+=("$p") ;;
         # The board's daily cap (intake_daily_cap, QUEUE.md "Admission"): the red waits for a later pass, and is no failure.
-        6) say "$p: the board's daily cap holds this row; the next pass tries it again" ;;
+        6) say "$p: the board's daily cap holds this row; the next pass tries it again"; capped=$((capped + 1)) ;;
         *) say "add failed for $p"; failed+=("$p") ;;
       esac
     elif [ "$have" != "${text,,}" ]; then
@@ -5240,7 +5245,7 @@ board_upsert() {
     fi
   done <<<"$1"
   upsert_lock_drop
-  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened; UPSERT_DROPPED=$dropped; UPSERT_CAPPED=$capped
   UPSERT_FAILED=$(IFS=';'; echo "${failed[*]}")
 }
 
@@ -5277,6 +5282,7 @@ upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
   [ "${UPSERT_REOPENED:-0}" -eq 0 ] || did+=", $UPSERT_REOPENED reopened"
   [ "${UPSERT_DROPPED:-0}" -eq 0 ] || did+=", $UPSERT_DROPPED twins dropped"
+  [ "${UPSERT_CAPPED:-0}" -eq 0 ] || did+=", $UPSERT_CAPPED held by the board's daily cap"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
   if [ -n "${UPSERT_FAILED:-}" ]; then
@@ -5284,15 +5290,17 @@ upsert_report() {
     report_outcome FAILED "board write failed for $UPSERT_FAILED; $did"
     return 1
   elif [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_REOPENED:-0} + ${UPSERT_DROPPED:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
-    report_outcome NOOP "every row already current"
+    if [ "${UPSERT_CAPPED:-0}" -eq 0 ]; then report_outcome NOOP "every row already current"; else report_outcome NOOP "$did"; fi
   else
     report_outcome WORKED "$did"
   fi
 }
 
-# watch_sev <name> -> the severity in its manifest, read through sentinel-watch.sh watch_severity.
+# watch_sev <name> -> the level of its trip now, else the severity in its manifest (sentinel-watch.sh
+# watch_trip_level): a probe's `page:` level (alertmanager-fleet) outranks the manifest's fallback. It
+# sets a row's priority only; the patience below stays the manifest's severity (watch_severity).
 # watch_after <severity> -> seconds it must stay at TRIP before it is a red.
-watch_sev() { watch_severity "$TRIAGE_WATCHES/$1.yaml"; }
+watch_sev() { watch_trip_level "$TRIAGE_WATCHES/$1.yaml" "$TRIAGE_WATCH_STATE"; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
 
 # system_note <watch> <route skill> -> "; system <ids>: load fix-red and <skills>" for a watch whose
@@ -5330,7 +5338,7 @@ watch_tripped_since() {
   ! watch_paused "$1" || return 1
   [ "$(cat "$TRIAGE_WATCH_STATE/$1.state" 2>/dev/null)" = TRIP ] || return 1
   since=$(cat "$TRIAGE_WATCH_STATE/$1.since" 2>/dev/null) || return 1
-  [[ "$since" =~ ^[0-9]+$ ]] && [ $(($2 - since)) -ge "$(watch_after "$(watch_sev "$1")")" ] || return 1
+  [[ "$since" =~ ^[0-9]+$ ]] && [ $(($2 - since)) -ge "$(watch_after "$(watch_severity "$TRIAGE_WATCHES/$1.yaml")")" ] || return 1
   printf '%s\n' "$since"
 }
 
@@ -5391,28 +5399,16 @@ triage_alerts() {
   done | sort -u
 }
 
-# triage_pinned -> each host a human pinned out of service in the governor's override ConfigMap
-# (`<host>.slots` whose `by` says "human: ..."), one a line: that host's alerts are the move the
-# human asked for, not a fault. Machine-mode's own daily pins say nothing about one host. Unreadable
-# is no pin, so an alert stays red rather than being hidden.
-triage_pinned() {
-  $TRIAGE_PINS_CMD 2>/dev/null | jq -r '(.data // {}) | to_entries[] | select(.key | endswith(".slots"))
-    | select(((.value | fromjson? // {}).by // "") | startswith("human:")) | .key | sub("\\.slots$"; "")'
-}
-
 # triage_alert_rows <since epoch> <severity> -> key, text and priority for each alert the aggregate
-# watch lists that no human pin explains, so each firing alert (name and host) has a row, a cause and
+# watch lists, so each firing alert (name and host) has a row, a cause and
 # a red item of its own, and the row closes when that alert clears (triage_retire). Rc 1 when the
 # evidence lists no alert: the watch's own row then stands, so unreadable evidence hides nothing.
-# An explained alert is said, never filed.
 triage_alert_rows() {
-  local alerts name id pinned pri
+  local alerts name id pri
   alerts=$(triage_alerts)
   [ -n "$alerts" ] || return 1
-  pinned=$(triage_pinned)
   pri=$(case "$2" in high|urgent) echo '#high' ;; normal) echo '#normal' ;; *) echo '#low' ;; esac)
   while IFS=$'\t' read -r name id; do
-    if grep -qxF -- "${id%%/*}" <<<"$pinned"; then say "triage: $name $id is intended: ${id%%/*} is pinned by a human"; continue; fi
     printf 'check(alert): %s %s firing\tcheck(alert): %s %s firing, %s tripped since %s, expected: no fleet=fix alert, evidence: watch-companion-loop list --long %s\t%s\n' \
       "$name" "$id" "$name" "$id" "$TRIAGE_ALERT_WATCH" "$(date -d "@$1" +%Y-%m-%d)" "$TRIAGE_ALERT_WATCH" "$pri"
   done <<<"$alerts"
@@ -6499,7 +6495,7 @@ cmd_triage() {
   # A held lock fails this pass's filing (upsert_report says so) but not the human sheet, twins or red fixes after it.
   if [ -n "$filed" ]; then
     board_upsert "$(cut -f1-3 <<<"$filed")" || { [ $? = 2 ] || return 1; UPSERT_FAILED="$UPSERT_LOCK_WHY"; }
-  else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_FAILED=; fi
+  else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_DROPPED=0; UPSERT_CAPPED=0; UPSERT_FAILED=; fi
   h=$(triage_human "$rows")
   triage_twins "$rows" "$(cut -f1 <<<"$filed")"
   q=$(triage_promote "$rows")
@@ -6587,10 +6583,10 @@ cmd_health() {
 # On 2026-10-29 the pool queue was an hour old at 09:30, local runs starved from 13:00 and merges
 # collapsed at 14:20; the human found it at 19:59, because nothing read any of these for a decision.
 
-FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_oldest_wait_seconds|ci_governor_capacity_units|ci_governor_busy_units'
+FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_oldest_wait_seconds'
 # A rule whose series is missing cannot fire, so its absence must not read as healthy. cc:pool_oldest_wait_seconds
 # is left out: it is only there while something waits.
-FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:pool_waiting","cc:pool_busy","cc:pool_slots","ci_governor_capacity_units","ci_governor_busy_units"]'
+FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:pool_waiting","cc:pool_busy","cc:pool_slots"]'
 FINDING_SAMPLE_S=600   # snapshots this far apart: the sampler's cadence, so "on 2 samples" holds on replay
 # Starting points set from the 10-29 replay; kpi-thresholds overrides any of them.
 FINDING_DEFAULTS='{"finding_pool_wait_s":3600,
@@ -6709,8 +6705,9 @@ finding_rows() {
       ( select($p[0] != null) | $p[0] as $a | $required[] | select($a[.] == null)
         | row("blind"; "prom:\(.)"; "report"; {}; "now"; "prometheus"; "\(.) is missing, so the rules that read it are off"; "") ),
       ( select($p[0] != null) | $p[0] as $a | $p[1] as $b | $p[2] as $c
-        | ($a["ci_governor_capacity_units"] // {}) as $gc
-        | (if ($gc | length) > 0 then {u: (($a["ci_governor_busy_units"] // {}) | add // 0), s: ($gc | add)} else {u: null, s: null} end) as $fu
+        # The fleet slots: every pool, as cc:pool_slots and cc:pool_busy count them.
+        | ($a["cc:pool_slots"] // {}) as $ps
+        | (if ($ps | length) > 0 then {u: (($a["cc:pool_busy"] // {}) | add // 0), s: ($ps | add)} else {u: null, s: null} end) as $fu
         | ( ($a["cc:pool_oldest_wait_seconds"] // {}) | to_entries[] | .key as $pool | .value as $w
             | (($a["cc:pool_waiting"][$pool]) // 0) as $n
             | select($w >= $l.finding_pool_wait_s and $n > 0)
@@ -6721,14 +6718,14 @@ finding_rows() {
             | ($a["cc:pool_match_slots"][$pool]) as $ms | ($a["cc:pool_match_busy"][$pool]) as $mu | ($a["cc:pool_match_runners"][$pool]) as $mr
             | ([($a["cc:pool_match_labels"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")] | first) as $want
             | ($ms == null and $a["cc:pool_match_unread"] != null) as $unread
-            # No labels read: the slots the governor counts across the fleet, taken against capacity. A kind runs
-            # fewer jobs than slots it holds when another kind fills them, so cc:pool_busy would read labels (ar-3729).
+            # No labels read: the fleet slots taken against capacity. A kind runs fewer jobs than slots it
+            # holds when another kind fills them, so its own cc:pool_busy would read labels (ar-3729).
             | (if $ms != null and $mu != null then {u: $mu, s: $ms} else $fu end) as $k
             # The fleet total covers hosts that cannot take the job, so it never decides labels: only the matching slots do.
             # bind: capacity when the slots that fit are full, labels when slots sit free, none can
             # take the job, or the jobs carry no pool label (pool "other": pinned to one host, say), so
             # more sessions add no demand to it. admission when the slots that fit are full but most runners
-            # with the labels are withheld or offline: on 2026-11-18 a playground gate waited 4h41m on 3
+            # with the labels are parked or offline: on 2026-11-18 a playground gate waited 4h41m on 3
             # admitted of about 13 Unity runners, read as demand, and nobody looked at the hosts (ar-3132).
             | (if $pool == "other" or ($ms != null and $k.s == 0 and $mr == 0) or ($ms != null and $k.u != null and $k.s != null and $k.s > 0 and ($k.u / $k.s) < $l.finding_pool_idle_share)
                then "labels"
@@ -6743,7 +6740,7 @@ finding_rows() {
                 "oldest job waited \($w | dur) with \($k.u | units)/\($k.s | units) slots busy"
                 + (if $unread then " (the slots matching its labels unread)" else "" end)
                 + (if $ms != null then " among those matching its labels (\($want // "?")), \($fu.u | units)/\($fu.s | units) in the fleet" else "" end) + ": "
-                + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" elif $bind == "admission" then "only \($ms) of the \($mr) runners with its labels are admitted, the rest withheld, parked or offline: admission or host health binds, not demand" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
+                + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" elif $bind == "admission" then "only \($ms) of the \($mr) runners with its labels take jobs, the rest parked or offline: admission or host health binds, not demand" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
                 "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
             | select($n != null and $n > 0)

@@ -225,7 +225,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                 that train (train_landing), the item's validate wait or "failed <validate slug>" (validate_hold), or ->]
 #                [<cron: yes when a recurring cron the session scheduled is still live (wake_facts), or ->]
 #                [<merged PRs: work_blockers' 23rd, - here>]
-#                [<carried: the live items its own running items filed (carried_by), comma-separated, or ->]
+#                [<carried: the live items its own running items filed (carried_by) and the open PRs they record (item_open_prs, "<repo>#<n>"), comma-separated, or ->]
 #                [<detached: an idle session's gate, test or queue process (detached_gate) runs detached: the session's next
 #                 wake-up (wake_facts' wake, not tied to the gate's end), none when it has none, or - when no such process runs>]
 #   -> "BUCKET reason"
@@ -1059,6 +1059,41 @@ carried_by() {
   printf '%s' "${out:--}"
 }
 
+# item_open_prs <all items, jsonl> <comma list of a session's own item slugs> -> the comma list of "<repo>#<n>" for each
+# PR recorded on one of those running items (`open_pr:`, which agent-land sets before its checks, or `pr:`) that is OPEN
+# in the PR store with CI not red. The PR rides another session's branch or a landing train's gate, so its owner lands it
+# and the item's idle session has nothing to do: carried like a filed item, never STALLED (ar-3580: ucp-671 PR #2506 on
+# agent-37's branch, in train #2919, read STALLED on agent-15). A red PR is nobody's landing, so the row stays STALLED.
+# The store is read with its checks and without store_refresh (no `sync-prs --wait`), once per repo per pass: a PR merged
+# since the last poll reads open for at most one poll. A repo the store cannot answer for carries nothing.
+item_open_prs() {
+  local refs repo f out=""
+  refs="$(jq -r --arg own ",$2," 'select(.state == "running" and (.slug // "") != "" and (.slug as $s | $own | contains("," + $s + ",")))
+      | ((.open_pr // "") + " " + (.pr // "" | tostring)) | split(" ")[] | select(test("^[^#]+#[0-9]+$"))' <<<"$1" 2>/dev/null | sort -u)"
+  [ -n "$refs" ] || { printf -- -; return; }
+  while IFS= read -r repo; do
+    f="$CACHE/prsci_${repo//\//_}.json"
+    [ -f "$f" ] || "$SCHEDULES_SYNC" prs "$repo" --checks 2>/dev/null | jq -c 'map({number, state, ci})' > "$f" 2>/dev/null
+    [ -s "$f" ] || continue
+    out+="$(jq -r --arg r "$repo" '.[] | select(.state == "OPEN" and (.ci // "") != "FAIL") | "\($r)#\(.number)"' "$f")"$'\n'
+  done < <(sed 's/#[0-9]*$//' <<<"$refs" | sort -u)
+  out="$(grep -xFf <(printf '%s\n' "$out") <<<"$refs" | paste -sd, -)"
+  printf '%s' "${out:--}"
+}
+
+# session_carried <all items, jsonl> <session id> <item_of's answer> <server:tmux session> <own item slugs> -> what carries
+# the session's own running items: the live items filed from them (carried_by) and the open PRs they record
+# (item_open_prs), one comma list, or -.
+session_carried() {
+  local out
+  out="$(carried_by "$1" "$2" "$3" "$4")"; out="${out#-}"
+  if [[ "$3" == own:* ]]; then
+    local prs; prs="$(item_open_prs "$1" "$5")"
+    [ "$prs" = - ] || out="${out:+$out,}$prs"
+  fi
+  printf '%s' "${out:--}"
+}
+
 # plan_bucket <reason so far> <phases> <next> <merged 0|1> [<item>] [<cron>] [<carried>]: nothing is unlanded, so the
 # plan decides. All phases ticked is DONE, and so is one whose unchecked phases are queue items
 # (next is queued:<slugs>); one left is LANDED naming it. A plan with no checklist,
@@ -1652,17 +1687,28 @@ critical_of() {
   printf '%s\t%s\n' "$crit" "$place"
 }
 
-# branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
+# ledger_repo <dir> -> the run ledger's key of the repo <dir> lands on (forge_of): `forgejo:owner/repo` for a clone
+# on a Forgejo host or a Forgejo-canonical one (home-config, whose origin is the GitHub mirror, which has no runs),
+# else origin's owner/repo. The ledger keys a Forgejo repo without its host (schedules-sync runs).
+ledger_repo() {
+  local f
+  f="$(forge_of "$1")"
+  if [ "$f" != origin ]; then printf 'forgejo:%s\n' "${f#* */}"; else origin_repo "$1"; fi
+}
+
+# branch_runs <dir> <branch> -> <branch>'s main_runs in the repo <dir> lands on (ledger_repo): gate_ci, main_health
 # and activity_line all read it, from one ledger read per repo per pass ($CACHE). A repo the ledger
 # does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1
-# with the row blind on every read.
+# with the row blind on every read. Read off origin, a Forgejo-canonical clone's mirror had no runs, so its
+# main read green and its gates read none (ar-2727, follow-up of ar-2587).
 branch_runs() {
-  local d="$1" b="$2" all one rc=0
-  all="$CACHE/runs_$(repo_slug "$d")" || return 1
+  local d="$1" b="$2" all one rc=0 repo slug
+  slug="$(repo_slug "$d")" || return 1
+  all="$CACHE/runs_${slug}_$(canonical_remote "$d")"
   one="${all}_${b//\//%2F}" # %2F: feat/x and feat_x are two branches
   if [ ! -f "$one" ]; then
     if [ ! -f "$all" ]; then
-      main_runs "$(origin_repo "$d")" > "$all" || rc=$?
+      if repo="$(ledger_repo "$d")"; then main_runs "$repo" > "$all" || rc=$?; else rc=1; fi
       case $rc in
         0) ;;
         3) echo '[]' > "$all" ;;
@@ -2489,6 +2535,27 @@ item_plan() {
   printf '%s\n' "${3:--}"
 }
 
+# canonical_plan <plan file|-> -> the plan phases are read from: the one home of the plan, ~/.agent/plans, never a
+# plan-mode copy. A file under ~/.claude*/plans that is a real file (an account whose plans dir claude-acct has
+# not linked to _live, a peer store-sync has not reached) is a copy that goes stale: 2026-11-18 the tilecast
+# coordinator read 0/5 overdue from one while 2/5 had landed in the canonical plan (ar-3465). A link into
+# ~/.agent/plans already is the canonical file. The copy's canonical is _live/<same name>, else the one live
+# project dir (not _archive, _unscoped) that holds a file of that name, links followed; with neither, or when the
+# candidate is older than the copy (an earlier run's plan of a reused slug, as item_plan rejects), the copy is all
+# there is.
+canonical_plan() {
+  local f="$1" b="${1##*/}" home="$HOME/.agent/plans" c r
+  [[ "$f" == "$HOME"/.claude*/plans/*.md && -f "$f" ]] || { printf '%s\n' "$f"; return 0; }
+  r="$(realpath -q -- "$f" 2>/dev/null)" || r="$f"
+  [[ "$r" == "$home"/* ]] && { printf '%s\n' "$f"; return 0; }
+  if [ -f "$home/_live/$b" ]; then c="$home/_live/$b"
+  else
+    c="$(find -L "$home" -mindepth 2 -maxdepth 2 -name "$b" -type f -not -path "$home/_*" 2>/dev/null)"
+    [ -n "$c" ] && [ "$(wc -l <<<"$c")" -eq 1 ] || c=
+  fi
+  if [ -n "$c" ] && [ "$(stat -L -c %Y "$c")" -ge "$(stat -c %Y "$f")" ]; then printf '%s\n' "$c"; else printf '%s\n' "$f"; fi
+}
+
 # own_slugs <item_of's answer> -> the comma list of slugs it joined to this session (own:a,b running here, or
 # the one waiting here), else nothing. They are the session's own work, not a phase handed off, so they hold no
 # plan phase: the phase is this session's next one until it lands (ar-475: dotfiles-agent-4 read DONE while P4
@@ -2519,6 +2586,32 @@ refused_wait() {
   local key
   key="$(prs_key "$1")" && [ -f "$key.refused" ] || return 0
   awk -F'\t' -v p="$2" '$1 == p { h = $2 } END { if (h != "") print h }' "$key.refused"
+}
+
+# pr_not_here <host> <state> <all items> <item slugs, comma list|-> <pr_made_here's arguments...> -> true when the row's branch
+# PR is not this session's work. A finished one (MERGED or CLOSED) on this machine is not when pr_made_here
+# says another session made it. An open one is unlanded work in this tree, except on a validate item's
+# session: it reviews the author item's PR from a worktree cut at its head (cmd_validate in fleet-dispatch),
+# and once it records a fail verdict (validate_failed_here) the PR is the author item's to fix.
+# validate-ar-5194-3edd08df read keep "land it: PR #3435 open" after failing it (ar-5260). A pass keeps
+# it: the validate session lands it itself. With no verdict yet the review is still left here, so a
+# session that died mid-review is not closed as done.
+pr_not_here() {
+  local host="$1" state="$2" qall="$3" islugs="$4"; shift 4
+  case "$state" in
+    MERGED | CLOSED) [ "$host" = - ] && [ -s "$5" ] && ! pr_made_here "$@" ;;
+    OPEN) validate_failed_here "$qall" "$islugs" ;;
+    *) return 1 ;;
+  esac
+}
+
+# validate_failed_here <all items, jsonl> <item slugs, comma list|-> -> true when one of the items is a validate
+# item (tagged validate) that records a fail verdict, as the validate brief has it set before it runs agent-land.
+# Its verdict_head is not compared: a push after the fail is a new head, reviewed by a new validate item.
+validate_failed_here() {
+  [ "$2" != - ] && jq -ne --arg s ",$2," 'any(inputs; (.slug as $x | $s | contains("," + $x + ","))
+    and ((.tags // "") | if type == "array" then join(" ") else tostring end | [splits("\\s+")] | index("validate") != null)
+    and .verdict == "fail")' <<<"$1" >/dev/null 2>&1
 }
 
 # validate_hold <all items, jsonl> <the row's item slugs, comma list> <PR head oid> <clone|-> -> what agent-land's validate_gate
@@ -2783,7 +2876,7 @@ collect() {
         IFS=$'\t' read -r irow iby < <(jq -rn --arg s "$islug" 'first(inputs | select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
               | if . == "" then "-" else . end), (.by // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
-        irow="${irow:--}"; iby="${iby:--}"; carried="$(carried_by "$qall" "$sid" "$item" "${target%%/*}:$tsess")" ;;
+        irow="${irow:--}"; iby="${iby:--}"; carried="$(session_carried "$qall" "$sid" "$item" "${target%%/*}:$tsess" "$islugs")" ;;
     esac
     # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
     # open and every state known. A landing train merges a member's commits through its own train/* PR and
@@ -2818,10 +2911,9 @@ collect() {
     # A run that handed its item off, or another run that landed it, left nothing here to land (handed_on).
     if [ "$g" = 1 ] && [ "$irel" = moved ] && [ "$dirty" = 0 ] && [ "$ahead" -gt 0 ] && [ "$pr" = - ] \
        && handed_on "$host" "$qall" "$islug" "$cwd" "$gd" "$line"; then ahead=0; fi
-    # A finished branch PR this session did not make is another session's (pr_made_here): drop it,
-    # and the commits it holds with it. An open one stays: it is unlanded work in this tree either way.
-    if [ "$host" = - ] && [ "$g" = 1 ] && { [ "$state" = MERGED ] || [ "$state" = CLOSED ]; } && [ -s "$transcript" ] \
-       && ! pr_made_here "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf" \
+    # A branch PR this session did not make is another session's (pr_not_here): drop it,
+    # and the commits it holds with it. An open one stays unless a validate fail hands it back.
+    if [ "$g" = 1 ] && pr_not_here "$host" "$state" "$qall" "$islugs" "$cwd" "$pr" "$branch" "$prs" "$transcript" "$planf" \
               "$(jq -r --arg c "$cwd" --arg s "$sid" 'select(.cwd == $c and .session_id != $s and (.host // "-") == "-")
                   | .plan_file // empty' <<<"$panel" 2>/dev/null)"; then
       [ "$inpr" = 1 ] && ahead=0
@@ -2834,7 +2926,7 @@ collect() {
       IFS=$'\t' read -r xr xpr xci xoid < <(sibling_pr "$cwd" "$prs")
       if [ -n "${xpr:-}" ]; then pr="$xpr" state=OPEN ci="$xci" oid="$xoid" conflicts=-; else xr=-; fi
     fi
-    [ "$host" != - ] || planf="$(item_plan "$islugs" "$started" "$planf")"; IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")   # the item's own plan outranks the transcript's
+    [ "$host" != - ] || planf="$(canonical_plan "$(item_plan "$islugs" "$started" "$planf")")"; IFS=$'\t' read -r pdone ptotal pnext < <(plan_phases "$planf")   # the item's own plan outranks the transcript's
     phases="$(phases_word "$planf" "$inplan" "$pdone" "$ptotal")"
     # A copy of a queued plan under another file name is that plan (plan_copy_of): the items name it and
     # tick it, and the session may tick its own, so a phase is done when either plan says so.
