@@ -325,7 +325,7 @@ const RETIRED_TABS = { "waiting": "home", "asks": "home", "watch": "sessions", "
 // and a third field is the view it opens with (`#infra/cloud` is Machines under its cloud chip).
 const MOVED = { "fleet/accounts": ["costs", "burn"], "fleet/tokens": ["costs", "tokens"], "fleet/langfuse": ["costs", "langfuse"], "fleet/workers": ["sessions", "fleet"],
   "infra/health": ["alerts", "health"], "infra/red": ["alerts", "firing"], "infra/fixes": ["alerts", "fixes"], "infra/reds": ["alerts", "fixes"],
-  "infra/governor": ["infra", "machines", "ms=governed"], "infra/cloud": ["infra", "machines", "ms=cloud"],
+  "infra/governor": ["infra", "machines"], "infra/cloud": ["infra", "machines", "ms=cloud"],
   "releases/builds": ["infra", "runs"], "releases/tests": ["infra", "tests"],
   "home/running": ["queue", "running"],
   "queue/table": ["queue", "needs"], "queue/waiting": ["queue", "needs"], "queue/review": ["queue", "pr"], "queue/queued": ["queue", "next"], "queue/done": ["log", "work"] };

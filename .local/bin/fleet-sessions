@@ -225,7 +225,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                 that train (train_landing), the item's validate wait or "failed <validate slug>" (validate_hold), or ->]
 #                [<cron: yes when a recurring cron the session scheduled is still live (wake_facts), or ->]
 #                [<merged PRs: work_blockers' 23rd, - here>]
-#                [<carried: the live items its own running items filed (carried_by), comma-separated, or ->]
+#                [<carried: the live items its own running items filed (carried_by) and the open PRs they record (item_open_prs, "<repo>#<n>"), comma-separated, or ->]
 #                [<detached: an idle session's gate, test or queue process (detached_gate) runs detached: the session's next
 #                 wake-up (wake_facts' wake, not tied to the gate's end), none when it has none, or - when no such process runs>]
 #   -> "BUCKET reason"
@@ -1056,6 +1056,41 @@ carried_by() {
         and ((.ready // "") | fromdateiso8601? // 0) > now
         and ((.slug | sub("-close$"; "")) as $f | $own | contains("," + $f + ","))))
       | .slug] | unique | join(",")' <<<"$1" 2>/dev/null)"
+  printf '%s' "${out:--}"
+}
+
+# item_open_prs <all items, jsonl> <comma list of a session's own item slugs> -> the comma list of "<repo>#<n>" for each
+# PR recorded on one of those running items (`open_pr:`, which agent-land sets before its checks, or `pr:`) that is OPEN
+# in the PR store with CI not red. The PR rides another session's branch or a landing train's gate, so its owner lands it
+# and the item's idle session has nothing to do: carried like a filed item, never STALLED (ar-3580: ucp-671 PR #2506 on
+# agent-37's branch, in train #2919, read STALLED on agent-15). A red PR is nobody's landing, so the row stays STALLED.
+# The store is read with its checks and without store_refresh (no `sync-prs --wait`), once per repo per pass: a PR merged
+# since the last poll reads open for at most one poll. A repo the store cannot answer for carries nothing.
+item_open_prs() {
+  local refs repo f out=""
+  refs="$(jq -r --arg own ",$2," 'select(.state == "running" and (.slug // "") != "" and (.slug as $s | $own | contains("," + $s + ",")))
+      | ((.open_pr // "") + " " + (.pr // "" | tostring)) | split(" ")[] | select(test("^[^#]+#[0-9]+$"))' <<<"$1" 2>/dev/null | sort -u)"
+  [ -n "$refs" ] || { printf -- -; return; }
+  while IFS= read -r repo; do
+    f="$CACHE/prsci_${repo//\//_}.json"
+    [ -f "$f" ] || "$SCHEDULES_SYNC" prs "$repo" --checks 2>/dev/null | jq -c 'map({number, state, ci})' > "$f" 2>/dev/null
+    [ -s "$f" ] || continue
+    out+="$(jq -r --arg r "$repo" '.[] | select(.state == "OPEN" and (.ci // "") != "FAIL") | "\($r)#\(.number)"' "$f")"$'\n'
+  done < <(sed 's/#[0-9]*$//' <<<"$refs" | sort -u)
+  out="$(grep -xFf <(printf '%s\n' "$out") <<<"$refs" | paste -sd, -)"
+  printf '%s' "${out:--}"
+}
+
+# session_carried <all items, jsonl> <session id> <item_of's answer> <server:tmux session> <own item slugs> -> what carries
+# the session's own running items: the live items filed from them (carried_by) and the open PRs they record
+# (item_open_prs), one comma list, or -.
+session_carried() {
+  local out
+  out="$(carried_by "$1" "$2" "$3" "$4")"; out="${out#-}"
+  if [[ "$3" == own:* ]]; then
+    local prs; prs="$(item_open_prs "$1" "$5")"
+    [ "$prs" = - ] || out="${out:+$out,}$prs"
+  fi
   printf '%s' "${out:--}"
 }
 
@@ -2553,6 +2588,19 @@ refused_wait() {
   awk -F'\t' -v p="$2" '$1 == p { h = $2 } END { if (h != "") print h }' "$key.refused"
 }
 
+# base_red_owner <dir> <pr> <all items, jsonl> <the row's item slugs, comma list|-> -> the slug of an item that is not done, is not
+# one of the row's own, and records PR #<pr> of <dir>'s repo in its pr: or open_pr: list (owner/repo#N, forge names case-blind),
+# else nothing. That is how an item that fixes a red base claims the PRs the red holds (fix-ci step 3): the PR is red only until
+# that item lands, so its session waits on the item and is not STALLED CI red. Why: platform#1493 sat red behind develop's
+# Android E2E red while fix-ci-android-mobile-e2e-red-on-develop worked it, and its session was nudged once per head (ar-1513).
+base_red_owner() {
+  local repo
+  [[ "$2" =~ ^[0-9]+$ ]] && repo="$(origin_repo "$1" 2>/dev/null)" && [ -n "$repo" ] || return 0
+  jq -rn --arg ref "${repo,,}#$2" --arg own ",${4:--}," 'first(inputs
+    | select(.state != "done" and (.slug as $s | $own | contains("," + $s + ",") | not))
+    | select([.pr, .open_pr] | map(. // "" | tostring | ascii_downcase | split(" ")[]) | any(. == $ref)) | .slug) // empty' <<<"$3" 2>/dev/null
+}
+
 # pr_not_here <host> <state> <all items> <item slugs, comma list|-> <pr_made_here's arguments...> -> true when the row's branch
 # PR is not this session's work. A finished one (MERGED or CLOSED) on this machine is not when pr_made_here
 # says another session made it. An open one is unlanded work in this tree, except on a validate item's
@@ -2609,13 +2657,14 @@ head_covers() {
     [ "$(git -C "$1" rev-list --count --no-merges "$2" "^$3" "^$(default_base "$1")" 2>/dev/null)" = 0 ]
 }
 
-# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<all items> <item slugs>] -> two lines: the landing-slot wait, then
+# pr_wait <git> <pr state> <sibling repo> <clone> <ci> <pr> <head oid> <chain> [<all items> <item slugs> <base health>] -> two lines: the landing-slot wait, then
 # the wait the bucket reads (empty when none). A PR of this clone's repo riding an open landing train waits on that
 # train's gate, one queued for the landing slot waits its turn, and one the slot holder refused waits on that holder
 # (slot_refuser), unless its own Checks are red past the slot's refusal (git_facts left ci FAIL). A green or unknown-CI PR whose item is `after:` an item that is not done (<chain>,
 # chain_hold) waits on it, not STALLED green, not merged (ar-4420); its red gate line is open_pr_ci's. Past those, a green
 # or unknown-CI PR carries its item's validate verdict (validate_hold): a live validate item on its head is a wait, and a
-# fail on its head is "failed <slug>", never landable (ar-5286).
+# fail on its head is "failed <slug>", never landable (ar-5286). A red PR whose base reads RED (main_health) and that another
+# live item claims (base_red_owner) waits on that item (ar-1513).
 pr_wait() {
   local g="$1" state="$2" xr="$3" gd="$4" ci="$5" pr="$6" oid="$7" chain="$8" tn="" land="" w h
   [ "$g" = 1 ] && [ "$state" = OPEN ] && [ "$xr" = - ] || { printf '\n\n'; return 0; }
@@ -2628,6 +2677,8 @@ pr_wait() {
   w="$land"
   if [ -z "$w" ]; then case "$ci" in FAIL | PENDING | NOSTART) ;; *)
     if [ -n "$chain" ]; then w="after: $chain"; else w="$(validate_hold "${9:-}" "${10:--}" "$oid" "$gd")"; fi ;; esac; fi
+  if [ -z "$w" ] && [ "$ci" = FAIL ] && [ "${11:--}" = RED ] && [ "$gd" != - ] && h="$(base_red_owner "$gd" "$pr" "${9:-}" "${10:--}")" &&
+    [ -n "$h" ]; then w="base red, owned by $h"; fi
   printf '%s\n%s\n' "$land" "$w"
 }
 
@@ -2841,7 +2892,7 @@ collect() {
         IFS=$'\t' read -r irow iby < <(jq -rn --arg s "$islug" 'first(inputs | select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
               | if . == "" then "-" else . end), (.by // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
-        irow="${irow:--}"; iby="${iby:--}"; carried="$(carried_by "$qall" "$sid" "$item" "${target%%/*}:$tsess")" ;;
+        irow="${irow:--}"; iby="${iby:--}"; carried="$(session_carried "$qall" "$sid" "$item" "${target%%/*}:$tsess" "$islugs")" ;;
     esac
     # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
     # open and every state known. A landing train merges a member's commits through its own train/* PR and
@@ -2987,7 +3038,7 @@ collect() {
     act="$(activity_line "${status:--}" "$ojob" "$doing" "$act_dir" "$branch" "$act_sha" "$now")"
     # What an open PR waits on (pr_wait); only a landing-slot wait carries the slot's wait, depth and critical path.
     local wait_on="" land_wait=""
-    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs")
+    { IFS= read -r land_wait; IFS= read -r wait_on; } < <(pr_wait "$g" "$state" "$xr" "$gd" "$ci" "$pr" "$oid" "$chain" "$qall" "$islugs" "$mh")
     # A session waiting its landing turn carries how long its gate has waited and how deep its repo's
     # landing queue is, so the shepherd names a multi-hour wait on its own line (ar-2525).
     local qwait=- qdepth=- qrepo=- qpr=-

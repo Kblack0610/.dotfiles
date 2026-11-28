@@ -346,6 +346,44 @@ load 'fleet_sessions/common'
   [ "$output" = - ]
 }
 
+@test "a running item whose recorded PR is open elsewhere carries the session: WORKING, not STALLED (ar-3580)" {
+  # 2026-11-19: ucp-671's PR #2506 rode agent-37's branch, in train #2919, and agent-15's idle session read STALLED
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  printf 'agent-37-x\t2506\tOPEN\tPASS\tabc\t-\t\nold\t2400\tMERGED\tPASS\tdef\t-\t\nred\t2407\tOPEN\tFAIL\tghi\t-\t\n' > "$LEDGER_DIR/prs.tsv"
+  printf 'b\t9\tOPEN\tPENDING\tjkl\t-\t\n' > "$LEDGER_DIR/prs_o_s.tsv"
+  local q='{"slug":"ucp-671","state":"running","sessions":"sidA","open_pr":"o/r#2506"}
+{"slug":"ucp-672","state":"running","sessions":"sidA","pr":"o/r#2400"}
+{"slug":"ucp-673","state":"running","sessions":"sidA","pr":"o/r#2506 o/s#9 o/r#2400","open_pr":"o/r#2506"}
+{"slug":"ucp-675","state":"running","sessions":"sidA","pr":"o/r#2407"}
+{"slug":"ucp-674","state":"done","sessions":"sidC","pr":"o/r#2506"}'
+  run item_open_prs "$q" ucp-671
+  assert_output 'o/r#2506'
+  # both fields, several refs and a second repo: each open one once; a merged one drops
+  run item_open_prs "$q" ucp-673
+  assert_output 'o/r#2506,o/s#9'
+  # only the slugs passed count, never every running item: a merged PR, a red one, a done item, a stranger carry nothing
+  for s in ucp-672 ucp-675 ucp-674 nope; do
+    run item_open_prs "$q" "$s"
+    [ "$output" = - ]
+  done
+  # a store that cannot answer carries nothing (the old STALLED read)
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; touch "$LEDGER_DIR/PRS_FAIL"
+  run item_open_prs "$q" ucp-671
+  [ "$output" = - ]
+  # session_carried joins them with the items filed from it; only an own: answer reads the store
+  q="$q"$'\n''{"slug":"fix-1","state":"running","from":"item:ucp-671","sessions":"sidB"}'
+  rm -rf "$CACHE"; mkdir -p "$CACHE"; rm -f "$LEDGER_DIR/PRS_FAIL"
+  run session_carried "$q" sidA own:ucp-671 lab:me ucp-671
+  assert_output 'fix-1,o/r#2506'
+  run session_carried "$q" sidA 'moved:ucp-671 moved on (done)' lab:me ucp-671
+  [ "$output" = - ]
+  # the bucket: carried by the open PR is WORKING; none is the old STALLED
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:ucp-671' - - - 'o/r#2506'
+  assert_output 'WORKING clean, nothing on the branch, no plan file, its item ucp-671 is carried by live items: o/r#2506'
+  run b idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - 'own:ucp-671' - - - -
+  assert_output 'STALLED clean, nothing on the branch, no plan file, its item ucp-671 is running here'
+}
+
 @test "a queued <slug>-close item held by its at: time carries the open item, so the session is not STALLED (ar-4582)" {
   local q
   q='{"slug":"ar-4554","state":"running","sessions":"sidA"}
@@ -4087,4 +4125,48 @@ seed_live() {
   assert_success
   [ "$(fleet_live_count "$XDG_STATE_HOME/fleet/state.json")" = 1 ]
   [ ! -e "$wake" ] || fail "a rise in the live count woke a kick: $(cat "$wake")"
+}
+
+@test "end to end: a red PR on a red base that another live item claims waits on that item, not STALLED CI red (ar-1513)" {
+  # platform#1493 sat red behind develop's Android E2E red while fix-ci-android-mobile-e2e-red-on-develop worked it.
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  local tip repo q="$HOME/.agent/queue"
+  tip="$(git -C "$SANDBOX/wt" rev-parse origin/main)"
+  # A ref names <owner>/<repo>, which the sandbox path (with its space) is not: the clone reads as a GitHub one.
+  git -C "$SANDBOX/wt" remote set-url origin https://github.com/o/r.git
+  repo=o/r
+  owner() { # owner <state> <pr: list>: item fix-base, on another session, recording <pr: list>
+    rm -rf "$q/running/"*fix-base.md "$q/done"; mkdir -p "$q/$1"
+    printf 'slug: fix-base\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T09:00:00Z\nsession: lab:s2\npr: %s\n---\nfix the base\n' \
+      "$2" > "$q/$1/20261103-090000-fix-base.md"
+  }
+  queue_item running lab:s1
+  ledger main "[$(r Tests failure "$tip" 1)]"
+  open_pr FAIL
+  owner running "${repo^^}#9 $repo#12"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  session="$(jq -c 'select(.bucket != "NIGHTLY")' <<<"$output")"
+  [ "$(jq -r .bucket <<<"$session")" = WORKING ]
+  [ "$(jq -r .reason <<<"$session")" = 'PR #9 waiting on base red, owned by fix-base' ]
+
+  # negative controls, each STALLED CI red: the base is green, the owner is done, the only claim is the
+  # session's own item, no item claims the PR
+  ledger main "[$(r Tests success "$tip" 1)]"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
+  ledger main "[$(r Tests failure "$tip" 1)]"
+  owner done "$repo#9"
+  printf 'status: ok\nfinished: 2026-11-03T12:00:00Z\n' | sed -i '/^session:/r /dev/stdin' "$q/done/20261103-090000-fix-base.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
+  rm -rf "$q/done"
+  sed -i "s|^session: lab:s1\$|session: lab:s1\npr: $repo#9|" "$q/running/20261103-100000-fix-wave-save.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
+  queue_item running lab:s1
+  owner running "$repo#12"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r 'select(.bucket != "NIGHTLY") | .reason' <<<"$output")" = 'PR #9 CI red' ]
 }

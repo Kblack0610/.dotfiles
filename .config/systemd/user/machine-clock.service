@@ -5,8 +5,8 @@ Description=Apply the machine mode of the day part that has begun (machine-mode 
 Type=oneshot
 Environment=PATH=%h/.local/bin:%h/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=%h/.local/bin/machine-mode clock
-# Exit 75: a hand mode is held while the human is here; exit 1: a pin did not reach the cluster. Both
-# are retried every 15 minutes, as the old runner's tick did, until they clear or the next boundary
+# Exit 75: a hand mode is held while the human is here; exit 1: the state file could not be written.
+# Both are retried every 15 minutes, as the old runner's tick did, until they clear or the next boundary
 # starts the unit afresh. Exit 2 (an hours file that cannot be read) is not: a retry reads the same file.
 Restart=on-failure
 RestartSec=15min
