@@ -179,7 +179,7 @@ JQ_EVAL="$JQ_EPOCH"'
   # live, want, outcome (tp|fp|fn|tn|pending|unscorable), unscorable (why, on an unscorable one),
   # human, reason, evidence, at, call}. The human label of an ask with options is the option its
   # answer names (answer_picks); a free-text ask keeps its answer unless a session typed it.
-  # An ask a standing order answered (`standing_order:`) is the human's own word, not a verdict.
+  # An ask a standing order answered (`standing_order:`) is the human word itself, not a verdict.
   | [$asks[] | select((.standing_order // "") == "" and (.judge_rule != "gate" or (.judge_call // "") != ""))
     | . as $a | ($a.judge | if . == "human" then "defer" elif . == "error" then "error" else "answer" end) as $kind
     | (if $a.judge == "take-recommend" then $a.recommend // "" else ($a.judge | ltrimstr("answer:")) end) as $want

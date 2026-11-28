@@ -269,6 +269,24 @@ pub struct Suite {
 }
 
 impl Suite {
+    /// This suite's counts and search text without its tests, for a total over many suites.
+    pub fn counts_only(&self) -> Self {
+        Suite {
+            tier: self.tier.clone(),
+            suite: self.suite.clone(),
+            tests: self.tests,
+            passed: self.passed,
+            failed: self.failed,
+            quarantined: self.quarantined,
+            skipped: self.skipped,
+            time: self.time,
+            state: self.state.clone(),
+            level: self.level,
+            cases: vec![],
+            hay: self.hay.clone(),
+        }
+    }
+
     /// A suite of these tests, its counts and state worked out from them.
     pub fn new(tier: &str, suite: &str, cases: Vec<Case>) -> Self {
         let mut s = Suite {

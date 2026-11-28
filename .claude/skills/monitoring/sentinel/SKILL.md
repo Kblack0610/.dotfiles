@@ -86,6 +86,8 @@ A standing watch's owner is its line in `~/.config/agentctl/triage-routes` (rout
 
 A standing watch also needs a Command Center domain, as its own home-config PR (`~/dev/home/home-config`, Forgejo) opened beside this one: in `apps/monitoring/prometheus-rules-command-center.yaml`, add its name (dashes as underscores) to both the `mqtt_tripped` and the `mqtt_stale` selector of the domain row whose weight fits (1 warns, 2 is down), and add a case to `apps/monitoring/tests/command-center.test.yaml`. That rules file is the only home for a watch's domain and weight. A watch no regex claims lands in `other` at weight 2 and turns the health heart red on its first trip, however minor.
 
+Each watch's published state also carries its manifest's `system:` and `bookkeeping:` (`agent-mqtt-publish`, read through `sentinel-manifest labels`): `bookkeeping: true` marks work posture (release-links, pts-bands, deploy-drift) rather than the health of a running system, so a rule may cap it at a warning. mqtt2prom drops text, so Prometheus gets `mqtt_bookkeeping` (0 or 1) and one `mqtt_system_<id>` gauge per id (any character outside a-z, 0-9 and `_` is `_`), 1 on the watches in that system and absent, never 0, on the rest; the `system` text rides only on the MQTT topic. When the manifest read fails the payload carries none of these, so the gap shows.
+
 **Every new manifest must carry the four legibility fields**, one line each - they are what `list`
 renders and what a page carries, and a watch nobody can read is a watch nobody acts on:
 
@@ -98,7 +100,7 @@ renders and what a page carries, and a watch nobody can read is a watch nobody a
 
 `who` is the existing `source:` field - don't add another.
 
-Add `system: <id>` (an id of `~/.local/src/docs/systems.md`, or a project's own in project-map.json): what the watch is about, so its red loads fix-red plus that system's skills. Add `project: <canonical name>` (project-map.json) when the watch belongs to one project: it is the Alerts tab's project facet and the "N watches, M firing" line on that project's card. Leave it out for fleet machinery (spend, dispatch, liveness), which is fleet-wide. `validate` refuses a name the registry does not hold.
+Add `system: <id>` (an id of `~/.local/src/docs/systems.md`, or a project's own in project-map.json): what the watch is about, so its red loads fix-red plus that system's skills, and it is the Alerts tab's system facet. Add `project: <canonical name>` (project-map.json) when the watch belongs to one project: it is the Alerts tab's project facet and the "N watches, M firing" line on that project's card. Leave it out for fleet machinery (spend, dispatch, liveness), which is fleet-wide. `validate` refuses a name the registry does not hold.
 
 ```yaml
 name: prod-api

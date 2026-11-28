@@ -890,6 +890,7 @@ case "$sub" in
   search)        cmd_search "$@" ;;
   index)         cmd_index "$@" ;;
   _filter)       cmd_filter "$@" ;;
+  _branch)       t="$(transcript_path "${1:-}")"; last_branch "$t" ;;   # the branch a conversation last ran on (fleet-dispatch restore)
   _window)       session_window "$(resolve_id "${1:-}" 2>/dev/null)" ;;
   show)          cmd_show "$@" ;;
   prompts)       cmd_prompts "$@" ;;
